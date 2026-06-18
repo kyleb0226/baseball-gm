@@ -72,7 +72,13 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
 
 ## Player model
 - Hitters rated CON/POW/EYE/SPD/DEF; pitchers STU/CTL/STM. `computeOvr()` derives OVR; `pot` is ceiling.
-- `salaryFor()` scales salary by OVR + age (pre-arb discount). `playerValue()` drives trade/FA AI.
+- `salaryFor()` scales salary by OVR + age (pre-arb discount).
+- **Trade/FA value (`playerValue`):** built on `abilityValue(ovr)` — a steeply **convex** curve
+  (≈ 50→3, 65→18, 80→42, 85→67, 92→95) so stars are scarce and you can't bundle scrubs to equal one
+  (an 85 ≈ 22× a 50). Value blends current ability with **projected peak** (`ovr + (pot−ovr)·youth`,
+  `youth = (28−age)/13` clamped), weighted toward projection for the young — so high-ceiling prospects
+  are worth a lot (a 19yo pot-90 ≈ a mid-30s star). Past-prime players take a decline tax; salary is a
+  small drag. `pickValue` is tuned to match (a top pick ≈ a blue-chip prospect).
 - **Extensions:** `extensionTerms(G,p)` quotes a re-sign offer for your own players (Finances →
   Contract Extensions, eligible when `years<=2`). Winning clubs get a hometown discount, losing clubs
   pay a premium, and a star (`ovr>=75`) on a sub-.400 team refuses (wants to test FA). Uses a neutral
@@ -80,9 +86,19 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
 - **Talent curve:** rating means sit a bit high and ~8% of generated players get a `+8–18` "star"
   boost to their primary tools (in `makeHitter`/`makePitcher`) for a fat top end. If you bump these,
   re-check the `paOutcome` `hrP` formula — league HR is sensitive to the POW mean × `hrP` slope/cap.
-- **Development:** `doProgression` is **directed toward potential** — young players climb faster the
-  bigger their `pot − ovr` gap (prospects in AAA faster still), peak players hold, age-31+ decline.
-  Tune the `center` ramp there if growth feels too fast/slow.
+- **Development & regression (`doProgression`, offseason):** each attribute shifts by `gauss(center,1.2)`.
+  `center` ramps with age — young players climb toward potential (≤23 fastest, growth fades to a ~26-28
+  peak), 29-30 gentle decline, 31-33 steeper, 34+ falls off a cliff. Modifiers: **AAA prospects (≤25)
+  get +1.2** (develop faster in the minors); a **performance term** (`seasonPerf(p)` → score×weight)
+  adds growth for productive young players (so a kid promoted early who rakes keeps developing fast) and
+  lets veterans who still rake age gracefully. Young breakouts can raise their `pot`; 29+ erodes it.
+  `p._lastDelta` records the OVR change and feeds the **Player Development risers/decliners report**
+  shown on the offseason Hub. Tune the `center` ramp / performance multipliers there.
+- **Awards (`computeAwards`, run in `enterPlayoffs` before stats reset):** per league it picks a
+  **Player of the Year** (`mvpScore`), **Cy Young** (`cyScore`), and **All-Star** team (best at each of
+  9 lineup slots + top 6 pitchers). Stored on `G.awards` (current) and unshifted into `G.awardHistory`;
+  each honor is also appended to the player's `p.accolades` (shown in `PlayerModal` and surviving
+  retirement because award records carry name/line snapshots). The **Awards** tab renders it all.
 - **Roster size:** `makeTeam` builds ~30 players (16 hitters = 9 starters + 7 bench; 14 pitchers =
   5 SP + 9 RP). `ROSTER_CAP` (32) bounds offseason rosters; `startNewSeason` AI fills to ~28.
 
@@ -94,6 +110,10 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   Bullpen / AAA Affiliate using these.
 - `Leaders` qualifier thresholds scale with games played (`paQual`/`outQual`); AAA players excluded.
 - Player movement helpers: `movePlayer(G,p,destMlbId)` (preserves level), `movePlayerToFA(G,p)`.
+- **`PlayersBrowser`** (Players tab): league-wide table of every player with filters (name search,
+  team, level MLB/AAA/FA, position, age min/max) and sort (OVR/POT/trade value/age/salary/HR/AVG/ERA).
+  Shows a `Val` column (`playerValue`) and a key stat line; names open `PlayerModal`. Capped to 400 rows.
+- **`Awards`** tab: current-season MVP/Cy Young/All-Stars per league + an award-history table.
 
 ## Gotchas / tuning ideas
 - Win leader can reach ~25 (a touch high) — tune `awardDecision()` / rotation depth if desired.

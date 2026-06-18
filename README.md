@@ -30,7 +30,13 @@ header to keep a JSON backup that survives updates.
   out-of-position players take a fielding penalty)
 - Editable **5-man rotation and bullpen priority** — set your closer & setup man; your best arms work
   the high-leverage innings while mop-up arms take blowouts
-- Players **develop toward their potential** each offseason (young prospects fastest)
+- Players **develop and regress realistically** — young players climb toward their potential (fastest
+  in AAA, and faster still when they produce, so a kid promoted early who rakes keeps improving), peak
+  in their mid-20s, then decline with age; the offseason shows a **risers & decliners report**
+- Browse **every player in the league** on the Players tab — filter by team, level (MLB/AAA/FA),
+  position, and age, then sort by OVR, potential, trade value, salary, or any stat
+- End-of-season **awards**: Player of the Year, Cy Young, and full **All-Star teams** per league, with
+  an award-history table; honors stick to a player's profile (e.g. "🏆 2× MVP")
 - **AAA affiliates** — every club runs a minor-league team that plays its own full season (with its
   own standings and stat lines). Develop prospects there, then **call them up / send players down**
 - **Tradeable draft picks** — deal future picks whose value scales with each team's projected finish,
@@ -42,7 +48,9 @@ header to keep a JSON backup that survives updates.
 - Click any player for a detail card with season + career splits
 - Standings and 17 stat leaderboards (AVG, HR, RBI, OBP, SLG, OPS, Hits, Runs, BB, SB, ERA,
   Innings, K, K−BB, W, SV, WHIP) with qualifiers that scale through the season
-- Trades with value-based AI, free agency with a salary cap, contracts & budget view
+- Trades with value-based AI on a **steep talent curve** — elite (80+) players are genuinely scarce
+  and can't be matched by a pile of scrubs, while high-ceiling young prospects carry real value; free
+  agency with a salary cap, contracts & budget view
 - **Re-sign your own players** to early extensions before they hit free agency — winning earns a
   hometown discount, but a struggling club pays a premium (and its stars may walk)
 - **Play the postseason game by game** — sim one game at a time and watch each series' line scores,
