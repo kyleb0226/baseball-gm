@@ -16,8 +16,11 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   then `eval`s it. The explicit **classic** runtime is required — the default `react` preset emits an
   ESM `import` (automatic JSX runtime) which breaks in a non-module inline script.
 - **State:** one big `G` object held in `App` `useState`, persisted to `localStorage`
-  (`pocketgm_baseball_v2` — bumped from v1 when AAA/picks/defense shapes were added) via `commit()`.
-  New game built by `newGame(userTeamId, opts)`.
+  (`pocketgm_baseball_v2`) via `commit()`. New game built by `newGame(userTeamId, opts)`.
+- **Save persistence:** prefer **not** bumping `SAVE_KEY` for shape changes — instead add backfill to
+  `migrate(G)` (runs in `loadGame` and on import) so existing franchises keep loading across updates.
+  Header has **Save File** / **Load File** (`exportSave`/`importSave`) for manual JSON backups; bump
+  `SAVE_VERSION` when you add migration steps.
   - `G.players` is an **object dict keyed by id** (not an array). Use `Object.values(G.players)` or the
     `rosterOf(G, teamId)` helper. `autoSetLineups` accepts either an array or the dict.
   - `G.seed` holds the league seed (or `null`).
@@ -36,6 +39,13 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   `changePitcher`/`bringIn` (tracked by `segOuts`), with the highest-OVR reliever (last in `pen`)
   closing save situations — so innings distribute realistically instead of one arm soaking the game.
   Produces realistic leaders (≈ .330–.350 AVG / 45–55 HR / sub-2 ERA / ~30 SB; SP ~180–220 IP).
+- **Rotation & bullpen:** every team carries a **5-man rotation** (`autoSetLineups` promotes the best
+  arms if short of true SPs) and each starter goes every 5th game (≈32–33 GS). The bullpen has a
+  user-editable **priority order** (`team.bullpen`, resolved live by `bullpenOrder()`; `pen[0]` = closer).
+  `pickReliever` keeps the closer for 9th-inning saves, gives the 8th to the setup tier, shares earlier
+  relief across the better ~70% of arms (rotated by game/inning to avoid one arm pitching every day),
+  and dumps blowouts on mop-up arms — so better arms get the meaningful innings (~80–106 IP) and weak
+  arms sit (~25 IP). Edit the rotation order and bullpen priority in the **Lineup** tab.
 - **Season:** `buildSchedule()` = circle-method round-robin repeated to 162 games (15 games/day).
   `simDay()` advances one day, simming **both** `G.schedule` (MLB) and `G.aaaSchedule` (AAA) — so a
   full season is ~4860 game sims. At day 162 `enterPlayoffs()` fires (MLB only; AAA is regular-season).
@@ -62,6 +72,9 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
 - **Talent curve:** rating means sit a bit high and ~8% of generated players get a `+8–18` "star"
   boost to their primary tools (in `makeHitter`/`makePitcher`) for a fat top end. If you bump these,
   re-check the `paOutcome` `hrP` formula — league HR is sensitive to the POW mean × `hrP` slope/cap.
+- **Development:** `doProgression` is **directed toward potential** — young players climb faster the
+  bigger their `pot − ovr` gap (prospects in AAA faster still), peak players hold, age-31+ decline.
+  Tune the `center` ramp there if growth feels too fast/slow.
 - **Roster size:** `makeTeam` builds ~30 players (16 hitters = 9 starters + 7 bench; 14 pitchers =
   5 SP + 9 RP). `ROSTER_CAP` (32) bounds offseason rosters; `startNewSeason` AI fills to ~28.
 

@@ -14,7 +14,8 @@ python3 -m http.server 8124 --directory .
 # → http://localhost:8124
 ```
 
-Your franchise saves automatically to the browser (localStorage).
+Your franchise autosaves to the browser (localStorage), and you can **Save File / Load File** from the
+header to keep a JSON backup that survives updates.
 
 ## Features
 
@@ -27,6 +28,9 @@ Your franchise saves automatically to the browser (localStorage).
 - Roster screen split into **Starting Lineup / Bench / Rotation / Closer / Bullpen** with ST/BN
   badges; editable batting order **and a defensive alignment** (assign all 8 field positions + a DH;
   out-of-position players take a fielding penalty)
+- Editable **5-man rotation and bullpen priority** — set your closer & setup man; your best arms work
+  the high-leverage innings while mop-up arms take blowouts
+- Players **develop toward their potential** each offseason (young prospects fastest)
 - **AAA affiliates** — every club runs a minor-league team that plays its own full season (with its
   own standings and stat lines). Develop prospects there, then **call them up / send players down**
 - **Tradeable draft picks** — deal future picks whose value scales with each team's projected finish,

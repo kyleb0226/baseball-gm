@@ -263,8 +263,16 @@ function autoSetLineups(team, players){
   });
   team.lineup = ids.slice(0,9);
   team.pos = posMap;
-  const sp = pitchers.filter(p=>p.role==="SP").sort((a,b)=>b.ovr-a.ovr).slice(0,5).map(p=>p.id);
-  team.rotation = sp.length?sp:pitchers.slice(0,5).map(p=>p.id);
+  // ALWAYS field a 5-man rotation: real SPs first, then promote the best other arms if short
+  let sp = pitchers.filter(p=>p.role==="SP").sort((a,b)=>b.ovr-a.ovr).map(p=>p.id);
+  if(sp.length<5){
+    const extra = pitchers.filter(p=>!sp.includes(p.id)).sort((a,b)=>b.ovr-a.ovr).map(p=>p.id);
+    sp = sp.concat(extra);
+  }
+  team.rotation = sp.slice(0,5);
+  // default bullpen priority: everyone not starting, best arm (closer) first
+  const inRot = new Set(team.rotation);
+  team.bullpen = pitchers.filter(p=>!inRot.has(p.id)).sort((a,b)=>b.ovr-a.ovr).map(p=>p.id);
 }
 
 // Shuffle which city/nickname identities land in which league+division slot,
@@ -397,12 +405,23 @@ function advance(bases, out, batter){
   return runs;
 }
 
+// ordered list of bullpen pitcher ids (everyone not in the rotation), honoring the
+// user's saved priority (team.bullpen) and appending any new arms by OVR. best-first.
+function bullpenOrder(team, players){
+  const ros = Object.values(players).filter(p=>p.teamId===team.id && p.isP);
+  const inRot = new Set(team.rotation||[]);
+  const pool = ros.filter(p=>!inRot.has(p.id));
+  const listed = (team.bullpen||[]).filter(id=>pool.some(p=>p.id===id));
+  const rest = pool.filter(p=>!listed.includes(p.id)).sort((a,b)=>b.ovr-a.ovr).map(p=>p.id);
+  return listed.concat(rest);
+}
 function getPitchers(team, players){
   const ros = Object.values(players).filter(p=>p.teamId===team.id && p.isP);
   const gi = team.w + team.l;
   const rotIds = team.rotation.length?team.rotation:ros.filter(p=>p.role==="SP").map(p=>p.id);
   let starter = players[rotIds[gi % Math.max(1,rotIds.length)]] || ros.find(p=>p.role==="SP") || ros[0];
-  const pen = ros.filter(p=>p.role==="RP").sort((a,b)=>a.ovr-b.ovr); // weakest first, save best (closer) for last
+  // pen is best-first by priority; pen[0] is the closer
+  const pen = bullpenOrder(team, players).map(id=>players[id]).filter(Boolean);
   return { starter, pen };
 }
 
@@ -430,6 +449,7 @@ function simGame(home, away, players){
   cur[home.id].p.stats.GS++; cur[away.id].p.stats.GS++;
   cur[home.id].p.stats.G++; cur[away.id].p.stats.G++;
   const usedPen = { [home.id]:[], [away.id]:[] };
+  const gameNo = { [home.id]: home.w+home.l, [away.id]: away.w+away.l }; // rotates early-relief load
 
   // bring a fresh arm into the game (counts an appearance the first time only)
   function bringIn(pitId, p){
@@ -439,28 +459,38 @@ function simGame(home, away, players){
     c.p = p; c.gs = false; c.segOuts = 0;
     if(!usedPen[pitId].includes(p.id)){ usedPen[pitId].push(p.id); p.stats.G++; }
   }
+  // choose the right fresh reliever for the situation. pen is best-first (pen[0]=closer):
+  // your better arms get the meaningful innings; mop-up arms only soak up blowouts. The
+  // early-relief workload is shared across the top arms so no one pitches every game.
+  function pickReliever(pitId, inning, lead, gnum){
+    const pen = arms[pitId].pen; if(!pen.length) return null;
+    const used = usedPen[pitId];
+    const fresh = pen.filter(rp=>!used.includes(rp.id));
+    if(!fresh.length) return cur[pitId].p;          // nobody left — current arm finishes
+    const closer = pen[0];
+    // the closer enters only to finish a save (9th inning, leading by 1-3)
+    if(inning>=9 && lead>0 && lead<=3 && fresh.includes(closer)) return closer;
+    const nonCloser = fresh.filter(rp=>rp.id!==closer.id);
+    const pool = nonCloser.length ? nonCloser : fresh;          // don't burn the closer otherwise
+    if(Math.abs(lead) >= 6) return pool[pool.length-1];          // blowout -> mop-up, rest the good arms
+    if(inning>=8){ const t2 = pool.slice(0,2); return t2[(gnum||0) % t2.length]; } // 8th: setup tier
+    // earlier innings: share across the better ~70% of available arms (rotating by game
+    // & inning) so the load spreads instead of one arm pitching every day
+    const goodCount = Math.max(1, Math.ceil(pool.length * 0.7));
+    const good = pool.slice(0, goodCount);
+    return good[((gnum||0) + inning) % good.length];
+  }
   // decide whether to change pitchers before the next batter
   function changePitcher(batId, pitId, inning){
     const c = cur[pitId];
-    const pen = arms[pitId].pen;
-    const closer = pen[pen.length-1];
+    const gnum = gameNo[pitId];
     if(c.gs){
-      // pull the starter once he's hit his outs target
-      if(c.outs >= starterTarget(pitId)){
-        const next = pen.find(rp=>!usedPen[pitId].includes(rp.id) && rp.id!==(closer||{}).id) || pen[0];
-        bringIn(pitId, next);
-      }
+      if(c.outs >= starterTarget(pitId)) bringIn(pitId, pickReliever(pitId, inning, score[pitId]-score[batId], gnum));
       return;
     }
-    // a reliever is in: only consider a change at an inning boundary (~3 outs in)
-    if((c.segOuts||0) < 3) return;
-    const lead = score[pitId] - score[batId];
-    if(inning>=8 && closer && lead>0 && lead<=3 && c.p.id!==closer.id && !usedPen[pitId].includes(closer.id)){
-      bringIn(pitId, closer); // save situation -> closer
-    } else {
-      const next = pen.find(rp=>!usedPen[pitId].includes(rp.id) && rp.id!==(closer||{}).id);
-      if(next) bringIn(pitId, next); // otherwise cycle to the next fresh arm
-    }
+    if((c.segOuts||0) < 3) return;                   // only swap at an inning boundary
+    const next = pickReliever(pitId, inning, score[pitId]-score[batId], gnum);
+    if(next && next.id!==c.p.id) bringIn(pitId, next);
   }
 
   function halfInning(batId, pitId, inning, isBottom){
@@ -562,9 +592,9 @@ function awardDecision(winnerId, loserId, arms, usedPen, players, ctx){
     (rp||wStarter).stats.W++;
   }
   arms[loserId].starter.stats.L++;
-  // save: closer = last in pen, if used and team won by<=3
+  // save: closer = pen[0] (best/priority arm), if he finished a win of <=3
   const margin = Math.abs(ctx.score[winnerId]-ctx.score[loserId]);
-  const pen = arms[winnerId].pen; const closer = pen[pen.length-1];
+  const pen = arms[winnerId].pen; const closer = pen[0];
   if(closer && (usedPen[winnerId]||[]).includes(closer.id) && margin<=3 && closer.id!==wStarter.id){
     closer.stats.SV++;
   }
@@ -614,9 +644,59 @@ const f1 = v => v.toFixed(1);
 
 /* ----------------------------- save/load ------------------------------- */
 const SAVE_KEY = "pocketgm_baseball_v2";
+const SAVE_VERSION = 3;
 function saveGame(G){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(G)); }catch(e){} }
-function loadGame(){ try{ const s=localStorage.getItem(SAVE_KEY); return s?JSON.parse(s):null; }catch(e){ return null; } }
+function loadGame(){ try{ const s=localStorage.getItem(SAVE_KEY); return s?migrate(JSON.parse(s)):null; }catch(e){ return null; } }
 function clearSave(){ localStorage.removeItem(SAVE_KEY); }
+
+// Forward-compatibility: backfill fields added by newer versions so an existing
+// franchise keeps loading (and playing) across updates instead of being wiped.
+function migrate(G){
+  if(!G || !Array.isArray(G.teams)) return G;
+  try{
+    if(!G.aaaTeams){ G.aaaTeams = G.teams.map(t=>makeAAATeam(t)); }
+    if(!G.aaaSchedule) G.aaaSchedule = buildSchedule(G.aaaTeams.map(t=>t.id));
+    if(!G.picks) G.picks = buildPicks((G.season||2026)+1, G.teams);
+    if(!Array.isArray(G.draftPicks)) G.draftPicks = [];
+    const fixTeam = t=>{
+      if(!t.pos) t.pos = {};
+      if(!Array.isArray(t.lineup)) t.lineup = [];
+      if(!Array.isArray(t.rotation)) t.rotation = [];
+      // guarantee a 5-man rotation and a bullpen priority list for older saves
+      if(t.rotation.length<5 || !t.bullpen) ensureLineup(t, G.players);
+      if(!t.bullpen) t.bullpen = bullpenOrder(t, G.players);
+    };
+    G.teams.forEach(fixTeam);
+    G.aaaTeams.forEach(fixTeam);
+    G.version = SAVE_VERSION;
+  }catch(e){ /* best-effort: a partial migration still beats a crash */ }
+  return G;
+}
+
+// Manual backup: download the whole franchise as a JSON file (user-initiated click)
+function exportSave(G){
+  try{
+    const data = JSON.stringify(G);
+    const blob = new Blob([data], {type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const u = G.teams[G.userTeamId];
+    a.href = url;
+    a.download = `pocketgm-${u?u.abbr:"save"}-${G.season}-day${(G.day||0)+1}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 1000);
+    return true;
+  }catch(e){ return false; }
+}
+function importSave(file, onLoad){
+  const r = new FileReader();
+  r.onload = e=>{
+    try{ const g = migrate(JSON.parse(e.target.result));
+      if(g && Array.isArray(g.teams)){ onLoad(g); } else { alert("That file isn't a valid Pocket GM save."); }
+    }catch(err){ alert("Couldn't read that save file."); }
+  };
+  r.readAsText(file);
+}
 
 /* ----------------------------- new game -------------------------------- */
 function newGame(userTeamId, opts={}){
@@ -624,7 +704,7 @@ function newGame(userTeamId, opts={}){
   const schedule = buildSchedule(teams.map(t=>t.id));
   const aaaSchedule = buildSchedule(aaaTeams.map(t=>t.id));
   return {
-    season: 2026, day: 0, phase: "regular",
+    season: 2026, day: 0, phase: "regular", version: SAVE_VERSION,
     seed: (opts && opts.seed!=null && !Number.isNaN(opts.seed)) ? (opts.seed>>>0) : null,
     userTeamId, teams, aaaTeams, players, schedule, aaaSchedule,
     picks: buildPicks(2027, teams),
@@ -666,7 +746,14 @@ function App(){
           <Badge>{G.season}</Badge>
           <Badge>{G.phase==="regular"?`Day ${G.day+1}/162`:G.phase.toUpperCase()}</Badge>
           <Badge>{user.w}-{user.l}</Badge>
-          <button onClick={()=>{ if(confirm("Start a brand new franchise? Current save is lost.")){clearSave(); setG(null);} }}
+          <button onClick={()=>{ if(exportSave(G)) tShow("💾 Save file downloaded"); }}
+            className="px-2 py-1 rounded bg-[#16213a] hover:bg-[#1c2c4a] text-slate-200 text-xs">Save File</button>
+          <label className="px-2 py-1 rounded bg-[#16213a] hover:bg-[#1c2c4a] text-slate-200 text-xs cursor-pointer">
+            Load File
+            <input type="file" accept="application/json,.json" className="hidden"
+              onChange={e=>{ const f=e.target.files[0]; if(f) importSave(f, g=>{ commit(g); setTab("hub"); tShow("✅ Save loaded"); }); e.target.value=""; }} />
+          </label>
+          <button onClick={()=>{ if(confirm("Start a brand new franchise? Your autosave is replaced — export a Save File first if you want to keep this one.")){clearSave(); setG(null);} }}
             className="px-2 py-1 rounded bg-red-900/40 hover:bg-red-900/70 text-red-200 text-xs">New</button>
         </div>
       </header>
@@ -902,9 +989,9 @@ function Roster({G, team, commit}){
   // hitters: starting lineup (in batting order) vs bench
   const lineupHits = team.lineup.map(id=>G.players[id]).filter(p=>p&&!p.isP);
   const benchHits = ros.filter(p=>!p.isP && !team.lineup.includes(p.id)).sort((a,b)=>b.ovr-a.ovr);
-  // pitchers: rotation vs closer vs bullpen
+  // pitchers: rotation vs closer vs bullpen (bullpen follows the user's priority order)
   const rotation = team.rotation.map(id=>G.players[id]).filter(p=>p&&p.isP);
-  const relievers = ros.filter(p=>p.isP && !team.rotation.includes(p.id)).sort((a,b)=>b.ovr-a.ovr);
+  const relievers = bullpenOrder(team, G.players).map(id=>G.players[id]).filter(Boolean);
   const closer = relievers[0] || null;
   const bullpen = closer ? relievers.slice(1) : relievers;
   const rotSlots = rotation.map((_,i)=>"SP"+(i+1));
@@ -934,7 +1021,7 @@ function Roster({G, team, commit}){
       {closer && <Card>
         <h3 className="font-bold mb-2">Closer</h3>
         <PitcherTable players={[closer]} onRelease={release} onSend={sendDown} slots={["CL"]} onName={open} />
-        <p className="text-xs text-slate-500 mt-2">Your highest-OVR reliever automatically closes save situations.</p>
+        <p className="text-xs text-slate-500 mt-2">Closes save situations. Reorder the bullpen in the Lineup tab to pick your closer &amp; setup man.</p>
       </Card>}
       <Card>
         <h3 className="font-bold mb-2">Bullpen <span className="text-slate-500 text-sm">({bullpen.length})</span></h3>
@@ -1120,8 +1207,10 @@ function LineupEditor({G, commit, tShow}){
   const team = G.teams[G.userTeamId];
   const ros = rosterOf(G, team.id);
   const hitters = ros.filter(p=>!p.isP);
-  const sp = ros.filter(p=>p.isP && p.role==="SP");
+  const allPitchers = ros.filter(p=>p.isP).sort((a,b)=>b.ovr-a.ovr); // any arm can be a starter
+  const penIds = bullpenOrder(team, G.players);                       // live bullpen priority
   const move = (arr, i, dir)=>{ const j=i+dir; if(j<0||j>=arr.length) return; [arr[i],arr[j]]=[arr[j],arr[i]]; commit(G); };
+  const moveBull = (i, dir)=>{ const arr=penIds.slice(); const j=i+dir; if(j<0||j>=arr.length) return; [arr[i],arr[j]]=[arr[j],arr[i]]; team.bullpen=arr; commit(G); };
   const swapHitter = (slot, newId)=>{
     newId = Number(newId);
     const cur = team.lineup[slot];
@@ -1197,7 +1286,7 @@ function LineupEditor({G, commit, tShow}){
                 <span className="w-8 text-slate-500 text-sm">SP{i+1}</span>
                 <OvrPill v={p?p.ovr:0}/>
                 <select value={id} onChange={e=>setRot(i, e.target.value)} className="bg-[#0b1220] rounded px-1 py-0.5 text-sm flex-1 border border-[#1d2940]">
-                  {sp.map(h=><option key={h.id} value={h.id}>{h.name} ({h.ovr})</option>)}
+                  {allPitchers.map(h=><option key={h.id} value={h.id}>{h.role} {h.name} ({h.ovr})</option>)}
                 </select>
                 <div className="flex flex-col">
                   <button onClick={()=>move(team.rotation,i,-1)} className="text-xs text-slate-400 leading-none">▲</button>
@@ -1207,7 +1296,29 @@ function LineupEditor({G, commit, tShow}){
             );
           })}
         </div>
-        <p className="text-xs text-slate-500 mt-2">Relievers are used automatically; your highest-OVR reliever closes games.</p>
+        <p className="text-xs text-slate-500 mt-2">Every team carries 5 starters; each pitches every 5th game. Any arm can be slotted as a starter.</p>
+      </Card>
+      <Card>
+        <h3 className="font-bold mb-2">Bullpen Priority</h3>
+        <div className="space-y-1">
+          {penIds.map((id,i)=>{
+            const p=G.players[id];
+            const role = i===0?"CL":i===1?"SU":"RP";
+            return (
+              <div key={id} className="flex items-center gap-2 bg-[#13203a] rounded px-2 py-1">
+                <span className={"w-8 text-xs font-bold "+(i===0?"text-emerald-400":i===1?"text-lime-400":"text-slate-500")}>{role}</span>
+                <OvrPill v={p?p.ovr:0}/>
+                <span className="flex-1 text-sm truncate">{p?p.name:"—"}</span>
+                <div className="flex flex-col">
+                  <button onClick={()=>moveBull(i,-1)} className="text-xs text-slate-400 leading-none">▲</button>
+                  <button onClick={()=>moveBull(i,1)} className="text-xs text-slate-400 leading-none">▼</button>
+                </div>
+              </div>
+            );
+          })}
+          {penIds.length===0 && <div className="text-sm text-slate-500">No relievers — your whole staff is in the rotation.</div>}
+        </div>
+        <p className="text-xs text-slate-500 mt-2">Order = leverage. <b className="text-emerald-400">CL</b> closes the 9th of save games, <b className="text-lime-400">SU</b> sets up the 8th, and your best arms work close, late innings. Mop-up arms (bottom) take blowouts.</p>
       </Card>
     </div>
   );
@@ -1699,15 +1810,16 @@ function OffseasonHub({G, commit, tShow, setTab}){
   const doProgression = ()=>{
     Object.values(G.players).forEach(p=>{
       p.age++;
-      // development toward potential when young, decline when old.
-      // AAA prospects (young & in the minors) develop a bit faster.
-      const fast = isAAAId(p.teamId) && p.age<=24;
-      const each = r=>{
-        if(p[r]===undefined) return;
-        if(p.age<=26){ p[r]=clamp(p[r]+rint(fast?0:-1, fast?4:3),20,99); }
-        else if(p.age>=31){ p[r]=clamp(p[r]-rint(0,3),20,99); }
-        else { p[r]=clamp(p[r]+rint(-1,1),20,99); }
-      };
+      // Directed development: young players climb toward their potential (faster the
+      // bigger the gap, faster still for prospects in AAA); older players decline.
+      const gap = p.pot - p.ovr;
+      let center;
+      if(p.age<=24)      center = clamp(0.8 + gap*0.14, 0.4, 3.5);
+      else if(p.age<=28) center = clamp(gap*0.10, -0.2, 1.4);
+      else if(p.age<=31) center = -0.4;
+      else               center = -1.3 - (p.age-31)*0.2;
+      if(isAAAId(p.teamId) && p.age<=24) center += 0.8;   // prospects develop faster in the minors
+      const each = r=>{ if(p[r]!==undefined) p[r]=clamp(round(p[r]+gauss(center,1.3)),20,99); };
       (p.isP?["stu","ctl","stm"]:["con","pow","eye","spd","def"]).forEach(each);
       computeOvr(p);
       if(p.age<=27 && p.ovr>p.pot) p.pot=p.ovr; else if(p.age>28) p.pot=Math.max(p.ovr,p.pot-1);
