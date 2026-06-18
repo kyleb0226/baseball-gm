@@ -19,10 +19,20 @@ Your franchise saves automatically to the browser (localStorage).
 ## Features
 
 - Pick from 30 fictional teams in two leagues, then play a 162-game season
+- **Freshly randomized league every new franchise** — optionally shuffle cities across
+  divisions, or enter a **seed** (number or word) to reproduce/share an exact league
 - Sim controls: day / week / month / straight to the playoffs
-- Roster management + editable batting order and starting rotation
-- Inning-by-inning, plate-appearance sim engine driven by player ratings — produces realistic stat lines
-- Standings and full stat leaderboards (AVG, HR, RBI, OPS, ERA, K, W, SV, WHIP, …)
+- Deeper rosters (~30 players: a full lineup + bench and a 5-man rotation + bullpen), with a
+  **fatter talent curve** so star players genuinely stand out
+- Roster screen split into **Starting Lineup / Bench / Rotation / Closer / Bullpen** with ST/BN
+  badges; editable batting order and rotation
+- Inning-by-inning, plate-appearance sim engine driven by player ratings — including stolen
+  bases and a rotating bullpen — produces realistic stat lines
+- Rich box-score stats everywhere: hitters show G/AB/R/H/HR/RBI/BB/SO/SB and AVG/OBP/SLG/OPS;
+  pitchers show GS/IP/H/BB/SO/ER and ERA/WHIP/SV
+- Click any player for a detail card with season + career splits
+- Standings and 17 stat leaderboards (AVG, HR, RBI, OBP, SLG, OPS, Hits, Runs, BB, SB, ERA,
+  Innings, K, K−BB, W, SV, WHIP) with qualifiers that scale through the season
 - Trades with value-based AI, free agency with a salary cap, contracts & budget view
 - Full postseason: Wild Card → Division Series → League Championship → World Series
 - Multi-season franchise loop: player aging/development, retirements, expiring contracts,

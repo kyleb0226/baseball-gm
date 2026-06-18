@@ -29,15 +29,28 @@ const { useState, useEffect, useRef, useMemo } = React;
    ========================================================================= */
 
 /* ----------------------------- RNG / utils ----------------------------- */
-const rint = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
-const pick = arr => arr[Math.floor(Math.random() * arr.length)];
-const chance = p => Math.random() < p;
+// Pluggable RNG: defaults to Math.random, but league generation can swap in a
+// seeded PRNG (mulberry32) for reproducible/shareable leagues, then restore.
+let _rng = Math.random;
+function setRng(fn){ _rng = fn || Math.random; }
+function mulberry32(seed){
+  let a = seed >>> 0;
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rint = (a, b) => Math.floor(_rng() * (b - a + 1)) + a;
+const pick = arr => arr[Math.floor(_rng() * arr.length)];
+const chance = p => _rng() < p;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const round = Math.round;
 function gauss(mean, sd) {
   let u = 0, v = 0;
-  while (u === 0) u = Math.random();
-  while (v === 0) v = Math.random();
+  while (u === 0) u = _rng();
+  while (v === 0) v = _rng();
   return mean + sd * Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
 }
 const rateGauss = (mean, sd) => clamp(round(gauss(mean, sd)), 20, 99);
@@ -94,9 +107,14 @@ function emptyPitStats(){return{G:0,GS:0,OUT:0,H:0,ER:0,BB:0,SO:0,W:0,L:0,SV:0,H
 
 function makeHitter(pos, ageRange){
   const age = rint(ageRange[0], ageRange[1]);
-  const con = rateGauss(55,14), pow = rateGauss(52,16), eye = rateGauss(52,13);
-  const spd = rateGauss(pos==="CF"?62:50, 14);
-  const def = rateGauss(["SS","CF","C","2B"].includes(pos)?60:50, 13);
+  let con = rateGauss(57,14), pow = rateGauss(52,15), eye = rateGauss(53,13);
+  let spd = rateGauss(pos==="CF"?62:50, 14);
+  let def = rateGauss(["SS","CF","C","2B"].includes(pos)?60:50, 13);
+  // ~8% of players are "stars" — a fat top end so elite talent stands out
+  if(chance(0.08)){
+    const b = rint(8,18);
+    con = clamp(con+b,20,99); pow = clamp(pow+b,20,99); eye = clamp(eye+round(b/2),20,99);
+  }
   const p = {
     id: uid(), name: genName(), age, pos, isP:false,
     bats: chance(0.72)?"R":(chance(0.85)?"L":"S"),
@@ -108,9 +126,14 @@ function makeHitter(pos, ageRange){
 }
 function makePitcher(role, ageRange){
   const age = rint(ageRange[0], ageRange[1]);
-  const stu = rateGauss(role==="SP"?55:58, 14);
-  const ctl = rateGauss(54,13);
-  const stm = rateGauss(role==="SP"?62:40, 12);
+  let stu = rateGauss(role==="SP"?58:60, 14);
+  let ctl = rateGauss(56,13);
+  let stm = rateGauss(role==="SP"?62:40, 12);
+  // ~8% of arms are "stars"
+  if(chance(0.08)){
+    const b = rint(8,18);
+    stu = clamp(stu+b,20,99); ctl = clamp(ctl+round(b/2),20,99);
+  }
   const p = {
     id: uid(), name: genName(), age, pos: role, role, isP:true,
     throws: chance(0.7)?"R":"L",
@@ -158,12 +181,12 @@ function makeTeam(def, idx){
     name: city+" "+nick, w:0, l:0, rs:0, ra:0,
     budget: rint(120,225), lineup:[], rotation:[], userControlled:false };
   const players = [];
-  // position players: 1 starter each + bench
+  // position players: 1 starter each (9) + 7 bench/reserve = 16 hitters
   HIT_POS.forEach(pos => players.push(makeHitter(pos,[23,33])));
-  for(let i=0;i<4;i++) players.push(makeHitter(pick(INF_OF),[22,34]));
-  // pitchers
+  for(let i=0;i<7;i++) players.push(makeHitter(pick(INF_OF),[22,34]));
+  // pitchers: 5 SP + 9 RP = 14 arms  (30-man roster overall)
   for(let i=0;i<5;i++) players.push(makePitcher("SP",[23,34]));
-  for(let i=0;i<8;i++) players.push(makePitcher("RP",[22,34]));
+  for(let i=0;i<9;i++) players.push(makePitcher("RP",[22,34]));
   players.forEach(p=>p.teamId=idx);
   t._players = players;
   return t;
@@ -194,12 +217,30 @@ function autoSetLineups(team, players){
   team.rotation = sp.length?sp:pitchers.slice(0,5).map(p=>p.id);
 }
 
-function generateLeague(userTeamId){
-  const teams = TEAM_DEFS.map((d,i)=>makeTeam(d,i));
+// Shuffle which city/nickname identities land in which league+division slot,
+// keeping the league/division structure (15+15, 5 per division) fixed and the
+// user's selected franchise pinned to its index so userTeamId stays valid.
+function shuffledTeamDefs(pinIdx){
+  const defs = TEAM_DEFS.map(d=>d.slice());
+  const slots = defs.map((_,i)=>i).filter(i=>i!==pinIdx);
+  const ids = slots.map(i=>[defs[i][0],defs[i][1],defs[i][2]]);
+  for(let i=ids.length-1;i>0;i--){ const j=Math.floor(_rng()*(i+1)); [ids[i],ids[j]]=[ids[j],ids[i]]; }
+  slots.forEach((slot,k)=>{ defs[slot][0]=ids[k][0]; defs[slot][1]=ids[k][1]; defs[slot][2]=ids[k][2]; });
+  return defs;
+}
+
+function generateLeague(userTeamId, opts={}){
+  const { seed=null, shuffle=false } = opts;
+  // Seed only the league build; restore Math.random afterward so the season
+  // sim stays genuinely random even for a reproducible league.
+  if(seed!=null && !Number.isNaN(seed)) setRng(mulberry32(seed >>> 0));
+  const defs = shuffle ? shuffledTeamDefs(userTeamId) : TEAM_DEFS;
+  const teams = defs.map((d,i)=>makeTeam(d,i));
   const players = {};
   teams.forEach(t=>{ t._players.forEach(p=>players[p.id]=p); delete t._players; });
   teams.forEach(t=>autoSetLineups(t, Object.values(players)));
   teams[userTeamId].userControlled = true;
+  setRng(null);
   return { teams, players };
 }
 
@@ -247,7 +288,7 @@ function paOutcome(bat, pit, defN){
   const ps=n01(pit.stu), pc=n01(pit.ctl);
   let kP = clamp(0.215 + 0.13*(ps-0.5) - 0.11*(bc-0.5) + 0.05*(pc-0.5), 0.04, 0.45);
   let bbP = clamp(0.085 + 0.08*(be-0.5) - 0.08*(pc-0.5) - 0.02*(ps-0.5), 0.02, 0.22);
-  let hrP = clamp(0.032 + 0.055*(bp-0.5) - 0.028*(ps-0.5), 0.004, 0.11);
+  let hrP = clamp(0.024 + 0.072*(bp-0.5) - 0.030*(ps-0.5), 0.003, 0.13);
   const r = Math.random();
   if(r < kP) return {o:"K"};
   if(r < kP+bbP) return {o:"BB"};
@@ -328,33 +369,55 @@ function simGame(home, away, players){
   cur[home.id].p.stats.G++; cur[away.id].p.stats.G++;
   const usedPen = { [home.id]:[], [away.id]:[] };
 
-  function maybeReliever(battingTeamId, pitchTeamId){
-    const c = cur[pitchTeamId];
-    if(c.gs && c.outs >= starterTarget(pitchTeamId)){
-      const pen = arms[pitchTeamId].pen;
-      // bring in middle reliever (not the closer yet)
-      const next = pen.find(rp=>!usedPen[pitchTeamId].includes(rp.id) && rp.id!==(pen[pen.length-1]||{}).id) || pen[0];
-      if(next){ usedPen[pitchTeamId].push(next.id); next.stats.G++; c.p=next; c.gs=false; c.outs2=0; }
-    } else if(!c.gs){
-      // rotate relievers every ~3 outs
-      c.outs2 = (c.outs2||0);
+  // bring a fresh arm into the game (counts an appearance the first time only)
+  function bringIn(pitId, p){
+    if(!p) return;
+    const c = cur[pitId];
+    if(c.p && c.p.id===p.id) return;
+    c.p = p; c.gs = false; c.segOuts = 0;
+    if(!usedPen[pitId].includes(p.id)){ usedPen[pitId].push(p.id); p.stats.G++; }
+  }
+  // decide whether to change pitchers before the next batter
+  function changePitcher(batId, pitId, inning){
+    const c = cur[pitId];
+    const pen = arms[pitId].pen;
+    const closer = pen[pen.length-1];
+    if(c.gs){
+      // pull the starter once he's hit his outs target
+      if(c.outs >= starterTarget(pitId)){
+        const next = pen.find(rp=>!usedPen[pitId].includes(rp.id) && rp.id!==(closer||{}).id) || pen[0];
+        bringIn(pitId, next);
+      }
+      return;
+    }
+    // a reliever is in: only consider a change at an inning boundary (~3 outs in)
+    if((c.segOuts||0) < 3) return;
+    const lead = score[pitId] - score[batId];
+    if(inning>=8 && closer && lead>0 && lead<=3 && c.p.id!==closer.id && !usedPen[pitId].includes(closer.id)){
+      bringIn(pitId, closer); // save situation -> closer
+    } else {
+      const next = pen.find(rp=>!usedPen[pitId].includes(rp.id) && rp.id!==(closer||{}).id);
+      if(next) bringIn(pitId, next); // otherwise cycle to the next fresh arm
     }
   }
 
   function halfInning(batId, pitId, inning, isBottom){
     let outs=0; const bases=[null,null,null];
     const hitters = lineups[batId];
-    let relCount = 0;
     while(outs<3){
-      // pitcher change logic
-      const c = cur[pitId];
-      maybeReliever(batId, pitId);
-      // in late innings switch to closer for the pitching team if protecting small lead at home-team's save spot
-      if(!c.gs && inning>=8){
-        const pen = arms[pitId].pen; const closer = pen[pen.length-1];
-        const lead = score[pitId]-score[batId];
-        if(closer && lead>0 && lead<=3 && c.p.id!==closer.id && !usedPen[pitId].includes(closer.id)){
-          usedPen[pitId].push(closer.id); closer.stats.G++; c.p=closer;
+      changePitcher(batId, pitId, inning);
+      // stolen-base attempt: runner on first with second base open
+      if(bases[0] && !bases[1]){
+        const sp = n01(bases[0].spd);
+        if(chance(clamp(0.05 + 0.28*(sp-0.5), 0, 0.22))){
+          const pit = cur[pitId].p;
+          if(chance(clamp(0.66 + 0.28*(sp-0.5), 0.45, 0.92))){
+            bases[1]=bases[0]; bases[0]=null; bases[1].stats.SB++;      // safe
+          } else {
+            bases[0]=null; outs++; cur[pitId].outs++;                  // caught stealing
+            cur[pitId].segOuts=(cur[pitId].segOuts||0)+1; pit.stats.OUT++;
+            if(outs>=3) break;
+          }
         }
       }
       const pitcher = cur[pitId].p;
@@ -369,11 +432,11 @@ function simGame(home, away, players){
         cur[pitId].er+=r; pitcher.stats.ER+=r;
       } else if(res.o==="K"){
         bat.stats.AB++; bat.stats.SO++; pitcher.stats.SO++;
-        outs++; cur[pitId].outs++; pitcher.stats.OUT++;
+        outs++; cur[pitId].outs++; cur[pitId].segOuts=(cur[pitId].segOuts||0)+1; pitcher.stats.OUT++;
       } else if(res.o==="OUT"){
         bat.stats.AB++;
         // small chance a baserunner scores on productive out
-        outs++; cur[pitId].outs++; pitcher.stats.OUT++;
+        outs++; cur[pitId].outs++; cur[pitId].segOuts=(cur[pitId].segOuts||0)+1; pitcher.stats.OUT++;
       } else {
         // hit
         bat.stats.AB++; bat.stats.H++; pitcher.stats.H++;
@@ -485,6 +548,7 @@ const era = s => s.OUT? (s.ER*27/s.OUT) : 0;
 const whip= s => s.OUT? ((s.BB+s.H)/(s.OUT/3)) : 0;
 const f3 = v => v.toFixed(3).replace(/^0/,"");
 const f2 = v => v.toFixed(2);
+const f1 = v => v.toFixed(1);
 
 /* ----------------------------- save/load ------------------------------- */
 const SAVE_KEY = "pocketgm_baseball_v1";
@@ -493,11 +557,12 @@ function loadGame(){ try{ const s=localStorage.getItem(SAVE_KEY); return s?JSON.
 function clearSave(){ localStorage.removeItem(SAVE_KEY); }
 
 /* ----------------------------- new game -------------------------------- */
-function newGame(userTeamId){
-  const { teams, players } = generateLeague(userTeamId);
+function newGame(userTeamId, opts={}){
+  const { teams, players } = generateLeague(userTeamId, opts);
   const schedule = buildSchedule(teams.map(t=>t.id));
   return {
     season: 2026, day: 0, phase: "regular",
+    seed: (opts && opts.seed!=null && !Number.isNaN(opts.seed)) ? (opts.seed>>>0) : null,
     userTeamId, teams, players, schedule,
     freeAgents: [], draftClass: [], draftOrder: [], draftPick: 0,
     playoffs: null, champion: null, log: [],
@@ -515,7 +580,7 @@ function App(){
   const commit = g => { saveGame(g); setG({...g}); };
   const tShow = msg => { setToast(msg); setTimeout(()=>setToast(""),2500); };
 
-  if(!G) return <Splash onStart={(id)=>{ const g=newGame(id); commit(g); }} />;
+  if(!G) return <Splash onStart={(id,opts)=>{ const g=newGame(id,opts); commit(g); }} />;
 
   const user = G.teams[G.userTeamId];
   const players = G.players;
@@ -576,12 +641,23 @@ function OvrPill({v}){
   const c = v>=80?"bg-emerald-500 text-slate-900":v>=70?"bg-lime-500 text-slate-900":v>=60?"bg-yellow-500 text-slate-900":v>=50?"bg-orange-500 text-slate-900":"bg-slate-600 text-slate-100";
   return <span className={"inline-block w-8 text-center rounded font-bold text-xs py-0.5 "+c}>{v}</span>;
 }
+function StatusPill({s}){
+  const st = s==="ST";
+  return <span className={"inline-block w-7 text-center rounded font-bold text-[10px] py-0.5 "+(st?"bg-emerald-600 text-white":"bg-slate-600 text-slate-200")}>{s}</span>;
+}
 
 /* ----------------------------- Splash ---------------------------------- */
 function Splash({onStart}){
   const [sel, setSel] = useState(0);
+  const [shuffle, setShuffle] = useState(false);
+  const [seedStr, setSeedStr] = useState("");
   const groups = {};
   TEAM_DEFS.forEach((d,i)=>{ const k=d[3]; (groups[k]=groups[k]||[]).push([d,i]); });
+  const start = ()=>{
+    const s = seedStr.trim();
+    const seed = s==="" ? null : (/^\d+$/.test(s) ? Number(s) : hashSeed(s));
+    onStart(sel, { seed, shuffle });
+  };
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6">
       <div className="text-5xl font-black mb-1">⚾ POCKET <span className="text-emerald-400">GM</span></div>
@@ -601,11 +677,33 @@ function Splash({onStart}){
           </Card>
         ))}
       </div>
-      <button onClick={()=>onStart(sel)} className="mt-6 px-8 py-3 bg-emerald-500 text-slate-900 font-bold rounded-xl hover:bg-emerald-400">
+
+      <Card className="mt-4 w-full max-w-3xl">
+        <div className="flex flex-wrap items-center gap-4">
+          <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+            <input type="checkbox" checked={shuffle} onChange={e=>setShuffle(e.target.checked)} />
+            🎲 Randomize cities across divisions
+          </label>
+          <div className="flex items-center gap-2 text-sm text-slate-300">
+            <span>Seed</span>
+            <input value={seedStr} onChange={e=>setSeedStr(e.target.value)} placeholder="optional"
+              className="bg-[#0b1220] border border-[#1d2940] rounded px-2 py-1 text-sm w-36" />
+          </div>
+          <span className="text-xs text-slate-500">A fresh league of players is generated either way; a seed makes it reproducible.</span>
+        </div>
+      </Card>
+
+      <button onClick={start} className="mt-6 px-8 py-3 bg-emerald-500 text-slate-900 font-bold rounded-xl hover:bg-emerald-400">
         Start as {TEAM_DEFS[sel][0]} {TEAM_DEFS[sel][1]} →
       </button>
     </div>
   );
+}
+// turn an arbitrary text seed into a 32-bit number (so seeds can be words too)
+function hashSeed(str){
+  let h = 2166136261 >>> 0;
+  for(let i=0;i<str.length;i++){ h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
 }
 
 /* ----------------------------- Hub / sim ------------------------------- */
@@ -714,90 +812,190 @@ function rosterOf(G, teamId){ return Object.values(G.players).filter(p=>p.teamId
 function payroll(G, teamId){ return rosterOf(G,teamId).reduce((s,p)=>s+p.salary,0); }
 
 function Roster({G, team, commit}){
+  const [sel, setSel] = useState(null);
   const ros = rosterOf(G, team.id);
-  const hitters = ros.filter(p=>!p.isP).sort((a,b)=>b.ovr-a.ovr);
-  const pitchers = ros.filter(p=>p.isP).sort((a,b)=>b.ovr-a.ovr);
   const release = (p)=>{
     if(!confirm(`Release ${p.name}? He becomes a free agent.`)) return;
     p.teamId=null; team.lineup=team.lineup.filter(id=>id!==p.id); team.rotation=team.rotation.filter(id=>id!==p.id);
     G.freeAgents.push(p.id); commit(G);
   };
+
+  // hitters: starting lineup (in batting order) vs bench
+  const lineupHits = team.lineup.map(id=>G.players[id]).filter(p=>p&&!p.isP);
+  const benchHits = ros.filter(p=>!p.isP && !team.lineup.includes(p.id)).sort((a,b)=>b.ovr-a.ovr);
+  // pitchers: rotation vs closer vs bullpen
+  const rotation = team.rotation.map(id=>G.players[id]).filter(p=>p&&p.isP);
+  const relievers = ros.filter(p=>p.isP && !team.rotation.includes(p.id)).sort((a,b)=>b.ovr-a.ovr);
+  const closer = relievers[0] || null;
+  const bullpen = closer ? relievers.slice(1) : relievers;
+  const rotSlots = rotation.map((_,i)=>"SP"+(i+1));
+
+  const open = p=>setSel(p);
   return (
     <div className="space-y-4">
       <Card>
         <div className="flex justify-between items-center mb-2">
-          <h3 className="font-bold">Position Players <span className="text-slate-500 text-sm">({hitters.length})</span></h3>
+          <h3 className="font-bold">Starting Lineup <span className="text-slate-500 text-sm">({lineupHits.length})</span></h3>
           <span className="text-xs text-slate-500">Payroll {money(payroll(G,team.id))} / {money(team.budget)}</span>
         </div>
-        <HitterTable players={hitters} onRelease={release} showAction />
+        <HitterTable players={lineupHits} onRelease={release} showAction bo onName={open} />
       </Card>
       <Card>
-        <h3 className="font-bold mb-2">Pitchers <span className="text-slate-500 text-sm">({pitchers.length})</span></h3>
-        <PitcherTable players={pitchers} onRelease={release} showAction />
+        <h3 className="font-bold mb-2">Bench <span className="text-slate-500 text-sm">({benchHits.length})</span></h3>
+        {benchHits.length
+          ? <HitterTable players={benchHits} onRelease={release} showAction badge="BN" onName={open} />
+          : <div className="text-sm text-slate-500">No bench hitters.</div>}
       </Card>
+      <Card>
+        <h3 className="font-bold mb-2">Starting Rotation <span className="text-slate-500 text-sm">({rotation.length})</span></h3>
+        <PitcherTable players={rotation} onRelease={release} showAction slots={rotSlots} onName={open} />
+      </Card>
+      {closer && <Card>
+        <h3 className="font-bold mb-2">Closer</h3>
+        <PitcherTable players={[closer]} onRelease={release} showAction slots={["CL"]} onName={open} />
+        <p className="text-xs text-slate-500 mt-2">Your highest-OVR reliever automatically closes save situations.</p>
+      </Card>}
+      <Card>
+        <h3 className="font-bold mb-2">Bullpen <span className="text-slate-500 text-sm">({bullpen.length})</span></h3>
+        {bullpen.length
+          ? <PitcherTable players={bullpen} onRelease={release} showAction badge="BN" onName={open} />
+          : <div className="text-sm text-slate-500">No other relievers.</div>}
+      </Card>
+      {sel && <PlayerModal p={sel} team={team} onClose={()=>setSel(null)} />}
     </div>
   );
 }
 
-function HitterTable({players, onRelease, showAction}){
+function PlayerModal({p, team, onClose}){
+  const s=p.stats, c=p.career;
+  const hitCols = [["G","G"],["PA","PA"],["AB","AB"],["R","R"],["H","H"],["_2B","2B"],["_3B","3B"],["HR","HR"],["RBI","RBI"],["BB","BB"],["SO","SO"],["SB","SB"]];
+  const pitCols = [["G","G"],["GS","GS"],["W","W"],["L","L"],["SV","SV"],["H","H"],["BB","BB"],["SO","SO"],["ER","ER"]];
+  const cols = p.isP?pitCols:hitCols;
+  const rateRow = p.isP
+    ? [["STU",p.stu],["CTL",p.ctl],["STM",p.stm]]
+    : [["CON",p.con],["POW",p.pow],["EYE",p.eye],["SPD",p.spd],["DEF",p.def]];
+  const slash = st => p.isP
+    ? `${st.OUT?f1(ip(st)):"0.0"} IP · ${st.OUT?f2(era(st)):"—"} ERA · ${st.OUT?f2(whip(st)):"—"} WHIP`
+    : `${st.AB?f3(avg(st)):".---"} / ${(st.AB+st.BB)?f3(obp(st)):".---"} / ${st.AB?f3(slg(st)):".---"}`;
+  const line = (label, st)=>(
+    <div className="overflow-x-auto">
+      <div className="text-xs text-slate-400 mb-1">{label} — <span className="text-slate-300">{slash(st)}</span></div>
+      <table className="w-full text-sm tnum">
+        <thead><tr className="text-slate-500 text-xs border-b border-[#1d2940]">{cols.map(([k,h])=><th key={k}>{h}</th>)}</tr></thead>
+        <tbody><tr>{cols.map(([k])=><td key={k} className="text-center py-1">{st[k]||0}</td>)}</tr></tbody>
+      </table>
+    </div>
+  );
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-[#101a30] border border-[#1d2940] rounded-xl p-4 max-w-2xl w-full max-h-[85vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center gap-3 mb-3">
+          <OvrPill v={p.ovr}/>
+          <div>
+            <div className="font-bold text-lg">{p.name}</div>
+            <div className="text-xs text-slate-400">{p.pos} · Age {p.age} · POT {p.pot} · {money(p.salary)}/{p.years}y · {team?team.name:"Free Agent"}</div>
+          </div>
+          <button onClick={onClose} className="ml-auto text-slate-400 hover:text-white text-xl leading-none">×</button>
+        </div>
+        <div className="flex gap-1 mb-3 flex-wrap">
+          {rateRow.map(([k,v])=><span key={k} className="text-xs bg-[#16213a] rounded px-2 py-1">{k} <b className="text-slate-200">{v}</b></span>)}
+        </div>
+        <div className="space-y-3">
+          {line("This Season", s)}
+          {line("Career (prior seasons)", c)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NameCell({p, onName}){
+  const sub = p.isP ? p.throws+"HP" : p.bats;
+  return onName
+    ? <button onClick={()=>onName(p)} className="text-left font-medium hover:text-emerald-300">{p.name} <span className="text-slate-600 text-xs">{sub}</span></button>
+    : <span className="font-medium">{p.name} <span className="text-slate-600 text-xs">{sub}</span></span>;
+}
+
+function HitterTable({players, onRelease, showAction, badge, bo, onName}){
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm tnum">
         <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]">
+          {bo&&<th className="pr-1">#</th>}{badge&&<th></th>}
           <th className="text-left py-1 pr-2">Pos</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th>
           <th>CON</th><th>POW</th><th>EYE</th><th>SPD</th><th>DEF</th>
-          <th>AVG</th><th>HR</th><th>RBI</th><th>OPS</th><th className="text-right pr-2">Salary</th>{showAction&&<th></th>}
+          <th>G</th><th>AB</th><th>R</th><th>H</th><th>HR</th><th>RBI</th><th>BB</th><th>SO</th><th>SB</th>
+          <th>AVG</th><th>OBP</th><th>SLG</th><th>OPS</th><th className="text-right pr-2">Salary</th>{showAction&&<th></th>}
         </tr></thead>
         <tbody>
-          {players.map(p=>(
+          {players.map((p,i)=>{ const s=p.stats; return (
             <tr key={p.id} className="border-b border-[#15203a] hover:bg-[#13203a]">
+              {bo&&<td className="text-center text-slate-500">{i+1}</td>}
+              {badge&&<td className="py-1"><StatusPill s={badge}/></td>}
               <td className="py-1 pr-2 text-slate-400">{p.pos}</td>
-              <td className="text-left font-medium">{p.name} <span className="text-slate-600 text-xs">{p.bats}</span></td>
+              <td className="text-left"><NameCell p={p} onName={onName}/></td>
               <td className="text-center">{p.age}</td>
               <td className="text-center"><OvrPill v={p.ovr}/></td>
               <td className="text-center text-slate-400">{p.pot}</td>
               <td className="text-center">{p.con}</td><td className="text-center">{p.pow}</td><td className="text-center">{p.eye}</td><td className="text-center">{p.spd}</td><td className="text-center">{p.def}</td>
-              <td className="text-center">{p.stats.AB?f3(avg(p.stats)):"—"}</td>
-              <td className="text-center">{p.stats.HR||"—"}</td>
-              <td className="text-center">{p.stats.RBI||"—"}</td>
-              <td className="text-center">{p.stats.AB?f3(ops(p.stats)):"—"}</td>
+              <td className="text-center text-slate-400">{s.G||"—"}</td>
+              <td className="text-center">{s.AB||"—"}</td>
+              <td className="text-center">{s.R||"—"}</td>
+              <td className="text-center">{s.H||"—"}</td>
+              <td className="text-center">{s.HR||"—"}</td>
+              <td className="text-center">{s.RBI||"—"}</td>
+              <td className="text-center">{s.BB||"—"}</td>
+              <td className="text-center">{s.SO||"—"}</td>
+              <td className="text-center">{s.SB||"—"}</td>
+              <td className="text-center">{s.AB?f3(avg(s)):"—"}</td>
+              <td className="text-center">{(s.AB+s.BB)?f3(obp(s)):"—"}</td>
+              <td className="text-center">{s.AB?f3(slg(s)):"—"}</td>
+              <td className="text-center">{s.AB?f3(ops(s)):"—"}</td>
               <td className="text-right pr-2 text-slate-300">{money(p.salary)}<span className="text-slate-600 text-xs"> {p.years}y</span></td>
               {showAction&&<td><button onClick={()=>onRelease(p)} className="text-red-400 text-xs hover:text-red-300">cut</button></td>}
             </tr>
-          ))}
+          ); })}
         </tbody>
       </table>
     </div>
   );
 }
 
-function PitcherTable({players, onRelease, showAction}){
+function PitcherTable({players, onRelease, showAction, badge, slots, onName}){
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm tnum">
         <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]">
+          {slots&&<th className="pr-1">Slot</th>}{badge&&<th></th>}
           <th className="text-left py-1 pr-2">Role</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th>
           <th>STU</th><th>CTL</th><th>STM</th>
-          <th>W-L</th><th>ERA</th><th>SO</th><th>SV</th><th>WHIP</th><th className="text-right pr-2">Salary</th>{showAction&&<th></th>}
+          <th>W-L</th><th>GS</th><th>IP</th><th>H</th><th>BB</th><th>SO</th><th>ER</th><th>ERA</th><th>WHIP</th><th>SV</th><th className="text-right pr-2">Salary</th>{showAction&&<th></th>}
         </tr></thead>
         <tbody>
-          {players.map(p=>(
+          {players.map((p,i)=>{ const s=p.stats; return (
             <tr key={p.id} className="border-b border-[#15203a] hover:bg-[#13203a]">
+              {slots&&<td className="text-center text-slate-400 text-xs">{slots[i]}</td>}
+              {badge&&<td className="py-1"><StatusPill s={badge}/></td>}
               <td className="py-1 pr-2 text-slate-400">{p.role}</td>
-              <td className="text-left font-medium">{p.name} <span className="text-slate-600 text-xs">{p.throws}HP</span></td>
+              <td className="text-left"><NameCell p={p} onName={onName}/></td>
               <td className="text-center">{p.age}</td>
               <td className="text-center"><OvrPill v={p.ovr}/></td>
               <td className="text-center text-slate-400">{p.pot}</td>
               <td className="text-center">{p.stu}</td><td className="text-center">{p.ctl}</td><td className="text-center">{p.stm}</td>
-              <td className="text-center">{p.stats.W}-{p.stats.L}</td>
-              <td className="text-center">{p.stats.OUT?f2(era(p.stats)):"—"}</td>
-              <td className="text-center">{p.stats.SO||"—"}</td>
-              <td className="text-center">{p.stats.SV||"—"}</td>
-              <td className="text-center">{p.stats.OUT?f2(whip(p.stats)):"—"}</td>
+              <td className="text-center">{s.W}-{s.L}</td>
+              <td className="text-center text-slate-400">{s.GS||"—"}</td>
+              <td className="text-center">{s.OUT?f1(ip(s)):"—"}</td>
+              <td className="text-center">{s.H||"—"}</td>
+              <td className="text-center">{s.BB||"—"}</td>
+              <td className="text-center">{s.SO||"—"}</td>
+              <td className="text-center">{s.ER||"—"}</td>
+              <td className="text-center">{s.OUT?f2(era(s)):"—"}</td>
+              <td className="text-center">{s.OUT?f2(whip(s)):"—"}</td>
+              <td className="text-center">{s.SV||"—"}</td>
               <td className="text-right pr-2 text-slate-300">{money(p.salary)}<span className="text-slate-600 text-xs"> {p.years}y</span></td>
               {showAction&&<td><button onClick={()=>onRelease(p)} className="text-red-400 text-xs hover:text-red-300">cut</button></td>}
             </tr>
-          ))}
+          ); })}
         </tbody>
       </table>
     </div>
@@ -909,8 +1107,12 @@ function Standings({G}){
 /* ----------------------------- Leaders --------------------------------- */
 function Leaders({G}){
   const all = Object.values(G.players);
-  const hitters = all.filter(p=>!p.isP && p.stats.PA>=20);
-  const pitchers = all.filter(p=>p.isP && p.stats.OUT>=30);
+  // scale qualifier thresholds with games played so boards read right all season
+  const gpMax = Math.max(1, ...G.teams.map(t=>t.w+t.l));
+  const paQual = Math.max(20, round(gpMax*2.5));
+  const outQual = Math.max(30, round(gpMax*1.5));
+  const hitters = all.filter(p=>!p.isP && p.stats.PA>=paQual);
+  const pitchers = all.filter(p=>p.isP && p.stats.OUT>=outQual);
   const tn = id => G.teams[id]?G.teams[id].abbr:"FA";
   const board = (title, list, fmt) => (
     <Card><h3 className="font-bold mb-2">{title}</h3>
@@ -932,11 +1134,17 @@ function Leaders({G}){
       {board("AVG", top(hitters,p=>avg(p.stats)), p=>f3(avg(p.stats)))}
       {board("Home Runs", top(hitters,p=>p.stats.HR), p=>p.stats.HR)}
       {board("RBI", top(hitters,p=>p.stats.RBI), p=>p.stats.RBI)}
+      {board("OBP", top(hitters,p=>obp(p.stats)), p=>f3(obp(p.stats)))}
+      {board("SLG", top(hitters,p=>slg(p.stats)), p=>f3(slg(p.stats)))}
       {board("OPS", top(hitters,p=>ops(p.stats)), p=>f3(ops(p.stats)))}
       {board("Hits", top(hitters,p=>p.stats.H), p=>p.stats.H)}
       {board("Runs", top(hitters,p=>p.stats.R), p=>p.stats.R)}
+      {board("Walks", top(hitters,p=>p.stats.BB), p=>p.stats.BB)}
+      {board("Stolen Bases", top(hitters.filter(p=>p.stats.SB>0),p=>p.stats.SB), p=>p.stats.SB)}
       {board("ERA", bot(pitchers,p=>era(p.stats)), p=>f2(era(p.stats)))}
+      {board("Innings", top(pitchers,p=>p.stats.OUT), p=>f1(ip(p.stats)))}
       {board("Strikeouts", top(pitchers,p=>p.stats.SO), p=>p.stats.SO)}
+      {board("K − BB", top(pitchers,p=>p.stats.SO-p.stats.BB), p=>p.stats.SO-p.stats.BB)}
       {board("Wins", top(pitchers,p=>p.stats.W), p=>p.stats.W)}
       {board("Saves", top(pitchers.filter(p=>p.stats.SV>0),p=>p.stats.SV), p=>p.stats.SV)}
       {board("WHIP", bot(pitchers,p=>whip(p.stats)), p=>f2(whip(p.stats)))}
@@ -1457,10 +1665,11 @@ function Draft({G, commit, tShow}){
   );
 }
 
+const ROSTER_CAP = 32;
 function trimRoster(G, team){
   let ros=rosterOf(G,team.id).sort((a,b)=>b.ovr-a.ovr);
-  // ensure minimum pitchers/hitters; cap at 30
-  while(ros.length>30){
+  // cap roster size (keep the best by OVR); supports the deeper 30-man rosters
+  while(ros.length>ROSTER_CAP){
     const cut=ros.pop();
     cut.teamId=null; if(!G.freeAgents.includes(cut.id)) G.freeAgents.push(cut.id);
   }
@@ -1472,7 +1681,7 @@ function startNewSeason(G){
     if(t.id===G.userTeamId) return;
     let ros=rosterOf(G,t.id);
     let guard=0;
-    while(ros.length<26 && G.freeAgents.length && guard<60){
+    while(ros.length<28 && G.freeAgents.length && guard<80){
       // pick best affordable FA
       const space=t.budget-payroll(G,t.id);
       const cand=G.freeAgents.map(id=>G.players[id]).filter(p=>p&&p.salary<=Math.max(space,1)).sort((a,b)=>b.ovr-a.ovr)[0];
