@@ -100,14 +100,23 @@ const TEAM_DEFS = [
 
 const HIT_POS = ["C","1B","2B","3B","SS","LF","CF","RF","DH"];
 const INF_OF = ["C","1B","2B","3B","SS","LF","CF","RF"];
+const FIELD_POS = ["C","1B","2B","3B","SS","LF","CF","RF"]; // 8 defensive slots (+ DH = 9th batter)
+
+/* MLB teams use ids 0..29; each has a AAA affiliate at id 30+i. A player's teamId
+   tells you which roster (and level) he's on. */
+const AAA_OFFSET = 30;
+const isAAAId = id => id!=null && id>=AAA_OFFSET;
+const aaaIdOf = mlbId => mlbId + AAA_OFFSET;
+const parentIdOf = aaaId => aaaId - AAA_OFFSET;
+function teamById(G, id){ return id==null?null : (id>=AAA_OFFSET ? G.aaaTeams[id-AAA_OFFSET] : G.teams[id]); }
 
 /* ----------------------------- player gen ------------------------------ */
 function emptyHitStats(){return{G:0,PA:0,AB:0,H:0,_2B:0,_3B:0,HR:0,R:0,RBI:0,BB:0,SO:0,SB:0};}
 function emptyPitStats(){return{G:0,GS:0,OUT:0,H:0,ER:0,BB:0,SO:0,W:0,L:0,SV:0,HRA:0};}
 
-function makeHitter(pos, ageRange){
+function makeHitter(pos, ageRange, meanAdj=0){
   const age = rint(ageRange[0], ageRange[1]);
-  let con = rateGauss(57,14), pow = rateGauss(52,15), eye = rateGauss(53,13);
+  let con = rateGauss(57+meanAdj,14), pow = rateGauss(52+meanAdj,15), eye = rateGauss(53+meanAdj,13);
   let spd = rateGauss(pos==="CF"?62:50, 14);
   let def = rateGauss(["SS","CF","C","2B"].includes(pos)?60:50, 13);
   // ~8% of players are "stars" — a fat top end so elite talent stands out
@@ -124,10 +133,10 @@ function makeHitter(pos, ageRange){
   computeOvr(p); setPotential(p); p.salary = salaryFor(p); p.years = rint(1,5);
   return p;
 }
-function makePitcher(role, ageRange){
+function makePitcher(role, ageRange, meanAdj=0){
   const age = rint(ageRange[0], ageRange[1]);
-  let stu = rateGauss(role==="SP"?58:60, 14);
-  let ctl = rateGauss(56,13);
+  let stu = rateGauss((role==="SP"?58:60)+meanAdj, 14);
+  let ctl = rateGauss(56+meanAdj,13);
   let stm = rateGauss(role==="SP"?62:40, 12);
   // ~8% of arms are "stars"
   if(chance(0.08)){
@@ -192,20 +201,60 @@ function makeTeam(def, idx){
   return t;
 }
 
+/* ----------------------------- AAA affiliate --------------------------- */
+function makeAAATeam(parent){
+  return { id: aaaIdOf(parent.id), parent: parent.id,
+    city: parent.city, nick: parent.nick, abbr: parent.abbr,
+    league: parent.league, division: parent.division,
+    name: parent.name+" (AAA)", aaa:true,
+    w:0, l:0, rs:0, ra:0, lineup:[], rotation:[], pos:{},
+    userControlled: parent.userControlled };
+}
+// younger, a notch weaker than the bigs, but full of high-ceiling prospects
+function buildAAARoster(aaaId){
+  const players=[];
+  FIELD_POS.forEach(pos => players.push(makeHitter(pos,[19,25],-6)));
+  for(let i=0;i<5;i++) players.push(makeHitter(pick(INF_OF),[19,26],-6)); // 14 hitters
+  for(let i=0;i<5;i++) players.push(makePitcher("SP",[19,25],-6));
+  for(let i=0;i<5;i++) players.push(makePitcher("RP",[19,26],-6));        // 10 arms
+  players.forEach(p=>{ p.teamId=aaaId; p.salary=Math.min(p.salary,0.7); });
+  return players;
+}
+
+/* ----------------------------- draft picks ----------------------------- */
+// Each MLB team owns 5 future picks (one per round). Picks are tradeable; the
+// draft order within a round follows the ORIGINAL team's reverse standings.
+function buildPicks(season, teams){
+  const picks=[];
+  for(let round=1; round<=5; round++){
+    teams.forEach(t=>picks.push({ id:"pk"+season+"-"+round+"-"+t.id, season, round, orig:t.id, owner:t.id }));
+  }
+  return picks;
+}
+function pickSlot(G, origId){ // 0 = projected worst team = first pick
+  return [...G.teams].sort((a,b)=>pct(a)-pct(b)).map(t=>t.id).indexOf(origId);
+}
+function pickValue(G, pick){
+  const slot = pickSlot(G, pick.orig);            // 0..29 (0 best)
+  const roundBase = [0,16,8,4.5,2.5,1.4][pick.round] || 1;
+  const v = roundBase * (1 - slot/42);            // earlier slot worth more
+  return Math.max(0.3, round(v*10)/10);
+}
+
 function autoSetLineups(team, players){
   const all = Array.isArray(players) ? players : Object.values(players);
   const roster = all.filter(p=>p.teamId===team.id);
   const hitters = roster.filter(p=>!p.isP).sort((a,b)=>b.ovr-a.ovr);
   const pitchers = roster.filter(p=>p.isP);
-  // pick best at each defensive slot, then DH = best leftover
-  const used = new Set(); const lineup = [];
-  ["C","1B","2B","3B","SS","LF","CF","RF"].forEach(pos=>{
+  // pick best at each defensive slot, then DH = best leftover; record assignments
+  const used = new Set(); const lineup = []; const posMap = {};
+  FIELD_POS.forEach(pos=>{
     let best=null;
     for(const h of hitters){ if(used.has(h.id)) continue; if(h.pos===pos){best=h;break;} }
     if(!best){ for(const h of hitters){ if(!used.has(h.id)){best=h;break;} } }
-    if(best){ used.add(best.id); lineup.push(best.id); }
+    if(best){ used.add(best.id); lineup.push(best.id); posMap[best.id]=pos; }
   });
-  const dh = hitters.find(h=>!used.has(h.id)); if(dh){used.add(dh.id);lineup.push(dh.id);}
+  const dh = hitters.find(h=>!used.has(h.id)); if(dh){used.add(dh.id);lineup.push(dh.id);posMap[dh.id]="DH";}
   // order by a rough lineup logic: speed/eye top, power middle
   const ids = lineup.slice();
   ids.sort((a,b)=>{
@@ -213,6 +262,7 @@ function autoSetLineups(team, players){
     return (pb.con+pb.eye) - (pa.con+pa.eye);
   });
   team.lineup = ids.slice(0,9);
+  team.pos = posMap;
   const sp = pitchers.filter(p=>p.role==="SP").sort((a,b)=>b.ovr-a.ovr).slice(0,5).map(p=>p.id);
   team.rotation = sp.length?sp:pitchers.slice(0,5).map(p=>p.id);
 }
@@ -236,12 +286,16 @@ function generateLeague(userTeamId, opts={}){
   if(seed!=null && !Number.isNaN(seed)) setRng(mulberry32(seed >>> 0));
   const defs = shuffle ? shuffledTeamDefs(userTeamId) : TEAM_DEFS;
   const teams = defs.map((d,i)=>makeTeam(d,i));
+  teams[userTeamId].userControlled = true;
   const players = {};
   teams.forEach(t=>{ t._players.forEach(p=>players[p.id]=p); delete t._players; });
-  teams.forEach(t=>autoSetLineups(t, Object.values(players)));
-  teams[userTeamId].userControlled = true;
+  // AAA affiliates: one per MLB team, each with its own prospect-laden roster
+  const aaaTeams = teams.map(t=>makeAAATeam(t));
+  aaaTeams.forEach(at=>buildAAARoster(at.id).forEach(p=>players[p.id]=p));
+  teams.forEach(t=>autoSetLineups(t, players));
+  aaaTeams.forEach(at=>autoSetLineups(at, players));
   setRng(null);
-  return { teams, players };
+  return { teams, aaaTeams, players };
 }
 
 /* ----------------------------- schedule -------------------------------- */
@@ -278,9 +332,17 @@ function buildSchedule(teamIds){
 
 /* ----------------------------- game sim -------------------------------- */
 function teamDefRating(team, players){
-  const fielders = team.lineup.map(id=>players[id]).filter(p=>p&&!p.isP);
-  if(!fielders.length) return 50;
-  return fielders.reduce((s,p)=>s+p.def,0)/fielders.length;
+  const pos = team.pos || {};
+  let sum=0, n=0;
+  team.lineup.forEach(id=>{
+    const p = players[id]; if(!p || p.isP) return;
+    const assigned = pos[id] || p.pos;
+    if(assigned==="DH") return;                                  // DH doesn't field
+    let d = p.def;
+    if(assigned !== p.pos) d = Math.max(20, d - 12);             // out-of-position penalty
+    sum += d; n++;
+  });
+  return n ? sum/n : 50;
 }
 
 function paOutcome(bat, pit, defN){
@@ -551,20 +613,22 @@ const f2 = v => v.toFixed(2);
 const f1 = v => v.toFixed(1);
 
 /* ----------------------------- save/load ------------------------------- */
-const SAVE_KEY = "pocketgm_baseball_v1";
+const SAVE_KEY = "pocketgm_baseball_v2";
 function saveGame(G){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(G)); }catch(e){} }
 function loadGame(){ try{ const s=localStorage.getItem(SAVE_KEY); return s?JSON.parse(s):null; }catch(e){ return null; } }
 function clearSave(){ localStorage.removeItem(SAVE_KEY); }
 
 /* ----------------------------- new game -------------------------------- */
 function newGame(userTeamId, opts={}){
-  const { teams, players } = generateLeague(userTeamId, opts);
+  const { teams, aaaTeams, players } = generateLeague(userTeamId, opts);
   const schedule = buildSchedule(teams.map(t=>t.id));
+  const aaaSchedule = buildSchedule(aaaTeams.map(t=>t.id));
   return {
     season: 2026, day: 0, phase: "regular",
     seed: (opts && opts.seed!=null && !Number.isNaN(opts.seed)) ? (opts.seed>>>0) : null,
-    userTeamId, teams, players, schedule,
-    freeAgents: [], draftClass: [], draftOrder: [], draftPick: 0,
+    userTeamId, teams, aaaTeams, players, schedule, aaaSchedule,
+    picks: buildPicks(2027, teams),
+    freeAgents: [], draftClass: [], draftPicks: [], draftPick: 0,
     playoffs: null, champion: null, log: [],
   };
 }
@@ -587,7 +651,7 @@ function App(){
 
   const TABS = [
     ["hub","Hub"],["roster","Roster"],["lineup","Lineup"],["standings","Standings"],
-    ["stats","Leaders"],["schedule","Schedule"],["trades","Trades"],
+    ["aaa","AAA"],["stats","Leaders"],["schedule","Schedule"],["trades","Trades"],
     ["fa","Free Agency"],["finances","Finances"],
   ];
   if(G.phase==="offseason") TABS.push(["draft","Draft"]);
@@ -621,6 +685,7 @@ function App(){
         {tab==="roster" && <Roster G={G} team={user} commit={commit} />}
         {tab==="lineup" && <LineupEditor G={G} commit={commit} tShow={tShow} />}
         {tab==="standings" && <Standings G={G} />}
+        {tab==="aaa" && <AAALeague G={G} />}
         {tab==="stats" && <Leaders G={G} />}
         {tab==="schedule" && <Schedule G={G} />}
         {tab==="trades" && <Trades G={G} commit={commit} tShow={tShow} />}
@@ -708,17 +773,21 @@ function hashSeed(str){
 
 /* ----------------------------- Hub / sim ------------------------------- */
 function simDay(G){
-  const day = G.schedule[G.day];
-  if(!day) return;
-  day.forEach(g=>{
-    if(g.played) return;
-    const home=G.teams[g.home], away=G.teams[g.away];
-    const res = simGame(home, away, G.players);
-    markGamesPlayed(home, away, G.players);
-    g.played=true; g.hs=res.hs; g.as=res.as;
-    if(res.hs>res.as){ home.w++; away.l++; } else { away.w++; home.l++; }
-    home.rs+=res.hs; home.ra+=res.as; away.rs+=res.as; away.ra+=res.hs;
-  });
+  const playDay = (sched) => {
+    const day = sched[G.day];
+    if(!day) return;
+    day.forEach(g=>{
+      if(g.played) return;
+      const home=teamById(G,g.home), away=teamById(G,g.away);
+      const res = simGame(home, away, G.players);
+      markGamesPlayed(home, away, G.players);
+      g.played=true; g.hs=res.hs; g.as=res.as;
+      if(res.hs>res.as){ home.w++; away.l++; } else { away.w++; home.l++; }
+      home.rs+=res.hs; home.ra+=res.as; away.rs+=res.as; away.ra+=res.hs;
+    });
+  };
+  playDay(G.schedule);                          // MLB
+  if(G.aaaSchedule) playDay(G.aaaSchedule);      // AAA affiliates
   G.day++;
   if(G.day>=162){ enterPlayoffs(G); }
 }
@@ -814,10 +883,20 @@ function payroll(G, teamId){ return rosterOf(G,teamId).reduce((s,p)=>s+p.salary,
 function Roster({G, team, commit}){
   const [sel, setSel] = useState(null);
   const ros = rosterOf(G, team.id);
+  const aaa = G.aaaTeams[team.id];
+  const aaaRos = rosterOf(G, aaaIdOf(team.id)).sort((a,b)=>b.ovr-a.ovr);
   const release = (p)=>{
     if(!confirm(`Release ${p.name}? He becomes a free agent.`)) return;
-    p.teamId=null; team.lineup=team.lineup.filter(id=>id!==p.id); team.rotation=team.rotation.filter(id=>id!==p.id);
-    G.freeAgents.push(p.id); commit(G);
+    movePlayerToFA(G, p); commit(G);
+  };
+  const sendDown = (p)=>{                         // MLB -> AAA
+    movePlayer(G, p, team.id); p.teamId = aaaIdOf(team.id);
+    autoSetLineups(aaa, G.players); ensureLineup(team, G.players); commit(G);
+  };
+  const callUp = (p)=>{                           // AAA -> MLB
+    movePlayer(G, p, team.id);                    // movePlayer keeps level; override to MLB
+    p.teamId = team.id;
+    autoSetLineups(aaa, G.players); commit(G);
   };
 
   // hitters: starting lineup (in batting order) vs bench
@@ -829,6 +908,7 @@ function Roster({G, team, commit}){
   const closer = relievers[0] || null;
   const bullpen = closer ? relievers.slice(1) : relievers;
   const rotSlots = rotation.map((_,i)=>"SP"+(i+1));
+  const aaaHits = aaaRos.filter(p=>!p.isP), aaaArms = aaaRos.filter(p=>p.isP);
 
   const open = p=>setSel(p);
   return (
@@ -838,32 +918,53 @@ function Roster({G, team, commit}){
           <h3 className="font-bold">Starting Lineup <span className="text-slate-500 text-sm">({lineupHits.length})</span></h3>
           <span className="text-xs text-slate-500">Payroll {money(payroll(G,team.id))} / {money(team.budget)}</span>
         </div>
-        <HitterTable players={lineupHits} onRelease={release} showAction bo onName={open} />
+        <HitterTable players={lineupHits} onRelease={release} onSend={sendDown} bo onName={open} posMap={team.pos} />
+        <p className="text-xs text-slate-500 mt-2">Amber position = playing out of his natural spot (defensive penalty). Set positions in the Lineup tab.</p>
       </Card>
       <Card>
         <h3 className="font-bold mb-2">Bench <span className="text-slate-500 text-sm">({benchHits.length})</span></h3>
         {benchHits.length
-          ? <HitterTable players={benchHits} onRelease={release} showAction badge="BN" onName={open} />
+          ? <HitterTable players={benchHits} onRelease={release} onSend={sendDown} badge="BN" onName={open} />
           : <div className="text-sm text-slate-500">No bench hitters.</div>}
       </Card>
       <Card>
         <h3 className="font-bold mb-2">Starting Rotation <span className="text-slate-500 text-sm">({rotation.length})</span></h3>
-        <PitcherTable players={rotation} onRelease={release} showAction slots={rotSlots} onName={open} />
+        <PitcherTable players={rotation} onRelease={release} onSend={sendDown} slots={rotSlots} onName={open} />
       </Card>
       {closer && <Card>
         <h3 className="font-bold mb-2">Closer</h3>
-        <PitcherTable players={[closer]} onRelease={release} showAction slots={["CL"]} onName={open} />
+        <PitcherTable players={[closer]} onRelease={release} onSend={sendDown} slots={["CL"]} onName={open} />
         <p className="text-xs text-slate-500 mt-2">Your highest-OVR reliever automatically closes save situations.</p>
       </Card>}
       <Card>
         <h3 className="font-bold mb-2">Bullpen <span className="text-slate-500 text-sm">({bullpen.length})</span></h3>
         {bullpen.length
-          ? <PitcherTable players={bullpen} onRelease={release} showAction badge="BN" onName={open} />
+          ? <PitcherTable players={bullpen} onRelease={release} onSend={sendDown} badge="BN" onName={open} />
           : <div className="text-sm text-slate-500">No other relievers.</div>}
       </Card>
-      {sel && <PlayerModal p={sel} team={team} onClose={()=>setSel(null)} />}
+
+      <Card className="border-amber-700/40">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="font-bold text-amber-300">AAA Affiliate — {team.nick} <span className="text-slate-500 text-sm">({aaaRos.length})</span></h3>
+          <span className="text-xs text-slate-500">{aaa.w}-{aaa.l} · use ↑ up to call players to the bigs</span>
+        </div>
+        {aaaHits.length>0 && <div className="mb-3"><div className="text-xs text-slate-400 mb-1">Hitters</div>
+          <HitterTable players={aaaHits} onCallUp={callUp} onName={open} /></div>}
+        {aaaArms.length>0 && <div><div className="text-xs text-slate-400 mb-1">Pitchers</div>
+          <PitcherTable players={aaaArms} onCallUp={callUp} onName={open} /></div>}
+        {aaaRos.length===0 && <div className="text-sm text-slate-500">Your AAA roster is empty. Draft picks report here, or send big-leaguers down.</div>}
+      </Card>
+
+      {sel && <PlayerModal p={sel} team={teamById(G, sel.teamId)} onClose={()=>setSel(null)} />}
     </div>
   );
+}
+// move a player to free agency, cleaning any lineup/rotation references
+function movePlayerToFA(G, p){
+  const t = teamById(G, p.teamId);
+  if(t){ t.lineup=t.lineup.filter(x=>x!==p.id); t.rotation=t.rotation.filter(x=>x!==p.id); if(t.pos) delete t.pos[p.id]; }
+  p.teamId=null;
+  if(!G.freeAgents.includes(p.id)) G.freeAgents.push(p.id);
 }
 
 function PlayerModal({p, team, onClose}){
@@ -916,7 +1017,18 @@ function NameCell({p, onName}){
     : <span className="font-medium">{p.name} <span className="text-slate-600 text-xs">{sub}</span></span>;
 }
 
-function HitterTable({players, onRelease, showAction, badge, bo, onName}){
+function RowActions({p, onRelease, onSend, onCallUp}){
+  return (
+    <td className="whitespace-nowrap text-right pr-1">
+      {onCallUp&&<button onClick={()=>onCallUp(p)} className="text-emerald-400 text-xs hover:text-emerald-300 mr-2">↑ up</button>}
+      {onSend&&<button onClick={()=>onSend(p)} className="text-sky-400 text-xs hover:text-sky-300 mr-2">↓ AAA</button>}
+      {onRelease&&<button onClick={()=>onRelease(p)} className="text-red-400 text-xs hover:text-red-300">cut</button>}
+    </td>
+  );
+}
+
+function HitterTable({players, onRelease, onSend, onCallUp, badge, bo, onName, posMap}){
+  const hasAct = onRelease||onSend||onCallUp;
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm tnum">
@@ -925,14 +1037,14 @@ function HitterTable({players, onRelease, showAction, badge, bo, onName}){
           <th className="text-left py-1 pr-2">Pos</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th>
           <th>CON</th><th>POW</th><th>EYE</th><th>SPD</th><th>DEF</th>
           <th>G</th><th>AB</th><th>R</th><th>H</th><th>HR</th><th>RBI</th><th>BB</th><th>SO</th><th>SB</th>
-          <th>AVG</th><th>OBP</th><th>SLG</th><th>OPS</th><th className="text-right pr-2">Salary</th>{showAction&&<th></th>}
+          <th>AVG</th><th>OBP</th><th>SLG</th><th>OPS</th><th className="text-right pr-2">Salary</th>{hasAct&&<th></th>}
         </tr></thead>
         <tbody>
-          {players.map((p,i)=>{ const s=p.stats; return (
+          {players.map((p,i)=>{ const s=p.stats; const assigned = posMap?(posMap[p.id]||p.pos):p.pos; const oop = assigned!==p.pos; return (
             <tr key={p.id} className="border-b border-[#15203a] hover:bg-[#13203a]">
               {bo&&<td className="text-center text-slate-500">{i+1}</td>}
               {badge&&<td className="py-1"><StatusPill s={badge}/></td>}
-              <td className="py-1 pr-2 text-slate-400">{p.pos}</td>
+              <td className={"py-1 pr-2 "+(oop?"text-amber-400 font-semibold":"text-slate-400")}>{assigned}</td>
               <td className="text-left"><NameCell p={p} onName={onName}/></td>
               <td className="text-center">{p.age}</td>
               <td className="text-center"><OvrPill v={p.ovr}/></td>
@@ -952,7 +1064,7 @@ function HitterTable({players, onRelease, showAction, badge, bo, onName}){
               <td className="text-center">{s.AB?f3(slg(s)):"—"}</td>
               <td className="text-center">{s.AB?f3(ops(s)):"—"}</td>
               <td className="text-right pr-2 text-slate-300">{money(p.salary)}<span className="text-slate-600 text-xs"> {p.years}y</span></td>
-              {showAction&&<td><button onClick={()=>onRelease(p)} className="text-red-400 text-xs hover:text-red-300">cut</button></td>}
+              {hasAct&&<RowActions p={p} onRelease={onRelease} onSend={onSend} onCallUp={onCallUp}/>}
             </tr>
           ); })}
         </tbody>
@@ -961,7 +1073,8 @@ function HitterTable({players, onRelease, showAction, badge, bo, onName}){
   );
 }
 
-function PitcherTable({players, onRelease, showAction, badge, slots, onName}){
+function PitcherTable({players, onRelease, onSend, onCallUp, badge, slots, onName}){
+  const hasAct = onRelease||onSend||onCallUp;
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm tnum">
@@ -969,7 +1082,7 @@ function PitcherTable({players, onRelease, showAction, badge, slots, onName}){
           {slots&&<th className="pr-1">Slot</th>}{badge&&<th></th>}
           <th className="text-left py-1 pr-2">Role</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th>
           <th>STU</th><th>CTL</th><th>STM</th>
-          <th>W-L</th><th>GS</th><th>IP</th><th>H</th><th>BB</th><th>SO</th><th>ER</th><th>ERA</th><th>WHIP</th><th>SV</th><th className="text-right pr-2">Salary</th>{showAction&&<th></th>}
+          <th>W-L</th><th>GS</th><th>IP</th><th>H</th><th>BB</th><th>SO</th><th>ER</th><th>ERA</th><th>WHIP</th><th>SV</th><th className="text-right pr-2">Salary</th>{hasAct&&<th></th>}
         </tr></thead>
         <tbody>
           {players.map((p,i)=>{ const s=p.stats; return (
@@ -993,7 +1106,7 @@ function PitcherTable({players, onRelease, showAction, badge, slots, onName}){
               <td className="text-center">{s.OUT?f2(whip(s)):"—"}</td>
               <td className="text-center">{s.SV||"—"}</td>
               <td className="text-right pr-2 text-slate-300">{money(p.salary)}<span className="text-slate-600 text-xs"> {p.years}y</span></td>
-              {showAction&&<td><button onClick={()=>onRelease(p)} className="text-red-400 text-xs hover:text-red-300">cut</button></td>}
+              {hasAct&&<RowActions p={p} onRelease={onRelease} onSend={onSend} onCallUp={onCallUp}/>}
             </tr>
           ); })}
         </tbody>
@@ -1010,11 +1123,14 @@ function LineupEditor({G, commit, tShow}){
   const sp = ros.filter(p=>p.isP && p.role==="SP");
   const move = (arr, i, dir)=>{ const j=i+dir; if(j<0||j>=arr.length) return; [arr[i],arr[j]]=[arr[j],arr[i]]; commit(G); };
   const swapHitter = (slot, newId)=>{
+    newId = Number(newId);
     const cur = team.lineup[slot];
-    const existing = team.lineup.indexOf(Number(newId));
-    if(existing>=0) team.lineup[existing]=cur;
-    team.lineup[slot]=Number(newId);
-    commit(G);
+    const existing = team.lineup.indexOf(newId);
+    const pos = {...(team.pos||{})};
+    if(existing>=0){ team.lineup[existing]=cur; const t=pos[cur]; pos[cur]=pos[newId]; pos[newId]=t; } // swap their positions too
+    else { pos[newId]=pos[cur]; delete pos[cur]; }   // newcomer inherits this slot's defensive spot
+    team.lineup[slot]=newId;
+    team.pos=pos; commit(G);
   };
   const setRot = (slot, newId)=>{
     const existing = team.rotation.indexOf(Number(newId));
@@ -1023,19 +1139,43 @@ function LineupEditor({G, commit, tShow}){
     team.rotation[slot]=Number(newId);
     commit(G);
   };
+  // assign a defensive position; if another batter holds it, swap their slots
+  const setPosFor = (id, position)=>{
+    const pos = {...(team.pos||{})};
+    const old = pos[id];
+    const other = team.lineup.find(x=>x!==id && pos[x]===position);
+    if(other!=null && old!=null) pos[other]=old;
+    pos[id]=position;
+    team.pos = pos; commit(G);
+  };
+  const ALLPOS = FIELD_POS.concat(["DH"]);
+  const assignedCounts = {}; team.lineup.forEach(id=>{ const a=(team.pos||{})[id]; if(a) assignedCounts[a]=(assignedCounts[a]||0)+1; });
+  const missing = ALLPOS.filter(x=>!assignedCounts[x]);
+  const dupes = ALLPOS.filter(x=>assignedCounts[x]>1);
+  const valid = missing.length===0 && dupes.length===0;
   return (
     <div className="grid md:grid-cols-2 gap-4">
       <Card>
-        <h3 className="font-bold mb-2">Batting Order</h3>
+        <h3 className="font-bold mb-2">Batting Order &amp; Defense</h3>
+        <div className={"text-xs mb-2 "+(valid?"text-emerald-400":"text-amber-400")}>
+          {valid ? "✓ Valid defensive alignment (all 8 positions + DH covered)"
+                 : `⚠ Fix defense — ${missing.length?`missing ${missing.join(", ")}`:""}${missing.length&&dupes.length?"; ":""}${dupes.length?`duplicate ${dupes.join(", ")}`:""}`}
+        </div>
         <div className="space-y-1">
           {team.lineup.map((id,i)=>{
             const p=G.players[id];
+            const assigned=(team.pos||{})[id]||(p?p.pos:"DH");
+            const oop = p && assigned!==p.pos && assigned!=="DH";
             return (
               <div key={i} className="flex items-center gap-2 bg-[#13203a] rounded px-2 py-1">
                 <span className="w-5 text-slate-500 text-sm">{i+1}</span>
                 <OvrPill v={p?p.ovr:0}/>
                 <select value={id} onChange={e=>swapHitter(i, e.target.value)} className="bg-[#0b1220] rounded px-1 py-0.5 text-sm flex-1 border border-[#1d2940]">
                   {hitters.map(h=><option key={h.id} value={h.id}>{h.pos} {h.name} ({h.ovr})</option>)}
+                </select>
+                <select value={assigned} onChange={e=>setPosFor(id, e.target.value)} title="Defensive position"
+                  className={"bg-[#0b1220] rounded px-1 py-0.5 text-sm border border-[#1d2940] w-16 "+(oop?"text-amber-400":"")}>
+                  {ALLPOS.map(x=><option key={x} value={x}>{x}</option>)}
                 </select>
                 <div className="flex flex-col">
                   <button onClick={()=>move(team.lineup,i,-1)} className="text-xs text-slate-400 leading-none">▲</button>
@@ -1045,6 +1185,7 @@ function LineupEditor({G, commit, tShow}){
             );
           })}
         </div>
+        <p className="text-xs text-slate-500 mt-2">DH doesn't field; a player out of his natural position takes a defensive penalty.</p>
       </Card>
       <Card>
         <h3 className="font-bold mb-2">Starting Rotation</h3>
@@ -1104,9 +1245,67 @@ function Standings({G}){
   );
 }
 
+/* ----------------------------- AAA league ------------------------------ */
+function AAALeague({G}){
+  const aaaUserId = aaaIdOf(G.userTeamId);
+  const byDiv = standings(G.aaaTeams);
+  const order = ["Empire East","Empire Central","Empire West","Pioneer East","Pioneer Central","Pioneer West"];
+  // top prospects across all AAA rosters (by potential)
+  const prospects = Object.values(G.players).filter(p=>isAAAId(p.teamId))
+    .sort((a,b)=>b.pot-a.pot || b.ovr-a.ovr).slice(0,12);
+  const tnAbbr = aaaId => G.teams[parentIdOf(aaaId)] ? G.teams[parentIdOf(aaaId)].abbr : "—";
+  return (
+    <div className="space-y-4">
+      <Card>
+        <h3 className="font-bold text-amber-300 mb-1">AAA — Minor Leagues</h3>
+        <p className="text-xs text-slate-400">Every club runs a AAA affiliate that plays its own season. Develop prospects here and call them up from the Roster tab.</p>
+      </Card>
+      <div className="grid md:grid-cols-2 gap-4">
+        {order.map(k=>(
+          <Card key={k}>
+            <h3 className="font-bold mb-2">{k} <span className="text-amber-400/70 text-xs">AAA</span></h3>
+            <table className="w-full text-sm tnum">
+              <thead><tr className="text-slate-400 text-xs"><th className="text-left">Affiliate</th><th>W</th><th>L</th><th>PCT</th><th>DIFF</th></tr></thead>
+              <tbody>
+                {byDiv[k].map(t=>(
+                  <tr key={t.id} className={"border-t border-[#15203a] "+(t.id===aaaUserId?"bg-amber-900/20 font-semibold":"")}>
+                    <td className="text-left py-1">{t.city} {t.nick}</td>
+                    <td className="text-center">{t.w}</td><td className="text-center">{t.l}</td>
+                    <td className="text-center">{f3(pct(t))}</td>
+                    <td className={"text-center "+((t.rs-t.ra)>=0?"text-emerald-400":"text-red-400")}>{t.rs-t.ra>=0?"+":""}{t.rs-t.ra}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+        ))}
+      </div>
+      <Card>
+        <h3 className="font-bold mb-2">Top Prospects (league-wide)</h3>
+        <table className="w-full text-sm tnum">
+          <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Pos</th><th className="text-left">Name</th><th>Org</th><th>Age</th><th>OVR</th><th>POT</th></tr></thead>
+          <tbody>
+            {prospects.map(p=>(
+              <tr key={p.id} className="border-b border-[#15203a]">
+                <td className="text-slate-400">{p.pos}</td>
+                <td className="text-left">{p.name}</td>
+                <td className="text-center text-slate-400">{tnAbbr(p.teamId)}</td>
+                <td className="text-center">{p.age}</td>
+                <td className="text-center"><OvrPill v={p.ovr}/></td>
+                <td className="text-center text-amber-300 font-semibold">{p.pot}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
 /* ----------------------------- Leaders --------------------------------- */
 function Leaders({G}){
-  const all = Object.values(G.players);
+  // MLB leaderboards only — exclude AAA players
+  const all = Object.values(G.players).filter(p=>!isAAAId(p.teamId));
   // scale qualifier thresholds with games played so boards read right all season
   const gpMax = Math.max(1, ...G.teams.map(t=>t.w+t.l));
   const paQual = Math.max(20, round(gpMax*2.5));
@@ -1214,47 +1413,67 @@ function Finances({G}){
 function Trades({G, commit, tShow}){
   const me = G.teams[G.userTeamId];
   const [otherId, setOtherId] = useState(G.teams.find(t=>t.id!==me.id).id);
-  const [give, setGive] = useState([]);
+  const [give, setGive] = useState([]);      // player ids
   const [get, setGet] = useState([]);
+  const [givePk, setGivePk] = useState([]);  // pick ids
+  const [getPk, setGetPk] = useState([]);
   const other = G.teams[otherId];
-  const myRos = rosterOf(G,me.id).sort((a,b)=>b.ovr-a.ovr);
-  const otRos = rosterOf(G,other.id).sort((a,b)=>b.ovr-a.ovr);
+  const reset = ()=>{ setGive([]); setGet([]); setGivePk([]); setGetPk([]); };
+
+  // players: MLB roster + AAA affiliate, AAA tagged
+  const orgPlayers = mlbId => rosterOf(G,mlbId).concat(rosterOf(G,aaaIdOf(mlbId))).sort((a,b)=>b.ovr-a.ovr);
+  const myRos = orgPlayers(me.id), otRos = orgPlayers(other.id);
+  const myPicks = (G.picks||[]).filter(pk=>pk.owner===me.id).sort((a,b)=>a.round-b.round);
+  const otPicks = (G.picks||[]).filter(pk=>pk.owner===other.id).sort((a,b)=>a.round-b.round);
   const toggle=(arr,set,id)=>set(arr.includes(id)?arr.filter(x=>x!==id):[...arr,id]);
-  const giveVal = give.reduce((s,id)=>s+playerValue(G.players[id]),0);
-  const getVal = get.reduce((s,id)=>s+playerValue(G.players[id]),0);
+
+  const giveVal = give.reduce((s,id)=>s+playerValue(G.players[id]),0) + givePk.reduce((s,id)=>s+pickValue(G,(G.picks||[]).find(p=>p.id===id)||{round:5,orig:me.id}),0);
+  const getVal  = get.reduce((s,id)=>s+playerValue(G.players[id]),0)  + getPk.reduce((s,id)=>s+pickValue(G,(G.picks||[]).find(p=>p.id===id)||{round:5,orig:other.id}),0);
 
   const propose=()=>{
-    if(!give.length && !get.length){ tShow("Add players to the trade"); return; }
-    // AI accepts if it nets >= 97% of value it gives up
-    if(getVal===0){ tShow("Select players to acquire"); return; }
+    if(!give.length && !get.length && !givePk.length && !getPk.length){ tShow("Add players or picks to the trade"); return; }
+    if(getVal===0){ tShow("Select something to acquire"); return; }
     if(giveVal >= getVal*0.97){
-      // execute
-      give.forEach(id=>{ const p=G.players[id]; p.teamId=other.id; me.lineup=me.lineup.filter(x=>x!==id); me.rotation=me.rotation.filter(x=>x!==id); });
-      get.forEach(id=>{ const p=G.players[id]; p.teamId=me.id; other.lineup=other.lineup.filter(x=>x!==id); other.rotation=other.rotation.filter(x=>x!==id); });
-      autoSetLineups(other, G.players);
-      // fix user lineup if holes
-      ensureLineup(me, G.players);
-      setGive([]); setGet([]);
-      commit(G); tShow("✅ Trade accepted!");
+      give.forEach(id=>movePlayer(G, G.players[id], other.id));
+      get.forEach(id=>movePlayer(G, G.players[id], me.id));
+      givePk.forEach(id=>{ const pk=G.picks.find(p=>p.id===id); if(pk) pk.owner=other.id; });
+      getPk.forEach(id=>{ const pk=G.picks.find(p=>p.id===id); if(pk) pk.owner=me.id; });
+      autoSetLineups(other, G.players); autoSetLineups(G.aaaTeams[other.id], G.players);
+      ensureLineup(me, G.players); autoSetLineups(G.aaaTeams[me.id], G.players);
+      reset(); commit(G); tShow("✅ Trade accepted!");
     } else {
       const need = (getVal*0.97 - giveVal);
       tShow(`❌ Rejected — ${other.nick} want ~${need.toFixed(0)} more value`);
     }
   };
 
-  const colBox = (title, ros, sel, set) => (
+  const playerBox = (title, ros, sel, set) => (
     <Card>
       <div className="font-bold mb-2 text-sm">{title}</div>
-      <div className="max-h-80 overflow-y-auto space-y-0.5">
+      <div className="max-h-72 overflow-y-auto space-y-0.5">
         {ros.map(p=>(
           <label key={p.id} className={"flex items-center gap-2 px-2 py-1 rounded cursor-pointer text-sm "+(sel.includes(p.id)?"bg-emerald-900/40":"hover:bg-[#13203a]")}>
             <input type="checkbox" checked={sel.includes(p.id)} onChange={()=>toggle(sel,set,p.id)} />
             <OvrPill v={p.ovr}/>
-            <span className="flex-1">{p.pos} {p.name}</span>
+            <span className="flex-1">{p.pos} {p.name} {isAAAId(p.teamId)&&<span className="text-amber-400 text-[10px] font-bold">AAA</span>}</span>
             <span className="text-slate-500 text-xs">{money(p.salary)}</span>
           </label>
         ))}
       </div>
+    </Card>
+  );
+  const pickBox = (title, picks, sel, set) => (
+    <Card>
+      <div className="font-bold mb-2 text-sm">{title}</div>
+      {picks.length? <div className="space-y-0.5">
+        {picks.map(pk=>(
+          <label key={pk.id} className={"flex items-center gap-2 px-2 py-1 rounded cursor-pointer text-sm "+(sel.includes(pk.id)?"bg-emerald-900/40":"hover:bg-[#13203a]")}>
+            <input type="checkbox" checked={sel.includes(pk.id)} onChange={()=>toggle(sel,set,pk.id)} />
+            <span className="flex-1">{pk.season} Round {pk.round}{pk.orig!==pk.owner?` (via ${G.teams[pk.orig].abbr})`:""}</span>
+            <span className="text-emerald-400 text-xs">val {pickValue(G,pk)}</span>
+          </label>
+        ))}
+      </div> : <div className="text-xs text-slate-500">No tradeable picks.</div>}
     </Card>
   );
 
@@ -1263,19 +1482,30 @@ function Trades({G, commit, tShow}){
       <Card>
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm text-slate-400">Trade with:</span>
-          <select value={otherId} onChange={e=>{setOtherId(Number(e.target.value));setGet([]);}} className="bg-[#0b1220] border border-[#1d2940] rounded px-2 py-1 text-sm">
+          <select value={otherId} onChange={e=>{setOtherId(Number(e.target.value));setGet([]);setGetPk([]);}} className="bg-[#0b1220] border border-[#1d2940] rounded px-2 py-1 text-sm">
             {G.teams.filter(t=>t.id!==me.id).map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
           <div className="ml-auto text-xs text-slate-400">You give <b className="text-slate-200">{giveVal.toFixed(0)}</b> · You get <b className="text-slate-200">{getVal.toFixed(0)}</b></div>
         </div>
+        <div className="text-xs text-slate-500 mt-1">Pick values reflect each team's projected finish — a pick from a struggling club is worth more.</div>
       </Card>
       <div className="grid md:grid-cols-2 gap-4">
-        {colBox(`Send from ${me.nick}`, myRos, give, setGive)}
-        {colBox(`Acquire from ${other.nick}`, otRos, get, setGet)}
+        {playerBox(`Send from ${me.nick}`, myRos, give, setGive)}
+        {playerBox(`Acquire from ${other.nick}`, otRos, get, setGet)}
+        {pickBox(`${me.nick} picks to send`, myPicks, givePk, setGivePk)}
+        {pickBox(`${other.nick} picks to acquire`, otPicks, getPk, setGetPk)}
       </div>
       <button onClick={propose} className="px-6 py-2 bg-emerald-500 text-slate-900 rounded-lg font-bold">Propose Trade</button>
     </div>
   );
+}
+// move a player between organizations, preserving his MLB/AAA level and cleaning old lineup refs
+function movePlayer(G, p, destMlbId){
+  if(!p) return;
+  const wasAAA = isAAAId(p.teamId);
+  const from = teamById(G, p.teamId);
+  if(from){ from.lineup=from.lineup.filter(x=>x!==p.id); from.rotation=from.rotation.filter(x=>x!==p.id); if(from.pos) delete from.pos[p.id]; }
+  p.teamId = wasAAA ? aaaIdOf(destMlbId) : destMlbId;
 }
 function ensureLineup(team, players){
   const ros = rosterOf2(players, team.id);
@@ -1469,11 +1699,14 @@ function OffseasonHub({G, commit, tShow, setTab}){
   const doProgression = ()=>{
     Object.values(G.players).forEach(p=>{
       p.age++;
-      // development toward potential when young, decline when old
+      // development toward potential when young, decline when old.
+      // AAA prospects (young & in the minors) develop a bit faster.
+      const fast = isAAAId(p.teamId) && p.age<=24;
       const each = r=>{
-        if(p.age<=26){ if(p[r]!==undefined) p[r]=clamp(p[r]+rint(-1,3),20,99); }
-        else if(p.age>=31){ if(p[r]!==undefined) p[r]=clamp(p[r]-rint(0,3),20,99); }
-        else { if(p[r]!==undefined) p[r]=clamp(p[r]+rint(-1,1),20,99); }
+        if(p[r]===undefined) return;
+        if(p.age<=26){ p[r]=clamp(p[r]+rint(fast?0:-1, fast?4:3),20,99); }
+        else if(p.age>=31){ p[r]=clamp(p[r]-rint(0,3),20,99); }
+        else { p[r]=clamp(p[r]+rint(-1,1),20,99); }
       };
       (p.isP?["stu","ctl","stm"]:["con","pow","eye","spd","def"]).forEach(each);
       computeOvr(p);
@@ -1490,8 +1723,8 @@ function OffseasonHub({G, commit, tShow, setTab}){
       if(chance(retP)){ retired.push(p.id); }
     });
     retired.forEach(id=>{
-      const p=G.players[id]; const t=p.teamId!=null?G.teams[p.teamId]:null;
-      if(t){ t.lineup=t.lineup.filter(x=>x!==id); t.rotation=t.rotation.filter(x=>x!==id); }
+      const p=G.players[id]; const t=teamById(G, p.teamId);
+      if(t){ t.lineup=t.lineup.filter(x=>x!==id); t.rotation=t.rotation.filter(x=>x!==id); if(t.pos) delete t.pos[id]; }
       G.freeAgents=G.freeAgents.filter(x=>x!==id);
       delete G.players[id];
     });
@@ -1499,9 +1732,10 @@ function OffseasonHub({G, commit, tShow, setTab}){
     Object.values(G.players).forEach(p=>{ p.years--; });
     Object.values(G.players).forEach(p=>{
       if(p.years<=0 && p.teamId!=null){
-        const t=G.teams[p.teamId];
-        t.lineup=t.lineup.filter(x=>x!==p.id);
-        t.rotation=t.rotation.filter(x=>x!==p.id);
+        // young prospects in the minors stay under team control
+        if(isAAAId(p.teamId) && p.age<25){ p.years=rint(2,4); return; }
+        const t=teamById(G, p.teamId);
+        if(t){ t.lineup=t.lineup.filter(x=>x!==p.id); t.rotation=t.rotation.filter(x=>x!==p.id); if(t.pos) delete t.pos[p.id]; }
         p.teamId=null; p.years=rint(1,4); p.salary=salaryFor(p);
         if(!G.freeAgents.includes(p.id)) G.freeAgents.push(p.id);
       }
@@ -1573,39 +1807,47 @@ function buildDraft(G){
     p.teamId=null; p.years=4; p.salary=0.7;
     cls.push(p.id); G.players[p.id]=p;
   }
-  // draft order: reverse of standings (worst picks first)
-  const order=[...G.teams].sort((a,b)=>pct(a)-pct(b)).map(t=>t.id);
-  G.draftOrder=order; G.draftPick=0;
+  // selection order from owned picks: by round, then the ORIGINAL team's
+  // reverse-standings slot (so traded picks keep their original draft value)
+  const worstFirst=[...G.teams].sort((a,b)=>pct(a)-pct(b)).map(t=>t.id);
+  const slotOf=id=>worstFirst.indexOf(id);
+  G.draftPicks=[...G.picks].sort((a,b)=> a.round-b.round || slotOf(a.orig)-slotOf(b.orig));
+  G.draftPick=0;
   G.draftClass=cls.sort((a,b)=>G.players[b].pot-G.players[a].pot);
 }
 
 function Draft({G, commit, tShow}){
-  if(!G.draftClass.length && G.draftPick===0 && !G.draftOrder.length)
+  const picksArr = G.draftPicks||[];
+  if(!picksArr.length)
     return <Card>The draft isn't ready yet — process the offseason from the Hub first.</Card>;
-  const rounds=5, totalPicks=rounds*G.teams.length;
-  const onClock = G.draftOrder[G.draftPick % G.teams.length];
-  const round = Math.floor(G.draftPick/G.teams.length)+1;
+  const totalPicks = picksArr.length;
+
+  if(G.draftPick>=totalPicks){
+    return <Card><div className="font-bold mb-2">✅ Draft complete</div>
+      <p className="text-sm text-slate-300">Your picks report to your <b>AAA affiliate</b> (check the Roster → AAA section, then call up whoever's ready). Head to Free Agency or start the season from the Hub.</p></Card>;
+  }
+
+  const curPick = picksArr[G.draftPick];
+  const onClock = curPick.owner;
+  const round = curPick.round;
+  const traded = curPick.owner!==curPick.orig;
   const isUser = onClock===G.userTeamId;
   const avail = G.draftClass.map(id=>G.players[id]).filter(Boolean);
+  const pickInRound = picksArr.slice(0,G.draftPick).filter(p=>p.round===round).length+1;
 
+  const assign=(g,pid,ownerId)=>{ const p=g.players[pid]; if(p) p.teamId=aaaIdOf(ownerId); }; // draftees start in AAA
   const draftPlayer=(pid)=>{
-    const p=G.players[pid]; if(!p) return;
-    p.teamId=onClock;
+    if(!G.players[pid]) return;
+    assign(G,pid,onClock);
     G.draftClass=G.draftClass.filter(x=>x!==pid);
-    G.draftPick++;
-    commit(G);
+    G.draftPick++; commit(G);
   };
-  const aiPick=()=>{
-    // pick best potential that fills a need-ish; simple: best pot
-    const best=G.draftClass[0];
-    if(best!=null) draftPlayer(best);
-  };
+  const aiPick=()=>{ const best=G.draftClass[0]; if(best!=null) draftPlayer(best); };
   const simToMe=()=>{
-    const g=G;
-    let guard=0;
-    while(g.draftPick<totalPicks && g.draftOrder[g.draftPick%g.teams.length]!==g.userTeamId && guard<totalPicks){
+    const g=G; let guard=0;
+    while(g.draftPick<totalPicks && picksArr[g.draftPick].owner!==g.userTeamId && guard<totalPicks){
       const best=g.draftClass[0]; if(best==null) break;
-      const p=g.players[best]; p.teamId=g.draftOrder[g.draftPick%g.teams.length];
+      assign(g,best,picksArr[g.draftPick].owner);
       g.draftClass=g.draftClass.filter(x=>x!==best); g.draftPick++; guard++;
     }
     commit(g);
@@ -1614,27 +1856,21 @@ function Draft({G, commit, tShow}){
     const g=G; let guard=0;
     while(g.draftPick<totalPicks && guard<totalPicks+5){
       const best=g.draftClass[0]; if(best==null) break;
-      const tid=g.draftOrder[g.draftPick%g.teams.length];
-      const p=g.players[best]; p.teamId=tid;
+      assign(g,best,picksArr[g.draftPick].owner);
       g.draftClass=g.draftClass.filter(x=>x!==best); g.draftPick++; guard++;
     }
-    // trim rosters after draft
     g.teams.forEach(t=>trimRoster(g,t));
+    g.aaaTeams.forEach(t=>autoSetLineups(t,g.players)); // draftees joined AAA
     commit(g); tShow("Draft complete");
   };
-
-  if(G.draftPick>=totalPicks){
-    return <Card><div className="font-bold mb-2">✅ Draft complete</div>
-      <p className="text-sm text-slate-300">Your picks have joined the roster (check Roster). Head to Free Agency or start the season from the Hub.</p></Card>;
-  }
 
   return (
     <div className="space-y-3">
       <Card>
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="text-sm">Round <b>{round}</b> · Pick <b>{(G.draftPick%G.teams.length)+1}</b> · Overall <b>{G.draftPick+1}</b>/{totalPicks}</div>
+          <div className="text-sm">Round <b>{round}</b> · Pick <b>{pickInRound}</b> · Overall <b>{G.draftPick+1}</b>/{totalPicks}</div>
           <div className={"px-2 py-0.5 rounded text-sm font-semibold "+(isUser?"bg-emerald-500 text-slate-900":"bg-[#16213a]")}>
-            On the clock: {G.teams[onClock].name}{isUser?" (YOU)":""}
+            On the clock: {G.teams[onClock].name}{isUser?" (YOU)":""}{traded?` (via ${G.teams[curPick.orig].abbr})`:""}
           </div>
           <div className="ml-auto flex gap-2">
             {!isUser && <button onClick={aiPick} className="px-3 py-1 bg-[#16213a] rounded text-sm">Next Pick</button>}
@@ -1694,14 +1930,17 @@ function startNewSeason(G){
   });
   // make sure user roster is valid for play
   const me=G.teams[G.userTeamId];
-  let mr=rosterOf(G,me.id);
-  // auto-fill user roster minimally if short on pitchers/hitters so sim works
   ensureLineup(me, G.players);
-  // reset records & stats
+  // AAA rosters changed (draft, call-ups/send-downs) — refresh their lineups
+  G.aaaTeams.forEach(t=>autoSetLineups(t, G.players));
+  // reset records & stats (MLB + AAA)
   G.teams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0; });
+  G.aaaTeams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0; });
   G.schedule = buildSchedule(G.teams.map(t=>t.id));
+  G.aaaSchedule = buildSchedule(G.aaaTeams.map(t=>t.id));
   G.day=0; G.season++; G.phase="regular";
-  G.playoffs=null; G.draftClass=[]; G.draftOrder=[]; G.draftPick=0; G.offStep=null;
+  G.playoffs=null; G.draftClass=[]; G.draftPicks=[]; G.draftPick=0; G.offStep=null;
+  G.picks = buildPicks(G.season+1, G.teams);   // next year's tradeable picks
 }
 
 /* ----------------------------- mount ----------------------------------- */

@@ -16,10 +16,15 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   then `eval`s it. The explicit **classic** runtime is required — the default `react` preset emits an
   ESM `import` (automatic JSX runtime) which breaks in a non-module inline script.
 - **State:** one big `G` object held in `App` `useState`, persisted to `localStorage`
-  (`pocketgm_baseball_v1`) via `commit()`. New game built by `newGame(userTeamId, opts)`.
+  (`pocketgm_baseball_v2` — bumped from v1 when AAA/picks/defense shapes were added) via `commit()`.
+  New game built by `newGame(userTeamId, opts)`.
   - `G.players` is an **object dict keyed by id** (not an array). Use `Object.values(G.players)` or the
     `rosterOf(G, teamId)` helper. `autoSetLineups` accepts either an array or the dict.
   - `G.seed` holds the league seed (or `null`).
+- **Team id namespace:** MLB teams are `G.teams` (ids 0..29); each has a AAA affiliate in `G.aaaTeams`
+  (ids 30..59, `id = 30 + parentId`). A player's `teamId` identifies both his org **and level**.
+  Helpers: `isAAAId`, `aaaIdOf`, `parentIdOf`, and `teamById(G,id)` (resolves either array). Anything
+  iterating `G.teams` (standings, playoffs, splash) stays MLB-only; `Leaders` filters out AAA players.
 - **Seeded RNG:** `rint/pick/chance/gauss` route through a swappable `_rng` (default `Math.random`).
   `generateLeague(userTeamId, {seed, shuffle})` installs a `mulberry32(seed)` PRNG **only for the
   league build**, then restores `Math.random` so the season sim stays genuinely random. `shuffle`
@@ -32,10 +37,24 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   closing save situations — so innings distribute realistically instead of one arm soaking the game.
   Produces realistic leaders (≈ .330–.350 AVG / 45–55 HR / sub-2 ERA / ~30 SB; SP ~180–220 IP).
 - **Season:** `buildSchedule()` = circle-method round-robin repeated to 162 games (15 games/day).
-  `simDay()` advances one day; at day 162 `enterPlayoffs()` fires.
+  `simDay()` advances one day, simming **both** `G.schedule` (MLB) and `G.aaaSchedule` (AAA) — so a
+  full season is ~4860 game sims. At day 162 `enterPlayoffs()` fires (MLB only; AAA is regular-season).
+- **AAA / minor leagues:** every org runs a AAA affiliate that plays its own 162-game season with the
+  same `simGame` engine (it just operates on AAA team objects whose players carry the AAA teamId). AAA
+  rosters are younger/weaker (`buildAAARoster`, `meanAdj=-6`) and prospects develop faster in the
+  offseason. Roster screen has a **AAA Affiliate** section with `↑ up` / `↓ AAA` (`callUp`/`sendDown`);
+  the **AAA** tab shows affiliate standings + top prospects. Draftees report to AAA.
+- **Defensive positions:** `team.pos` maps playerId → assigned position (8 fielders + one DH). The
+  `LineupEditor` assigns them (swapping to keep a valid permutation) and flags missing/duplicates.
+  `teamDefRating` applies an out-of-position penalty and ignores the DH.
+- **Draft picks:** `G.picks` is a flat list of owned, **tradeable** picks (5 per team). `pickValue`
+  scales with the original team's projected finish (worse team → earlier slot → more value). The draft
+  builds its selection order from owned picks (`G.draftPicks`, by round then orig-team reverse
+  standings), so traded picks keep their slot. `Trades` can include players (MLB or AAA) and picks.
 - **Postseason:** 6 seeds/league, Wild Card Bo3 → Division Bo5 → LCS Bo7 → World Series Bo7.
 - **Offseason loop:** aging/development toward potential + decline, retirements, contract expiry →
-  free agency, `buildDraft()` (5-round amateur draft), then `startNewSeason()` rolls everything over.
+  free agency, `buildDraft()` (5-round amateur draft), then `startNewSeason()` rolls everything over
+  (resets MLB + AAA records/schedules, regenerates next year's `G.picks`).
 
 ## Player model
 - Hitters rated CON/POW/EYE/SPD/DEF; pitchers STU/CTL/STM. `computeOvr()` derives OVR; `pot` is ceiling.
@@ -48,9 +67,12 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
 
 ## UI notes
 - `HitterTable`/`PitcherTable` take optional `badge` ("ST"/"BN" pill), `bo` (batting-order #, hitters),
-  `slots` (per-row labels like SP1/CL, pitchers), and `onName` (opens `PlayerModal`). `Roster` splits
-  into Starting Lineup / Bench / Rotation / Closer / Bullpen using these.
-- `Leaders` qualifier thresholds scale with games played (`paQual`/`outQual`).
+  `slots` (per-row labels like SP1/CL, pitchers), `posMap` (show assigned defense, amber if out of
+  position), `onName` (opens `PlayerModal`), and action callbacks `onRelease`/`onSend`/`onCallUp`
+  (rendered by `RowActions`). `Roster` splits into Starting Lineup / Bench / Rotation / Closer /
+  Bullpen / AAA Affiliate using these.
+- `Leaders` qualifier thresholds scale with games played (`paQual`/`outQual`); AAA players excluded.
+- Player movement helpers: `movePlayer(G,p,destMlbId)` (preserves level), `movePlayerToFA(G,p)`.
 
 ## Gotchas / tuning ideas
 - Win leader can reach ~25 (a touch high) — tune `awardDecision()` / rotation depth if desired.
@@ -59,4 +81,6 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
 - AI trade acceptance: accepts if value received ≥ 0.97× value given (`Trades` component).
 - HR distribution is the most sensitive balance knob. Targets after a full season: AVG leader
   ~.330–.355, HR leader ~45–55 with ~6–10 hitters over 40, ERA leader ~1.8–2.2. Verify by simming a
-  fresh league to playoffs and checking total W === total L (currently 2430).
+  fresh league to playoffs and checking total W === total L (2430 per league; both MLB and AAA balance).
+- Sim cost doubled with AAA (both leagues sim every day). "Sim to Playoffs" on a fresh league takes a
+  few seconds. If it ever needs to be faster, AAA is the place to gate (e.g. sim AAA less often).

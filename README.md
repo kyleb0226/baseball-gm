@@ -25,7 +25,12 @@ Your franchise saves automatically to the browser (localStorage).
 - Deeper rosters (~30 players: a full lineup + bench and a 5-man rotation + bullpen), with a
   **fatter talent curve** so star players genuinely stand out
 - Roster screen split into **Starting Lineup / Bench / Rotation / Closer / Bullpen** with ST/BN
-  badges; editable batting order and rotation
+  badges; editable batting order **and a defensive alignment** (assign all 8 field positions + a DH;
+  out-of-position players take a fielding penalty)
+- **AAA affiliates** — every club runs a minor-league team that plays its own full season (with its
+  own standings and stat lines). Develop prospects there, then **call them up / send players down**
+- **Tradeable draft picks** — deal future picks whose value scales with each team's projected finish,
+  alongside players (big-leaguers or prospects)
 - Inning-by-inning, plate-appearance sim engine driven by player ratings — including stolen
   bases and a rotating bullpen — produces realistic stat lines
 - Rich box-score stats everywhere: hitters show G/AB/R/H/HR/RBI/BB/SO/SB and AVG/OBP/SLG/OPS;
