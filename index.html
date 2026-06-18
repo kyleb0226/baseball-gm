@@ -1,0 +1,1516 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pocket GM — Baseball</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background:#0b1220; color:#e5e7eb; }
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#27324a;border-radius:6px}
+  ::-webkit-scrollbar-track{background:#0b1220}
+  .tnum{font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel-src" id="app-src">
+const { useState, useEffect, useRef, useMemo } = React;
+
+/* =========================================================================
+   POCKET GM — BASEBALL   (single-file React)
+   Full GM suite: roster, lineup/rotation, season sim, standings, stat
+   leaders, finances/contracts, trades, free agency, amateur draft,
+   playoffs, and a multi-season franchise loop. Fictional players/teams.
+   ========================================================================= */
+
+/* ----------------------------- RNG / utils ----------------------------- */
+const rint = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+const chance = p => Math.random() < p;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const round = Math.round;
+function gauss(mean, sd) {
+  let u = 0, v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return mean + sd * Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+const rateGauss = (mean, sd) => clamp(round(gauss(mean, sd)), 20, 99);
+const n01 = r => (r - 20) / 79; // normalize 20..99 -> 0..1
+const money = m => (m >= 1 ? "$" + m.toFixed(1) + "M" : "$" + round(m * 1000) + "K");
+const uid = (() => { let i = 1; return () => i++; })();
+
+/* ----------------------------- name pools ------------------------------ */
+const FIRST = ["Jake","Marcus","Tyler","Diego","Carlos","Aaron","Liam","Noah","Mason","Ethan","Wyatt","Cole","Hunter","Owen","Luca","Mateo","Andre","Brett","Chase","Dax","Eli","Felix","Gavin","Hugo","Isaac","Jaylen","Kai","Logan","Miles","Nash","Omar","Parker","Quinn","Reed","Sawyer","Trent","Victor","Wade","Xander","Zane","Beau","Caleb","Drew","Emmett","Grant","Jonah","Kyle","Lane","Max","Reid","Shane","Tate","Vince","Wesley","Yusuf","Brody","Dane","Finn","Garrett","Heath"];
+const LAST = ["Reyes","Walker","Brooks","Cruz","Hayes","Bennett","Foster","Russo","Carter","Diaz","Ellison","Frost","Garza","Holt","Ibarra","Jennings","Knox","Lopez","Mercer","Nakai","Ortega","Pruitt","Quintero","Ramos","Santos","Tran","Underwood","Vargas","Whitlock","York","Zimmer","Abbott","Boyd","Calderon","Dixon","Estrada","Flores","Gibson","Hannigan","Iverson","Jacobs","Keller","Lambert","Marsh","Novak","Ocampo","Patel","Riggs","Salazar","Tucker","Valdez","Webb","Yancey","Ainsworth","Barlow","Cardenas","Delgado","Easton","Fitch","Galloway"];
+const genName = () => pick(FIRST) + " " + pick(LAST);
+
+/* ----------------------------- teams ----------------------------------- */
+// [city, nickname, abbr, league, division]
+const TEAM_DEFS = [
+  ["New York","Empires","NYE","Empire","East"],
+  ["Boston","Mariners","BOS","Empire","East"],
+  ["Philadelphia","Liberty","PHI","Empire","East"],
+  ["Washington","Sentinels","WAS","Empire","East"],
+  ["Baltimore","Crabs","BAL","Empire","East"],
+  ["Chicago","Pillars","CHP","Empire","Central"],
+  ["Detroit","Motors","DET","Empire","Central"],
+  ["Cleveland","Forge","CLE","Empire","Central"],
+  ["Minneapolis","Northmen","MIN","Empire","Central"],
+  ["Kansas City","Smoke","KC","Empire","Central"],
+  ["Los Angeles","Stars","LAS","Empire","West"],
+  ["San Francisco","Bridges","SF","Empire","West"],
+  ["Seattle","Pilots","SEA","Empire","West"],
+  ["Denver","Summit","DEN","Empire","West"],
+  ["Phoenix","Heat","PHX","Empire","West"],
+  ["Miami","Tarpons","MIA","Pioneer","East"],
+  ["Atlanta","Peaches","ATL","Pioneer","East"],
+  ["Tampa","Rays","TB","Pioneer","East"],
+  ["Charlotte","Hornets","CLT","Pioneer","East"],
+  ["Pittsburgh","Steel","PIT","Pioneer","East"],
+  ["St. Louis","Arches","STL","Pioneer","Central"],
+  ["Milwaukee","Brewers","MIL","Pioneer","Central"],
+  ["Cincinnati","Reds","CIN","Pioneer","Central"],
+  ["Houston","Comets","HOU","Pioneer","Central"],
+  ["Dallas","Drovers","DAL","Pioneer","Central"],
+  ["San Diego","Waves","SD","Pioneer","West"],
+  ["Portland","Lumber","POR","Pioneer","West"],
+  ["Sacramento","Gold","SAC","Pioneer","West"],
+  ["Las Vegas","Aces","LV","Pioneer","West"],
+  ["Austin","Outlaws","AUS","Pioneer","West"],
+];
+
+const HIT_POS = ["C","1B","2B","3B","SS","LF","CF","RF","DH"];
+const INF_OF = ["C","1B","2B","3B","SS","LF","CF","RF"];
+
+/* ----------------------------- player gen ------------------------------ */
+function emptyHitStats(){return{G:0,PA:0,AB:0,H:0,_2B:0,_3B:0,HR:0,R:0,RBI:0,BB:0,SO:0,SB:0};}
+function emptyPitStats(){return{G:0,GS:0,OUT:0,H:0,ER:0,BB:0,SO:0,W:0,L:0,SV:0,HRA:0};}
+
+function makeHitter(pos, ageRange){
+  const age = rint(ageRange[0], ageRange[1]);
+  const con = rateGauss(55,14), pow = rateGauss(52,16), eye = rateGauss(52,13);
+  const spd = rateGauss(pos==="CF"?62:50, 14);
+  const def = rateGauss(["SS","CF","C","2B"].includes(pos)?60:50, 13);
+  const p = {
+    id: uid(), name: genName(), age, pos, isP:false,
+    bats: chance(0.72)?"R":(chance(0.85)?"L":"S"),
+    con, pow, eye, spd, def,
+    stats: emptyHitStats(), career: emptyHitStats(),
+  };
+  computeOvr(p); setPotential(p); p.salary = salaryFor(p); p.years = rint(1,5);
+  return p;
+}
+function makePitcher(role, ageRange){
+  const age = rint(ageRange[0], ageRange[1]);
+  const stu = rateGauss(role==="SP"?55:58, 14);
+  const ctl = rateGauss(54,13);
+  const stm = rateGauss(role==="SP"?62:40, 12);
+  const p = {
+    id: uid(), name: genName(), age, pos: role, role, isP:true,
+    throws: chance(0.7)?"R":"L",
+    stu, ctl, stm,
+    stats: emptyPitStats(), career: emptyPitStats(),
+  };
+  computeOvr(p); setPotential(p); p.salary = salaryFor(p); p.years = rint(1,5);
+  return p;
+}
+function computeOvr(p){
+  if(p.isP){
+    const w = p.role==="SP"?[.42,.36,.22]:[.50,.40,.10];
+    p.ovr = round(w[0]*p.stu + w[1]*p.ctl + w[2]*p.stm);
+  } else {
+    p.ovr = round(.30*p.con + .30*p.pow + .14*p.eye + .10*p.spd + .16*p.def);
+  }
+  p.ovr = clamp(p.ovr,20,99);
+  return p.ovr;
+}
+function setPotential(p){
+  // younger players have more growth room
+  const room = clamp(round((26 - p.age) * 1.6 + gauss(2,4)), -4, 24);
+  p.pot = clamp(p.ovr + Math.max(0, room), p.ovr, 99);
+}
+function salaryFor(p){
+  const o = p.ovr;
+  let s = Math.pow(Math.max(0,o-40)/59, 2) * 36;
+  if(p.age < 25) s *= 0.45;          // pre-arb cheap
+  else if(p.age < 28) s *= 0.8;
+  return clamp(round(s*10)/10, 0.7, 45);
+}
+function playerValue(p){
+  // trade/FA value heuristic
+  let v = Math.pow(p.ovr/50, 3) * 10;
+  v += Math.max(0, p.pot - p.ovr) * 0.5;          // upside
+  v *= clamp(1.25 - Math.abs(p.age-27)*0.03, 0.5, 1.25); // age curve
+  v -= p.salary * 0.25;                            // contract drag
+  return Math.max(0.2, v);
+}
+
+/* ----------------------------- league gen ------------------------------ */
+function makeTeam(def, idx){
+  const [city,nick,abbr,league,division] = def;
+  const t = { id: idx, city, nick, abbr, league, division,
+    name: city+" "+nick, w:0, l:0, rs:0, ra:0,
+    budget: rint(120,225), lineup:[], rotation:[], userControlled:false };
+  const players = [];
+  // position players: 1 starter each + bench
+  HIT_POS.forEach(pos => players.push(makeHitter(pos,[23,33])));
+  for(let i=0;i<4;i++) players.push(makeHitter(pick(INF_OF),[22,34]));
+  // pitchers
+  for(let i=0;i<5;i++) players.push(makePitcher("SP",[23,34]));
+  for(let i=0;i<8;i++) players.push(makePitcher("RP",[22,34]));
+  players.forEach(p=>p.teamId=idx);
+  t._players = players;
+  return t;
+}
+
+function autoSetLineups(team, players){
+  const all = Array.isArray(players) ? players : Object.values(players);
+  const roster = all.filter(p=>p.teamId===team.id);
+  const hitters = roster.filter(p=>!p.isP).sort((a,b)=>b.ovr-a.ovr);
+  const pitchers = roster.filter(p=>p.isP);
+  // pick best at each defensive slot, then DH = best leftover
+  const used = new Set(); const lineup = [];
+  ["C","1B","2B","3B","SS","LF","CF","RF"].forEach(pos=>{
+    let best=null;
+    for(const h of hitters){ if(used.has(h.id)) continue; if(h.pos===pos){best=h;break;} }
+    if(!best){ for(const h of hitters){ if(!used.has(h.id)){best=h;break;} } }
+    if(best){ used.add(best.id); lineup.push(best.id); }
+  });
+  const dh = hitters.find(h=>!used.has(h.id)); if(dh){used.add(dh.id);lineup.push(dh.id);}
+  // order by a rough lineup logic: speed/eye top, power middle
+  const ids = lineup.slice();
+  ids.sort((a,b)=>{
+    const pa=all.find(x=>x.id===a),pb=all.find(x=>x.id===b);
+    return (pb.con+pb.eye) - (pa.con+pa.eye);
+  });
+  team.lineup = ids.slice(0,9);
+  const sp = pitchers.filter(p=>p.role==="SP").sort((a,b)=>b.ovr-a.ovr).slice(0,5).map(p=>p.id);
+  team.rotation = sp.length?sp:pitchers.slice(0,5).map(p=>p.id);
+}
+
+function generateLeague(userTeamId){
+  const teams = TEAM_DEFS.map((d,i)=>makeTeam(d,i));
+  const players = {};
+  teams.forEach(t=>{ t._players.forEach(p=>players[p.id]=p); delete t._players; });
+  teams.forEach(t=>autoSetLineups(t, Object.values(players)));
+  teams[userTeamId].userControlled = true;
+  return { teams, players };
+}
+
+/* ----------------------------- schedule -------------------------------- */
+// circle-method round robin -> repeat to 162 games
+function buildSchedule(teamIds){
+  const n = teamIds.length;
+  const arr = teamIds.slice();
+  const rounds = [];
+  for(let r=0;r<n-1;r++){
+    const pairs=[];
+    for(let i=0;i<n/2;i++){
+      const a=arr[i], b=arr[n-1-i];
+      pairs.push([a,b]);
+    }
+    rounds.push(pairs);
+    // rotate (keep first fixed)
+    const fixed=arr[0]; const rest=arr.slice(1);
+    rest.unshift(rest.pop()); arr.splice(0,arr.length,fixed,...rest);
+  }
+  const days=[]; let cycle=0;
+  while(days.length<162){
+    for(const round of rounds){
+      if(days.length>=162) break;
+      const games = round.map(([a,b])=>{
+        const [home,away] = cycle%2===0?[a,b]:[b,a];
+        return { home, away, played:false, hs:0, as:0 };
+      });
+      days.push(games);
+    }
+    cycle++;
+  }
+  return days.slice(0,162);
+}
+
+/* ----------------------------- game sim -------------------------------- */
+function teamDefRating(team, players){
+  const fielders = team.lineup.map(id=>players[id]).filter(p=>p&&!p.isP);
+  if(!fielders.length) return 50;
+  return fielders.reduce((s,p)=>s+p.def,0)/fielders.length;
+}
+
+function paOutcome(bat, pit, defN){
+  const bc=n01(bat.con), bp=n01(bat.pow), be=n01(bat.eye), bs=n01(bat.spd);
+  const ps=n01(pit.stu), pc=n01(pit.ctl);
+  let kP = clamp(0.215 + 0.13*(ps-0.5) - 0.11*(bc-0.5) + 0.05*(pc-0.5), 0.04, 0.45);
+  let bbP = clamp(0.085 + 0.08*(be-0.5) - 0.08*(pc-0.5) - 0.02*(ps-0.5), 0.02, 0.22);
+  let hrP = clamp(0.032 + 0.055*(bp-0.5) - 0.028*(ps-0.5), 0.004, 0.11);
+  const r = Math.random();
+  if(r < kP) return {o:"K"};
+  if(r < kP+bbP) return {o:"BB"};
+  if(r < kP+bbP+hrP) return {o:"HR"};
+  // ball in play
+  let babip = clamp(0.300 + 0.11*(bc-0.5) - 0.05*(pc-0.5) - 0.06*(defN-0.5), 0.19, 0.40);
+  if(!chance(babip)) return {o:"OUT"};
+  // hit type
+  const tripP = 0.018 + 0.04*bs;
+  const rr = Math.random();
+  if(rr < tripP) return {o:"3B"};
+  if(rr < tripP + 0.21) return {o:"2B"};
+  return {o:"1B"};
+}
+
+// advance runners; bases = [r1,r2,r3] holding batter objects or null. returns runs scored
+function advance(bases, out, batter){
+  let runs=0;
+  const score = ()=>{ runs++; };
+  if(out==="BB"){
+    if(bases[0]){ if(bases[1]){ if(bases[2]){ score(); } bases[2]=bases[1]; } bases[1]=bases[0]; }
+    bases[0]=batter;
+  } else if(out==="1B"){
+    if(bases[2]){score(); bases[2]=null;}
+    if(bases[1]){score(); bases[1]=null;}
+    if(bases[0]){ bases[1]=bases[0]; bases[0]=null; }
+    bases[0]=batter;
+  } else if(out==="2B"){
+    if(bases[2]){score();bases[2]=null;}
+    if(bases[1]){score();bases[1]=null;}
+    if(bases[0]){ bases[2]=bases[0]; bases[0]=null; }
+    bases[1]=batter;
+  } else if(out==="3B"){
+    if(bases[2]){score();bases[2]=null;}
+    if(bases[1]){score();bases[1]=null;}
+    if(bases[0]){score();bases[0]=null;}
+    bases[2]=batter;
+  } else if(out==="HR"){
+    if(bases[2]){score();bases[2]=null;}
+    if(bases[1]){score();bases[1]=null;}
+    if(bases[0]){score();bases[0]=null;}
+    score();
+  }
+  return runs;
+}
+
+function getPitchers(team, players){
+  const ros = Object.values(players).filter(p=>p.teamId===team.id && p.isP);
+  const gi = team.w + team.l;
+  const rotIds = team.rotation.length?team.rotation:ros.filter(p=>p.role==="SP").map(p=>p.id);
+  let starter = players[rotIds[gi % Math.max(1,rotIds.length)]] || ros.find(p=>p.role==="SP") || ros[0];
+  const pen = ros.filter(p=>p.role==="RP").sort((a,b)=>a.ovr-b.ovr); // weakest first, save best (closer) for last
+  return { starter, pen };
+}
+
+function lineupHitters(team, players){
+  let hs = team.lineup.map(id=>players[id]).filter(p=>p&&!p.isP);
+  if(hs.length<9){
+    const extra = Object.values(players).filter(p=>p.teamId===team.id && !p.isP && !team.lineup.includes(p.id));
+    extra.sort((a,b)=>b.ovr-a.ovr);
+    hs = hs.concat(extra).slice(0,9);
+  }
+  return hs.slice(0,9);
+}
+
+function simGame(home, away, players){
+  const out = { home, away };
+  const lineups = { [home.id]: lineupHitters(home,players), [away.id]: lineupHitters(away,players) };
+  const order = { [home.id]:0, [away.id]:0 };
+  const defN = { [home.id]: n01(teamDefRating(home,players)), [away.id]: n01(teamDefRating(away,players)) };
+  const arms = { [home.id]: getPitchers(home,players), [away.id]: getPitchers(away,players) };
+  const cur = { [home.id]:{p:arms[home.id].starter, outs:0, er:0, idx:0, gs:true},
+                [away.id]:{p:arms[away.id].starter, outs:0, er:0, idx:0, gs:true} };
+  const starterTarget = id => 12 + round(n01(arms[id].starter.stm)*9); // ~12-21 outs (4-7 ip)
+  const score = { [home.id]:0, [away.id]:0 };
+  // mark GS
+  cur[home.id].p.stats.GS++; cur[away.id].p.stats.GS++;
+  cur[home.id].p.stats.G++; cur[away.id].p.stats.G++;
+  const usedPen = { [home.id]:[], [away.id]:[] };
+
+  function maybeReliever(battingTeamId, pitchTeamId){
+    const c = cur[pitchTeamId];
+    if(c.gs && c.outs >= starterTarget(pitchTeamId)){
+      const pen = arms[pitchTeamId].pen;
+      // bring in middle reliever (not the closer yet)
+      const next = pen.find(rp=>!usedPen[pitchTeamId].includes(rp.id) && rp.id!==(pen[pen.length-1]||{}).id) || pen[0];
+      if(next){ usedPen[pitchTeamId].push(next.id); next.stats.G++; c.p=next; c.gs=false; c.outs2=0; }
+    } else if(!c.gs){
+      // rotate relievers every ~3 outs
+      c.outs2 = (c.outs2||0);
+    }
+  }
+
+  function halfInning(batId, pitId, inning, isBottom){
+    let outs=0; const bases=[null,null,null];
+    const hitters = lineups[batId];
+    let relCount = 0;
+    while(outs<3){
+      // pitcher change logic
+      const c = cur[pitId];
+      maybeReliever(batId, pitId);
+      // in late innings switch to closer for the pitching team if protecting small lead at home-team's save spot
+      if(!c.gs && inning>=8){
+        const pen = arms[pitId].pen; const closer = pen[pen.length-1];
+        const lead = score[pitId]-score[batId];
+        if(closer && lead>0 && lead<=3 && c.p.id!==closer.id && !usedPen[pitId].includes(closer.id)){
+          usedPen[pitId].push(closer.id); closer.stats.G++; c.p=closer;
+        }
+      }
+      const pitcher = cur[pitId].p;
+      const bat = hitters[order[batId] % hitters.length]; order[batId]++;
+      const res = paOutcome(bat, pitcher, defN[pitId]);
+      bat.stats.PA++;
+      pitcher.stats.OUT; // noop
+      if(res.o==="BB"){
+        bat.stats.BB++; pitcher.stats.BB++;
+        const r = advance(bases,"BB",bat);
+        score[batId]+=r; bat.stats.RBI+=r; addRuns(bases, players, r);
+        cur[pitId].er+=r; pitcher.stats.ER+=r;
+      } else if(res.o==="K"){
+        bat.stats.AB++; bat.stats.SO++; pitcher.stats.SO++;
+        outs++; cur[pitId].outs++; pitcher.stats.OUT++;
+      } else if(res.o==="OUT"){
+        bat.stats.AB++;
+        // small chance a baserunner scores on productive out
+        outs++; cur[pitId].outs++; pitcher.stats.OUT++;
+      } else {
+        // hit
+        bat.stats.AB++; bat.stats.H++; pitcher.stats.H++;
+        if(res.o==="2B") bat.stats._2B++;
+        if(res.o==="3B") bat.stats._3B++;
+        if(res.o==="HR"){ bat.stats.HR++; pitcher.stats.HRA++; }
+        const r = advance(bases, res.o, bat);
+        score[batId]+=r; bat.stats.RBI+=r;
+        cur[pitId].er+=r; pitcher.stats.ER+=r;
+      }
+    }
+  }
+  // helper to credit runs scored to runners (R stat) — approximate: credit batters who score
+  function addRuns(){ /* R for scorers approximated below */ }
+
+  // play 9 innings (or until decided in bottom 9 / extras)
+  let inning=1;
+  while(true){
+    halfInning(away.id, home.id, inning, false);  // top
+    if(inning>=9 && score[home.id]>score[away.id]) break; // walk-off not needed, home leads after top9
+    halfInning(home.id, away.id, inning, true);   // bottom
+    if(inning>=9 && score[home.id]!==score[away.id]) break;
+    inning++;
+    if(inning>20) break; // safety
+  }
+  score[home.id] = Math.max(score[home.id], 0);
+  // approximate R (runs scored) by team: distribute = runs among hitters via RBI proportion (simplified)
+  distributeRuns(home, players, score[home.id]);
+  distributeRuns(away, players, score[away.id]);
+
+  out.hs = score[home.id]; out.as = score[away.id];
+  // decisions
+  const winnerId = out.hs>out.as ? home.id : away.id;
+  const loserId  = winnerId===home.id ? away.id : home.id;
+  awardDecision(winnerId, loserId, arms, usedPen, players, {home,away,score});
+  // tally G for all who batted handled via PA; ensure G increment for batters
+  [home,away].forEach(t=>{
+    lineups[t.id].forEach(h=>{ if(h._gpMark!==undefined){} });
+  });
+  return out;
+}
+
+function distributeRuns(team, players, runs){
+  // give R to hitters roughly weighted by OBP-ish (con+eye); simplistic but keeps totals sane
+  const hs = Object.values(players).filter(p=>p.teamId===team.id && !p.isP && p.stats.PA>0);
+  let remaining = runs;
+  // HR already credited a run to batter; subtract those from pool
+  const hrRuns = hs.reduce((s,h)=>s+(h._hrThisGame||0),0);
+  for(let i=0;i<remaining;i++){
+    const h = pick(hs.length?hs:[null]);
+    if(h) h.stats.R++;
+  }
+}
+
+function awardDecision(winnerId, loserId, arms, usedPen, players, ctx){
+  const wStarter = arms[winnerId].starter;
+  if(wStarter.stats.OUT>=15){ wStarter.stats.W++; }
+  else {
+    // give W to a used reliever, else starter
+    const rp = (usedPen[winnerId]||[]).map(id=>players[id])[0];
+    (rp||wStarter).stats.W++;
+  }
+  arms[loserId].starter.stats.L++;
+  // save: closer = last in pen, if used and team won by<=3
+  const margin = Math.abs(ctx.score[winnerId]-ctx.score[loserId]);
+  const pen = arms[winnerId].pen; const closer = pen[pen.length-1];
+  if(closer && (usedPen[winnerId]||[]).includes(closer.id) && margin<=3 && closer.id!==wStarter.id){
+    closer.stats.SV++;
+  }
+}
+
+/* mark games-played for hitters in lineup */
+function markGamesPlayed(home, away, players){
+  [home,away].forEach(t=>{
+    lineupHitters(t,players).forEach(h=>h.stats.G++);
+  });
+}
+
+/* ----------------------------- standings ------------------------------- */
+function pct(t){ const g=t.w+t.l; return g? t.w/g : 0; }
+function standings(teams){
+  const byDiv = {};
+  teams.forEach(t=>{
+    const k=t.league+" "+t.division;
+    (byDiv[k]=byDiv[k]||[]).push(t);
+  });
+  Object.values(byDiv).forEach(arr=>arr.sort((a,b)=>pct(b)-pct(a)||b.w-a.w));
+  return byDiv;
+}
+function playoffSeeds(teams, league){
+  const lt = teams.filter(t=>t.league===league);
+  const byDiv={};
+  lt.forEach(t=>(byDiv[t.division]=byDiv[t.division]||[]).push(t));
+  const winners=[];
+  Object.values(byDiv).forEach(arr=>{arr.sort((a,b)=>pct(b)-pct(a)); winners.push(arr[0]);});
+  winners.sort((a,b)=>pct(b)-pct(a));
+  const rest = lt.filter(t=>!winners.includes(t)).sort((a,b)=>pct(b)-pct(a));
+  const wc = rest.slice(0,3);
+  return [...winners, ...wc]; // 6 seeds: 0,1,2 div winners; 3,4,5 wildcards
+}
+
+/* ----------------------------- derived stat display -------------------- */
+const avg = s => s.AB? (s.H/s.AB) : 0;
+const obp = s => (s.AB+s.BB)? (s.H+s.BB)/(s.AB+s.BB) : 0;
+const slg = s => { const tb=(s.H-s._2B-s._3B-s.HR)+2*s._2B+3*s._3B+4*s.HR; return s.AB? tb/s.AB:0; };
+const ops = s => obp(s)+slg(s);
+const ip  = s => Math.floor(s.OUT/3) + (s.OUT%3)/10;
+const era = s => s.OUT? (s.ER*27/s.OUT) : 0;
+const whip= s => s.OUT? ((s.BB+s.H)/(s.OUT/3)) : 0;
+const f3 = v => v.toFixed(3).replace(/^0/,"");
+const f2 = v => v.toFixed(2);
+
+/* ----------------------------- save/load ------------------------------- */
+const SAVE_KEY = "pocketgm_baseball_v1";
+function saveGame(G){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(G)); }catch(e){} }
+function loadGame(){ try{ const s=localStorage.getItem(SAVE_KEY); return s?JSON.parse(s):null; }catch(e){ return null; } }
+function clearSave(){ localStorage.removeItem(SAVE_KEY); }
+
+/* ----------------------------- new game -------------------------------- */
+function newGame(userTeamId){
+  const { teams, players } = generateLeague(userTeamId);
+  const schedule = buildSchedule(teams.map(t=>t.id));
+  return {
+    season: 2026, day: 0, phase: "regular",
+    userTeamId, teams, players, schedule,
+    freeAgents: [], draftClass: [], draftOrder: [], draftPick: 0,
+    playoffs: null, champion: null, log: [],
+  };
+}
+
+/* ======================================================================= */
+/*                                 UI                                       */
+/* ======================================================================= */
+
+function App(){
+  const [G, setG] = useState(()=>loadGame());
+  const [tab, setTab] = useState("hub");
+  const [toast, setToast] = useState("");
+  const commit = g => { saveGame(g); setG({...g}); };
+  const tShow = msg => { setToast(msg); setTimeout(()=>setToast(""),2500); };
+
+  if(!G) return <Splash onStart={(id)=>{ const g=newGame(id); commit(g); }} />;
+
+  const user = G.teams[G.userTeamId];
+  const players = G.players;
+
+  const TABS = [
+    ["hub","Hub"],["roster","Roster"],["lineup","Lineup"],["standings","Standings"],
+    ["stats","Leaders"],["schedule","Schedule"],["trades","Trades"],
+    ["fa","Free Agency"],["finances","Finances"],
+  ];
+  if(G.phase==="offseason") TABS.push(["draft","Draft"]);
+  if(G.phase==="playoffs"||G.playoffs) TABS.push(["playoffs","Playoffs"]);
+
+  return (
+    <div className="min-h-screen">
+      <header className="sticky top-0 z-20 bg-[#0d1526] border-b border-[#1d2940] px-4 py-3 flex items-center gap-3 flex-wrap">
+        <div className="font-black text-lg tracking-tight">⚾ POCKET <span className="text-emerald-400">GM</span></div>
+        <div className="text-sm text-slate-400">{user.name}</div>
+        <div className="ml-auto flex items-center gap-2 text-sm">
+          <Badge>{G.season}</Badge>
+          <Badge>{G.phase==="regular"?`Day ${G.day+1}/162`:G.phase.toUpperCase()}</Badge>
+          <Badge>{user.w}-{user.l}</Badge>
+          <button onClick={()=>{ if(confirm("Start a brand new franchise? Current save is lost.")){clearSave(); setG(null);} }}
+            className="px-2 py-1 rounded bg-red-900/40 hover:bg-red-900/70 text-red-200 text-xs">New</button>
+        </div>
+      </header>
+
+      <nav className="flex gap-1 px-3 py-2 overflow-x-auto bg-[#0b1220] border-b border-[#15203a] sticky top-[57px] z-10">
+        {TABS.map(([k,label])=>(
+          <button key={k} onClick={()=>setTab(k)}
+            className={"px-3 py-1.5 rounded-md text-sm whitespace-nowrap "+(tab===k?"bg-emerald-500 text-slate-900 font-semibold":"text-slate-300 hover:bg-[#16213a]")}>
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      <main className="p-4 max-w-6xl mx-auto">
+        {tab==="hub" && <Hub G={G} commit={commit} tShow={tShow} setTab={setTab} />}
+        {tab==="roster" && <Roster G={G} team={user} commit={commit} />}
+        {tab==="lineup" && <LineupEditor G={G} commit={commit} tShow={tShow} />}
+        {tab==="standings" && <Standings G={G} />}
+        {tab==="stats" && <Leaders G={G} />}
+        {tab==="schedule" && <Schedule G={G} />}
+        {tab==="trades" && <Trades G={G} commit={commit} tShow={tShow} />}
+        {tab==="fa" && <FreeAgency G={G} commit={commit} tShow={tShow} />}
+        {tab==="finances" && <Finances G={G} />}
+        {tab==="draft" && <Draft G={G} commit={commit} tShow={tShow} />}
+        {tab==="playoffs" && <Playoffs G={G} commit={commit} tShow={tShow} />}
+      </main>
+
+      {toast && <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-emerald-500 text-slate-900 px-4 py-2 rounded-lg font-semibold shadow-lg z-50">{toast}</div>}
+    </div>
+  );
+}
+
+function Badge({children}){ return <span className="px-2 py-1 rounded bg-[#16213a] text-slate-200 tnum text-xs">{children}</span>; }
+function Card({children, className=""}){ return <div className={"bg-[#101a30] border border-[#1d2940] rounded-xl p-4 "+className}>{children}</div>; }
+function OvrPill({v}){
+  const c = v>=80?"bg-emerald-500 text-slate-900":v>=70?"bg-lime-500 text-slate-900":v>=60?"bg-yellow-500 text-slate-900":v>=50?"bg-orange-500 text-slate-900":"bg-slate-600 text-slate-100";
+  return <span className={"inline-block w-8 text-center rounded font-bold text-xs py-0.5 "+c}>{v}</span>;
+}
+
+/* ----------------------------- Splash ---------------------------------- */
+function Splash({onStart}){
+  const [sel, setSel] = useState(0);
+  const groups = {};
+  TEAM_DEFS.forEach((d,i)=>{ const k=d[3]; (groups[k]=groups[k]||[]).push([d,i]); });
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center p-6">
+      <div className="text-5xl font-black mb-1">⚾ POCKET <span className="text-emerald-400">GM</span></div>
+      <div className="text-slate-400 mb-6">Baseball — build a dynasty. Pick your franchise.</div>
+      <div className="grid md:grid-cols-2 gap-4 w-full max-w-3xl">
+        {Object.entries(groups).map(([lg, arr])=>(
+          <Card key={lg}>
+            <div className="font-bold text-emerald-300 mb-2">{lg} League</div>
+            <div className="grid grid-cols-2 gap-1">
+              {arr.map(([d,i])=>(
+                <button key={i} onClick={()=>setSel(i)}
+                  className={"text-left px-2 py-1.5 rounded text-sm "+(sel===i?"bg-emerald-500 text-slate-900 font-semibold":"hover:bg-[#16213a]")}>
+                  {d[0]} {d[1]}
+                </button>
+              ))}
+            </div>
+          </Card>
+        ))}
+      </div>
+      <button onClick={()=>onStart(sel)} className="mt-6 px-8 py-3 bg-emerald-500 text-slate-900 font-bold rounded-xl hover:bg-emerald-400">
+        Start as {TEAM_DEFS[sel][0]} {TEAM_DEFS[sel][1]} →
+      </button>
+    </div>
+  );
+}
+
+/* ----------------------------- Hub / sim ------------------------------- */
+function simDay(G){
+  const day = G.schedule[G.day];
+  if(!day) return;
+  day.forEach(g=>{
+    if(g.played) return;
+    const home=G.teams[g.home], away=G.teams[g.away];
+    const res = simGame(home, away, G.players);
+    markGamesPlayed(home, away, G.players);
+    g.played=true; g.hs=res.hs; g.as=res.as;
+    if(res.hs>res.as){ home.w++; away.l++; } else { away.w++; home.l++; }
+    home.rs+=res.hs; home.ra+=res.as; away.rs+=res.as; away.ra+=res.hs;
+  });
+  G.day++;
+  if(G.day>=162){ enterPlayoffs(G); }
+}
+
+function userNextGame(G){
+  for(let d=G.day; d<G.schedule.length; d++){
+    const g = G.schedule[d].find(x=>(x.home===G.userTeamId||x.away===G.userTeamId));
+    if(g && !g.played) return {day:d, g};
+  }
+  return null;
+}
+
+function Hub({G, commit, tShow, setTab}){
+  const user = G.teams[G.userTeamId];
+  const [busy,setBusy]=useState(false);
+  const lastDay = G.day>0 ? G.schedule[G.day-1] : null;
+  const userLast = lastDay && lastDay.find(x=>x.home===G.userTeamId||x.away===G.userTeamId);
+  const next = userNextGame(G);
+
+  const runDays = (count)=>{
+    setBusy(true);
+    setTimeout(()=>{
+      const g = G;
+      for(let i=0;i<count && g.phase==="regular" && g.day<162;i++) simDay(g);
+      commit(g); setBusy(false);
+    },10);
+  };
+
+  if(G.phase==="playoffs"){
+    return <Card><div className="text-lg font-bold mb-2">🏆 Postseason is here!</div>
+      <p className="text-slate-300 mb-3">The regular season is complete. Head to the Playoffs tab to advance the bracket.</p>
+      <button onClick={()=>setTab("playoffs")} className="px-4 py-2 bg-emerald-500 text-slate-900 rounded-lg font-semibold">Go to Playoffs →</button></Card>;
+  }
+  if(G.phase==="offseason"){
+    return <OffseasonHub G={G} commit={commit} tShow={tShow} setTab={setTab} />;
+  }
+
+  const div = standings(G.teams)[user.league+" "+user.division];
+  const rank = div.findIndex(t=>t.id===user.id)+1;
+
+  return (
+    <div className="space-y-4">
+      <div className="grid sm:grid-cols-3 gap-3">
+        <Card><div className="text-slate-400 text-xs">RECORD</div><div className="text-2xl font-bold tnum">{user.w}-{user.l}</div><div className="text-xs text-slate-500">{f3(pct(user))} · {user.division} #{rank}</div></Card>
+        <Card><div className="text-slate-400 text-xs">RUN DIFF</div><div className={"text-2xl font-bold tnum "+((user.rs-user.ra)>=0?"text-emerald-400":"text-red-400")}>{user.rs-user.ra>=0?"+":""}{user.rs-user.ra}</div><div className="text-xs text-slate-500">{user.rs} RS / {user.ra} RA</div></Card>
+        <Card><div className="text-slate-400 text-xs">PAYROLL</div><div className="text-2xl font-bold tnum">{money(payroll(G,user.id))}</div><div className="text-xs text-slate-500">Budget {money(user.budget)}</div></Card>
+      </div>
+
+      {userLast && <Card>
+        <div className="text-xs text-slate-400 mb-1">LAST GAME</div>
+        <GameLine G={G} g={userLast} />
+      </Card>}
+
+      {next && <Card>
+        <div className="text-xs text-slate-400 mb-1">NEXT UP{next.day>G.day?` (Day ${next.day+1})`:""}</div>
+        <GameLine G={G} g={next.g} preview />
+      </Card>}
+
+      <Card>
+        <div className="flex flex-wrap gap-2">
+          <button disabled={busy} onClick={()=>runDays(1)} className="px-4 py-2 bg-emerald-500 text-slate-900 rounded-lg font-semibold disabled:opacity-50">Sim 1 Day</button>
+          <button disabled={busy} onClick={()=>runDays(7)} className="px-4 py-2 bg-[#16213a] rounded-lg hover:bg-[#1c2c4a] disabled:opacity-50">Sim 1 Week</button>
+          <button disabled={busy} onClick={()=>runDays(30)} className="px-4 py-2 bg-[#16213a] rounded-lg hover:bg-[#1c2c4a] disabled:opacity-50">Sim 1 Month</button>
+          <button disabled={busy} onClick={()=>runDays(200)} className="px-4 py-2 bg-[#16213a] rounded-lg hover:bg-[#1c2c4a] disabled:opacity-50">Sim to Playoffs</button>
+        </div>
+        {busy && <div className="text-xs text-slate-400 mt-2">Simulating…</div>}
+      </Card>
+    </div>
+  );
+}
+
+function GameLine({G, g, preview}){
+  const home=G.teams[g.home], away=G.teams[g.away];
+  const userId=G.userTeamId;
+  const win = g.played ? (g.hs>g.as?g.home:g.away) : null;
+  return (
+    <div className="flex items-center gap-2">
+      <div className={"flex-1 text-right "+(away.id===userId?"font-bold":"")}>{away.city} {away.nick}</div>
+      <div className="tnum w-8 text-center font-bold">{g.played?g.as:""}</div>
+      <div className="text-slate-500 text-xs">@</div>
+      <div className="tnum w-8 text-center font-bold">{g.played?g.hs:""}</div>
+      <div className={"flex-1 "+(home.id===userId?"font-bold":"")}>{home.city} {home.nick}</div>
+      {g.played && <span className={"text-xs px-2 py-0.5 rounded "+(win===userId?"bg-emerald-600":"bg-red-800")}>{win===userId?"W":"L"}</span>}
+      {preview && <span className="text-xs text-slate-500">vs</span>}
+    </div>
+  );
+}
+
+/* ----------------------------- Roster ---------------------------------- */
+function rosterOf(G, teamId){ return Object.values(G.players).filter(p=>p.teamId===teamId); }
+function payroll(G, teamId){ return rosterOf(G,teamId).reduce((s,p)=>s+p.salary,0); }
+
+function Roster({G, team, commit}){
+  const ros = rosterOf(G, team.id);
+  const hitters = ros.filter(p=>!p.isP).sort((a,b)=>b.ovr-a.ovr);
+  const pitchers = ros.filter(p=>p.isP).sort((a,b)=>b.ovr-a.ovr);
+  const release = (p)=>{
+    if(!confirm(`Release ${p.name}? He becomes a free agent.`)) return;
+    p.teamId=null; team.lineup=team.lineup.filter(id=>id!==p.id); team.rotation=team.rotation.filter(id=>id!==p.id);
+    G.freeAgents.push(p.id); commit(G);
+  };
+  return (
+    <div className="space-y-4">
+      <Card>
+        <div className="flex justify-between items-center mb-2">
+          <h3 className="font-bold">Position Players <span className="text-slate-500 text-sm">({hitters.length})</span></h3>
+          <span className="text-xs text-slate-500">Payroll {money(payroll(G,team.id))} / {money(team.budget)}</span>
+        </div>
+        <HitterTable players={hitters} onRelease={release} showAction />
+      </Card>
+      <Card>
+        <h3 className="font-bold mb-2">Pitchers <span className="text-slate-500 text-sm">({pitchers.length})</span></h3>
+        <PitcherTable players={pitchers} onRelease={release} showAction />
+      </Card>
+    </div>
+  );
+}
+
+function HitterTable({players, onRelease, showAction}){
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm tnum">
+        <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]">
+          <th className="text-left py-1 pr-2">Pos</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th>
+          <th>CON</th><th>POW</th><th>EYE</th><th>SPD</th><th>DEF</th>
+          <th>AVG</th><th>HR</th><th>RBI</th><th>OPS</th><th className="text-right pr-2">Salary</th>{showAction&&<th></th>}
+        </tr></thead>
+        <tbody>
+          {players.map(p=>(
+            <tr key={p.id} className="border-b border-[#15203a] hover:bg-[#13203a]">
+              <td className="py-1 pr-2 text-slate-400">{p.pos}</td>
+              <td className="text-left font-medium">{p.name} <span className="text-slate-600 text-xs">{p.bats}</span></td>
+              <td className="text-center">{p.age}</td>
+              <td className="text-center"><OvrPill v={p.ovr}/></td>
+              <td className="text-center text-slate-400">{p.pot}</td>
+              <td className="text-center">{p.con}</td><td className="text-center">{p.pow}</td><td className="text-center">{p.eye}</td><td className="text-center">{p.spd}</td><td className="text-center">{p.def}</td>
+              <td className="text-center">{p.stats.AB?f3(avg(p.stats)):"—"}</td>
+              <td className="text-center">{p.stats.HR||"—"}</td>
+              <td className="text-center">{p.stats.RBI||"—"}</td>
+              <td className="text-center">{p.stats.AB?f3(ops(p.stats)):"—"}</td>
+              <td className="text-right pr-2 text-slate-300">{money(p.salary)}<span className="text-slate-600 text-xs"> {p.years}y</span></td>
+              {showAction&&<td><button onClick={()=>onRelease(p)} className="text-red-400 text-xs hover:text-red-300">cut</button></td>}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PitcherTable({players, onRelease, showAction}){
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm tnum">
+        <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]">
+          <th className="text-left py-1 pr-2">Role</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th>
+          <th>STU</th><th>CTL</th><th>STM</th>
+          <th>W-L</th><th>ERA</th><th>SO</th><th>SV</th><th>WHIP</th><th className="text-right pr-2">Salary</th>{showAction&&<th></th>}
+        </tr></thead>
+        <tbody>
+          {players.map(p=>(
+            <tr key={p.id} className="border-b border-[#15203a] hover:bg-[#13203a]">
+              <td className="py-1 pr-2 text-slate-400">{p.role}</td>
+              <td className="text-left font-medium">{p.name} <span className="text-slate-600 text-xs">{p.throws}HP</span></td>
+              <td className="text-center">{p.age}</td>
+              <td className="text-center"><OvrPill v={p.ovr}/></td>
+              <td className="text-center text-slate-400">{p.pot}</td>
+              <td className="text-center">{p.stu}</td><td className="text-center">{p.ctl}</td><td className="text-center">{p.stm}</td>
+              <td className="text-center">{p.stats.W}-{p.stats.L}</td>
+              <td className="text-center">{p.stats.OUT?f2(era(p.stats)):"—"}</td>
+              <td className="text-center">{p.stats.SO||"—"}</td>
+              <td className="text-center">{p.stats.SV||"—"}</td>
+              <td className="text-center">{p.stats.OUT?f2(whip(p.stats)):"—"}</td>
+              <td className="text-right pr-2 text-slate-300">{money(p.salary)}<span className="text-slate-600 text-xs"> {p.years}y</span></td>
+              {showAction&&<td><button onClick={()=>onRelease(p)} className="text-red-400 text-xs hover:text-red-300">cut</button></td>}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ----------------------------- Lineup editor --------------------------- */
+function LineupEditor({G, commit, tShow}){
+  const team = G.teams[G.userTeamId];
+  const ros = rosterOf(G, team.id);
+  const hitters = ros.filter(p=>!p.isP);
+  const sp = ros.filter(p=>p.isP && p.role==="SP");
+  const move = (arr, i, dir)=>{ const j=i+dir; if(j<0||j>=arr.length) return; [arr[i],arr[j]]=[arr[j],arr[i]]; commit(G); };
+  const swapHitter = (slot, newId)=>{
+    const cur = team.lineup[slot];
+    const existing = team.lineup.indexOf(Number(newId));
+    if(existing>=0) team.lineup[existing]=cur;
+    team.lineup[slot]=Number(newId);
+    commit(G);
+  };
+  const setRot = (slot, newId)=>{
+    const existing = team.rotation.indexOf(Number(newId));
+    const cur = team.rotation[slot];
+    if(existing>=0) team.rotation[existing]=cur;
+    team.rotation[slot]=Number(newId);
+    commit(G);
+  };
+  return (
+    <div className="grid md:grid-cols-2 gap-4">
+      <Card>
+        <h3 className="font-bold mb-2">Batting Order</h3>
+        <div className="space-y-1">
+          {team.lineup.map((id,i)=>{
+            const p=G.players[id];
+            return (
+              <div key={i} className="flex items-center gap-2 bg-[#13203a] rounded px-2 py-1">
+                <span className="w-5 text-slate-500 text-sm">{i+1}</span>
+                <OvrPill v={p?p.ovr:0}/>
+                <select value={id} onChange={e=>swapHitter(i, e.target.value)} className="bg-[#0b1220] rounded px-1 py-0.5 text-sm flex-1 border border-[#1d2940]">
+                  {hitters.map(h=><option key={h.id} value={h.id}>{h.pos} {h.name} ({h.ovr})</option>)}
+                </select>
+                <div className="flex flex-col">
+                  <button onClick={()=>move(team.lineup,i,-1)} className="text-xs text-slate-400 leading-none">▲</button>
+                  <button onClick={()=>move(team.lineup,i,1)} className="text-xs text-slate-400 leading-none">▼</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+      <Card>
+        <h3 className="font-bold mb-2">Starting Rotation</h3>
+        <div className="space-y-1">
+          {team.rotation.map((id,i)=>{
+            const p=G.players[id];
+            return (
+              <div key={i} className="flex items-center gap-2 bg-[#13203a] rounded px-2 py-1">
+                <span className="w-8 text-slate-500 text-sm">SP{i+1}</span>
+                <OvrPill v={p?p.ovr:0}/>
+                <select value={id} onChange={e=>setRot(i, e.target.value)} className="bg-[#0b1220] rounded px-1 py-0.5 text-sm flex-1 border border-[#1d2940]">
+                  {sp.map(h=><option key={h.id} value={h.id}>{h.name} ({h.ovr})</option>)}
+                </select>
+                <div className="flex flex-col">
+                  <button onClick={()=>move(team.rotation,i,-1)} className="text-xs text-slate-400 leading-none">▲</button>
+                  <button onClick={()=>move(team.rotation,i,1)} className="text-xs text-slate-400 leading-none">▼</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <p className="text-xs text-slate-500 mt-2">Relievers are used automatically; your highest-OVR reliever closes games.</p>
+      </Card>
+    </div>
+  );
+}
+
+/* ----------------------------- Standings ------------------------------- */
+function Standings({G}){
+  const byDiv = standings(G.teams);
+  const order = ["Empire East","Empire Central","Empire West","Pioneer East","Pioneer Central","Pioneer West"];
+  return (
+    <div className="grid md:grid-cols-2 gap-4">
+      {order.map(k=>(
+        <Card key={k}>
+          <h3 className="font-bold mb-2">{k}</h3>
+          <table className="w-full text-sm tnum">
+            <thead><tr className="text-slate-400 text-xs"><th className="text-left">Team</th><th>W</th><th>L</th><th>PCT</th><th>GB</th><th>DIFF</th></tr></thead>
+            <tbody>
+              {byDiv[k].map((t,i)=>{
+                const lead=byDiv[k][0];
+                const gb=i===0?"—":(((lead.w-t.w)+(t.l-lead.l))/2).toFixed(1);
+                return (
+                  <tr key={t.id} className={"border-t border-[#15203a] "+(t.id===G.userTeamId?"bg-emerald-900/30 font-semibold":"")}>
+                    <td className="text-left py-1">{t.city} {t.nick}</td>
+                    <td className="text-center">{t.w}</td><td className="text-center">{t.l}</td>
+                    <td className="text-center">{f3(pct(t))}</td><td className="text-center">{gb}</td>
+                    <td className={"text-center "+((t.rs-t.ra)>=0?"text-emerald-400":"text-red-400")}>{t.rs-t.ra>=0?"+":""}{t.rs-t.ra}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+/* ----------------------------- Leaders --------------------------------- */
+function Leaders({G}){
+  const all = Object.values(G.players);
+  const hitters = all.filter(p=>!p.isP && p.stats.PA>=20);
+  const pitchers = all.filter(p=>p.isP && p.stats.OUT>=30);
+  const tn = id => G.teams[id]?G.teams[id].abbr:"FA";
+  const board = (title, list, fmt) => (
+    <Card><h3 className="font-bold mb-2">{title}</h3>
+      <table className="w-full text-sm tnum"><tbody>
+        {list.map((p,i)=>(
+          <tr key={p.id} className="border-b border-[#15203a]">
+            <td className="text-slate-500 w-5">{i+1}</td>
+            <td className="text-left">{p.name} <span className="text-slate-600 text-xs">{tn(p.teamId)}</span></td>
+            <td className="text-right font-semibold">{fmt(p)}</td>
+          </tr>
+        ))}
+      </tbody></table>
+    </Card>
+  );
+  const top = (list, key, n=10) => [...list].sort((a,b)=>key(b)-key(a)).slice(0,n);
+  const bot = (list, key, n=10) => [...list].sort((a,b)=>key(a)-key(b)).slice(0,n);
+  return (
+    <div className="grid md:grid-cols-3 gap-4">
+      {board("AVG", top(hitters,p=>avg(p.stats)), p=>f3(avg(p.stats)))}
+      {board("Home Runs", top(hitters,p=>p.stats.HR), p=>p.stats.HR)}
+      {board("RBI", top(hitters,p=>p.stats.RBI), p=>p.stats.RBI)}
+      {board("OPS", top(hitters,p=>ops(p.stats)), p=>f3(ops(p.stats)))}
+      {board("Hits", top(hitters,p=>p.stats.H), p=>p.stats.H)}
+      {board("Runs", top(hitters,p=>p.stats.R), p=>p.stats.R)}
+      {board("ERA", bot(pitchers,p=>era(p.stats)), p=>f2(era(p.stats)))}
+      {board("Strikeouts", top(pitchers,p=>p.stats.SO), p=>p.stats.SO)}
+      {board("Wins", top(pitchers,p=>p.stats.W), p=>p.stats.W)}
+      {board("Saves", top(pitchers.filter(p=>p.stats.SV>0),p=>p.stats.SV), p=>p.stats.SV)}
+      {board("WHIP", bot(pitchers,p=>whip(p.stats)), p=>f2(whip(p.stats)))}
+    </div>
+  );
+}
+
+/* ----------------------------- Schedule -------------------------------- */
+function Schedule({G}){
+  const uid2=G.userTeamId;
+  const games=[];
+  G.schedule.forEach((day,di)=>{ const g=day.find(x=>x.home===uid2||x.away===uid2); if(g) games.push({di,g}); });
+  return (
+    <Card>
+      <h3 className="font-bold mb-2">Season Schedule — {G.teams[uid2].name}</h3>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-1 text-sm">
+        {games.map(({di,g})=>{
+          const home=g.home===uid2; const opp=G.teams[home?g.away:g.home];
+          const win=g.played?((home?g.hs>g.as:g.as>g.hs)?"W":"L"):null;
+          return (
+            <div key={di} className={"flex items-center gap-2 px-2 py-1 rounded "+(di===G.day?"bg-emerald-900/40":"bg-[#13203a]")}>
+              <span className="text-slate-500 text-xs w-8">{di+1}</span>
+              <span className="text-slate-400 text-xs w-6">{home?"vs":"@"}</span>
+              <span className="flex-1 truncate">{opp.abbr} {opp.nick}</span>
+              {g.played && <span className={"text-xs font-bold "+(win==="W"?"text-emerald-400":"text-red-400")}>{win} {home?g.hs:g.as}-{home?g.as:g.hs}</span>}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+/* ----------------------------- Finances -------------------------------- */
+function Finances({G}){
+  const team=G.teams[G.userTeamId];
+  const ros = rosterOf(G,team.id).sort((a,b)=>b.salary-a.salary);
+  const total=payroll(G,team.id);
+  const space=team.budget-total;
+  return (
+    <div className="space-y-4">
+      <div className="grid sm:grid-cols-3 gap-3">
+        <Card><div className="text-slate-400 text-xs">BUDGET</div><div className="text-2xl font-bold tnum">{money(team.budget)}</div></Card>
+        <Card><div className="text-slate-400 text-xs">PAYROLL</div><div className="text-2xl font-bold tnum">{money(total)}</div></Card>
+        <Card><div className="text-slate-400 text-xs">CAP SPACE</div><div className={"text-2xl font-bold tnum "+(space>=0?"text-emerald-400":"text-red-400")}>{money(space)}</div></Card>
+      </div>
+      <Card>
+        <h3 className="font-bold mb-2">Contracts</h3>
+        <table className="w-full text-sm tnum">
+          <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Player</th><th>Pos</th><th>Age</th><th>OVR</th><th>Years</th><th className="text-right">Salary</th></tr></thead>
+          <tbody>
+            {ros.map(p=>(
+              <tr key={p.id} className="border-b border-[#15203a]">
+                <td className="text-left py-1">{p.name}</td><td className="text-center text-slate-400">{p.pos}</td>
+                <td className="text-center">{p.age}</td><td className="text-center"><OvrPill v={p.ovr}/></td>
+                <td className="text-center">{p.years}</td><td className="text-right">{money(p.salary)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+/* ----------------------------- Trades ---------------------------------- */
+function Trades({G, commit, tShow}){
+  const me = G.teams[G.userTeamId];
+  const [otherId, setOtherId] = useState(G.teams.find(t=>t.id!==me.id).id);
+  const [give, setGive] = useState([]);
+  const [get, setGet] = useState([]);
+  const other = G.teams[otherId];
+  const myRos = rosterOf(G,me.id).sort((a,b)=>b.ovr-a.ovr);
+  const otRos = rosterOf(G,other.id).sort((a,b)=>b.ovr-a.ovr);
+  const toggle=(arr,set,id)=>set(arr.includes(id)?arr.filter(x=>x!==id):[...arr,id]);
+  const giveVal = give.reduce((s,id)=>s+playerValue(G.players[id]),0);
+  const getVal = get.reduce((s,id)=>s+playerValue(G.players[id]),0);
+
+  const propose=()=>{
+    if(!give.length && !get.length){ tShow("Add players to the trade"); return; }
+    // AI accepts if it nets >= 97% of value it gives up
+    if(getVal===0){ tShow("Select players to acquire"); return; }
+    if(giveVal >= getVal*0.97){
+      // execute
+      give.forEach(id=>{ const p=G.players[id]; p.teamId=other.id; me.lineup=me.lineup.filter(x=>x!==id); me.rotation=me.rotation.filter(x=>x!==id); });
+      get.forEach(id=>{ const p=G.players[id]; p.teamId=me.id; other.lineup=other.lineup.filter(x=>x!==id); other.rotation=other.rotation.filter(x=>x!==id); });
+      autoSetLineups(other, G.players);
+      // fix user lineup if holes
+      ensureLineup(me, G.players);
+      setGive([]); setGet([]);
+      commit(G); tShow("✅ Trade accepted!");
+    } else {
+      const need = (getVal*0.97 - giveVal);
+      tShow(`❌ Rejected — ${other.nick} want ~${need.toFixed(0)} more value`);
+    }
+  };
+
+  const colBox = (title, ros, sel, set) => (
+    <Card>
+      <div className="font-bold mb-2 text-sm">{title}</div>
+      <div className="max-h-80 overflow-y-auto space-y-0.5">
+        {ros.map(p=>(
+          <label key={p.id} className={"flex items-center gap-2 px-2 py-1 rounded cursor-pointer text-sm "+(sel.includes(p.id)?"bg-emerald-900/40":"hover:bg-[#13203a]")}>
+            <input type="checkbox" checked={sel.includes(p.id)} onChange={()=>toggle(sel,set,p.id)} />
+            <OvrPill v={p.ovr}/>
+            <span className="flex-1">{p.pos} {p.name}</span>
+            <span className="text-slate-500 text-xs">{money(p.salary)}</span>
+          </label>
+        ))}
+      </div>
+    </Card>
+  );
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm text-slate-400">Trade with:</span>
+          <select value={otherId} onChange={e=>{setOtherId(Number(e.target.value));setGet([]);}} className="bg-[#0b1220] border border-[#1d2940] rounded px-2 py-1 text-sm">
+            {G.teams.filter(t=>t.id!==me.id).map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+          <div className="ml-auto text-xs text-slate-400">You give <b className="text-slate-200">{giveVal.toFixed(0)}</b> · You get <b className="text-slate-200">{getVal.toFixed(0)}</b></div>
+        </div>
+      </Card>
+      <div className="grid md:grid-cols-2 gap-4">
+        {colBox(`Send from ${me.nick}`, myRos, give, setGive)}
+        {colBox(`Acquire from ${other.nick}`, otRos, get, setGet)}
+      </div>
+      <button onClick={propose} className="px-6 py-2 bg-emerald-500 text-slate-900 rounded-lg font-bold">Propose Trade</button>
+    </div>
+  );
+}
+function ensureLineup(team, players){
+  const ros = rosterOf2(players, team.id);
+  team.lineup = team.lineup.filter(id=>players[id] && players[id].teamId===team.id && !players[id].isP);
+  team.rotation = team.rotation.filter(id=>players[id] && players[id].teamId===team.id && players[id].isP);
+  if(team.lineup.length<9 || team.rotation.length<5) autoSetLineups(team, players);
+}
+function rosterOf2(players, teamId){ return Object.values(players).filter(p=>p.teamId===teamId); }
+
+/* ----------------------------- Free Agency ----------------------------- */
+function FreeAgency({G, commit, tShow}){
+  const me=G.teams[G.userTeamId];
+  const [pos,setPos]=useState("ALL");
+  const fas = G.freeAgents.map(id=>G.players[id]).filter(Boolean)
+    .filter(p=>pos==="ALL" || (pos==="P"?p.isP:(!p.isP && p.pos===pos)))
+    .sort((a,b)=>b.ovr-a.ovr);
+  const space = me.budget - payroll(G,me.id);
+  const sign=(p)=>{
+    if(p.salary>space){ tShow(`Not enough cap space (need ${money(p.salary)})`); return; }
+    p.teamId=me.id; G.freeAgents=G.freeAgents.filter(id=>id!==p.id);
+    commit(G); tShow(`✅ Signed ${p.name}`);
+  };
+  if(!G.freeAgents.length) return <Card>No free agents available right now. They appear after the season when contracts expire.</Card>;
+  return (
+    <div className="space-y-3">
+      <Card>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm text-slate-400">Cap space:</span>
+          <b className={space>=0?"text-emerald-400":"text-red-400"}>{money(space)}</b>
+          <div className="ml-auto flex gap-1">
+            {["ALL","C","1B","2B","3B","SS","LF","CF","RF","DH","P"].map(x=>(
+              <button key={x} onClick={()=>setPos(x)} className={"px-2 py-0.5 rounded text-xs "+(pos===x?"bg-emerald-500 text-slate-900":"bg-[#16213a]")}>{x}</button>
+            ))}
+          </div>
+        </div>
+      </Card>
+      <Card>
+        <div className="overflow-x-auto max-h-[70vh] overflow-y-auto">
+          <table className="w-full text-sm tnum">
+            <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Pos</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th><th className="text-right">Ask</th><th></th></tr></thead>
+            <tbody>
+              {fas.map(p=>(
+                <tr key={p.id} className="border-b border-[#15203a]">
+                  <td className="text-slate-400">{p.pos}</td>
+                  <td className="text-left">{p.name}</td>
+                  <td className="text-center">{p.age}</td>
+                  <td className="text-center"><OvrPill v={p.ovr}/></td>
+                  <td className="text-center text-slate-400">{p.pot}</td>
+                  <td className="text-right">{money(p.salary)} · {p.years}y</td>
+                  <td className="text-right pl-2"><button onClick={()=>sign(p)} className="px-2 py-0.5 bg-emerald-600 rounded text-xs hover:bg-emerald-500">Sign</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ----------------------------- Playoffs -------------------------------- */
+function enterPlayoffs(G){
+  G.phase="playoffs";
+  const mk = league => {
+    const seeds = playoffSeeds(G.teams, league).map(t=>t.id);
+    return { seeds,
+      // round 1: wildcard (best-of-3): seed2v5, seed3v4 ; 0,1 bye
+      wc:[ {hi:seeds[2],lo:seeds[5],wins:[0,0],done:false,winner:null},
+           {hi:seeds[3],lo:seeds[4],wins:[0,0],done:false,winner:null} ],
+      ds:null, cs:null, champ:null };
+  };
+  G.playoffs = { Empire: mk("Empire"), Pioneer: mk("Pioneer"), round:"wc", wsWinner:null, ws:null };
+}
+
+function seriesGame(G, hiId, loId, hiHome){
+  const home = hiHome? G.teams[hiId]:G.teams[loId];
+  const away = hiHome? G.teams[loId]:G.teams[hiId];
+  const r = simGame(home, away, G.players);
+  markGamesPlayed(home, away, G.players);
+  const winnerId = r.hs>r.as?home.id:away.id;
+  return { winnerId, hs:r.hs, as:r.as, homeId:home.id, awayId:away.id };
+}
+
+function playSeries(G, hiId, loId, bestOf){
+  const need=Math.ceil(bestOf/2); let hw=0,lw=0,gameNo=0;
+  const log=[];
+  while(hw<need && lw<need){
+    const hiHome = gameNo<2 || gameNo>=4; // 2-2-1ish
+    const res = seriesGame(G, hiId, loId, hiHome);
+    if(res.winnerId===hiId) hw++; else lw++;
+    log.push(res); gameNo++;
+    if(gameNo>bestOf+2) break;
+  }
+  return { winner: hw>lw?hiId:loId, hw, lw, log };
+}
+
+function Playoffs({G, commit, tShow}){
+  const po=G.playoffs;
+  if(!po) return <Card>No active postseason.</Card>;
+  const tn = id => G.teams[id];
+
+  const advance = ()=>{
+    const g=G;
+    const po=g.playoffs;
+    ["Empire","Pioneer"].forEach(lg=>{
+      const b=po[lg];
+      if(po.round==="wc"){
+        b.wc.forEach(m=>{ if(!m.done){ const r=playSeries(g,m.hi,m.lo,3); m.winner=r.winner; m.done=true; } });
+        // build DS: seed0 vs lower wc winner, seed1 vs higher
+        const w0=b.wc[0].winner, w1=b.wc[1].winner;
+        b.ds=[ {hi:b.seeds[0],lo:w1,done:false,winner:null}, {hi:b.seeds[1],lo:w0,done:false,winner:null} ];
+      } else if(po.round==="ds"){
+        b.ds.forEach(m=>{ if(!m.done){ const r=playSeries(g,m.hi,m.lo,5); m.winner=r.winner; m.done=true; } });
+        b.cs={hi:b.ds[0].winner,lo:b.ds[1].winner,done:false,winner:null};
+      } else if(po.round==="cs"){
+        if(!b.cs.done){ const r=playSeries(g,b.cs.hi,b.cs.lo,7); b.cs.winner=r.winner; b.cs.done=true; }
+      }
+    });
+    if(po.round==="wc") po.round="ds";
+    else if(po.round==="ds") po.round="cs";
+    else if(po.round==="cs"){
+      po.round="ws";
+      po.ws={hi:po.Empire.cs.winner,lo:po.Pioneer.cs.winner,done:false,winner:null};
+    } else if(po.round==="ws"){
+      const r=playSeries(g, po.ws.hi, po.ws.lo, 7);
+      po.ws.winner=r.winner; po.ws.done=true; po.wsWinner=r.winner;
+      g.champion={id:r.winner, season:g.season};
+      startOffseason(g);
+    }
+    commit(g);
+  };
+
+  const Series=({title,hi,lo,winner})=>(
+    <div className="flex items-center gap-2 text-sm bg-[#13203a] rounded px-2 py-1">
+      <span className="text-slate-500 text-xs w-10">{title}</span>
+      <span className={"flex-1 "+(winner===hi?"font-bold text-emerald-400":"")}>{tn(hi)?tn(hi).abbr+" "+tn(hi).nick:"—"}</span>
+      <span className="text-slate-600">vs</span>
+      <span className={"flex-1 text-right "+(winner===lo?"font-bold text-emerald-400":"")}>{tn(lo)?tn(lo).abbr+" "+tn(lo).nick:"—"}</span>
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <div className="flex items-center justify-between">
+          <h3 className="font-bold">Postseason — {G.season}</h3>
+          {!po.wsWinner && <button onClick={advance} className="px-4 py-2 bg-emerald-500 text-slate-900 rounded-lg font-semibold">
+            Sim {po.round==="ws"?"World Series":po.round==="cs"?"League Championships":po.round==="ds"?"Division Series":"Wild Card"} →</button>}
+        </div>
+      </Card>
+      {po.wsWinner && <Card className="text-center">
+        <div className="text-4xl mb-2">🏆</div>
+        <div className="text-2xl font-black text-emerald-400">{tn(po.wsWinner).name}</div>
+        <div className="text-slate-400">are your {G.season} World Champions!</div>
+        <p className="text-slate-400 text-sm mt-2">Head to the Hub to run the offseason and start next year.</p>
+      </Card>}
+      <div className="grid md:grid-cols-2 gap-4">
+        {["Empire","Pioneer"].map(lg=>{
+          const b=po[lg];
+          return (
+            <Card key={lg}>
+              <div className="font-bold text-emerald-300 mb-2">{lg} League</div>
+              <div className="space-y-1">
+                <div className="text-xs text-slate-500">Wild Card (Bo3)</div>
+                {b.wc.map((m,i)=><Series key={i} title={"WC"+(i+1)} hi={m.hi} lo={m.lo} winner={m.winner}/>)}
+                {b.ds && <><div className="text-xs text-slate-500 mt-2">Division Series (Bo5)</div>
+                  {b.ds.map((m,i)=><Series key={i} title={"DS"+(i+1)} hi={m.hi} lo={m.lo} winner={m.winner}/>)}</>}
+                {b.cs && <><div className="text-xs text-slate-500 mt-2">League Championship (Bo7)</div>
+                  <Series title="LCS" hi={b.cs.hi} lo={b.cs.lo} winner={b.cs.winner}/></>}
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+      {po.ws && <Card><div className="font-bold text-amber-300 mb-2">World Series (Bo7)</div>
+        <Series title="WS" hi={po.ws.hi} lo={po.ws.lo} winner={po.ws.winner}/></Card>}
+    </div>
+  );
+}
+
+/* ----------------------------- Offseason ------------------------------- */
+function startOffseason(G){
+  G.phase="offseason";
+  G.offStep = "intro";
+}
+
+function OffseasonHub({G, commit, tShow, setTab}){
+  const champ = G.champion? G.teams[G.champion.id]:null;
+  const step = G.offStep||"intro";
+
+  const doProgression = ()=>{
+    Object.values(G.players).forEach(p=>{
+      p.age++;
+      // development toward potential when young, decline when old
+      const each = r=>{
+        if(p.age<=26){ if(p[r]!==undefined) p[r]=clamp(p[r]+rint(-1,3),20,99); }
+        else if(p.age>=31){ if(p[r]!==undefined) p[r]=clamp(p[r]-rint(0,3),20,99); }
+        else { if(p[r]!==undefined) p[r]=clamp(p[r]+rint(-1,1),20,99); }
+      };
+      (p.isP?["stu","ctl","stm"]:["con","pow","eye","spd","def"]).forEach(each);
+      computeOvr(p);
+      if(p.age<=27 && p.ovr>p.pot) p.pot=p.ovr; else if(p.age>28) p.pot=Math.max(p.ovr,p.pot-1);
+      // reset season stats -> career
+      mergeCareer(p);
+      p.salary = blendSalary(p);
+    });
+    // retirements (old + weak)
+    const retired=[];
+    Object.values(G.players).forEach(p=>{
+      const retP = p.age>=37? 0.5 : p.age>=34? 0.18 : p.age>=32? 0.05 : 0.005;
+      if(p.ovr<45 && p.age>30) {}
+      if(chance(retP)){ retired.push(p.id); }
+    });
+    retired.forEach(id=>{
+      const p=G.players[id]; const t=p.teamId!=null?G.teams[p.teamId]:null;
+      if(t){ t.lineup=t.lineup.filter(x=>x!==id); t.rotation=t.rotation.filter(x=>x!==id); }
+      G.freeAgents=G.freeAgents.filter(x=>x!==id);
+      delete G.players[id];
+    });
+    // decrement contracts, then expire to free agency
+    Object.values(G.players).forEach(p=>{ p.years--; });
+    Object.values(G.players).forEach(p=>{
+      if(p.years<=0 && p.teamId!=null){
+        const t=G.teams[p.teamId];
+        t.lineup=t.lineup.filter(x=>x!==p.id);
+        t.rotation=t.rotation.filter(x=>x!==p.id);
+        p.teamId=null; p.years=rint(1,4); p.salary=salaryFor(p);
+        if(!G.freeAgents.includes(p.id)) G.freeAgents.push(p.id);
+      }
+    });
+    G.offStep="draft-build";
+    buildDraft(G);
+    commit(G);
+    tShow("Players aged & contracts processed");
+  };
+
+  if(step==="intro"){
+    return (
+      <div className="space-y-4">
+        {champ && <Card className="text-center">
+          <div className="text-3xl mb-1">🏆</div>
+          <div className="text-xl font-black text-emerald-400">{champ.name}</div>
+          <div className="text-slate-400 text-sm">{G.champion.season} Champions</div>
+        </Card>}
+        <Card>
+          <h3 className="font-bold mb-2">Offseason — {G.season} → {G.season+1}</h3>
+          <ol className="text-sm text-slate-300 list-decimal ml-5 space-y-1 mb-3">
+            <li>Player aging, development & retirements</li>
+            <li>Expiring contracts hit free agency</li>
+            <li>Amateur Draft (Draft tab)</li>
+            <li>Sign free agents (Free Agency tab)</li>
+            <li>Start the new season</li>
+          </ol>
+          <button onClick={doProgression} className="px-4 py-2 bg-emerald-500 text-slate-900 rounded-lg font-semibold">Process Offseason →</button>
+        </Card>
+      </div>
+    );
+  }
+  // draft-build or later
+  return (
+    <div className="space-y-4">
+      <Card>
+        <h3 className="font-bold mb-2">Offseason Tasks</h3>
+        <p className="text-sm text-slate-300 mb-3">Use the <b>Draft</b> and <b>Free Agency</b> tabs to improve your roster, then start the new season.</p>
+        <div className="flex gap-2 flex-wrap">
+          <button onClick={()=>setTab("draft")} className="px-4 py-2 bg-[#16213a] rounded-lg hover:bg-[#1c2c4a]">Go to Draft</button>
+          <button onClick={()=>setTab("fa")} className="px-4 py-2 bg-[#16213a] rounded-lg hover:bg-[#1c2c4a]">Go to Free Agency</button>
+          <button onClick={()=>{ startNewSeason(G); commit(G); tShow("Play ball! New season started."); setTab("hub"); }}
+            className="px-4 py-2 bg-emerald-500 text-slate-900 rounded-lg font-semibold">Start {G.season+1} Season →</button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function mergeCareer(p){
+  const c=p.career, s=p.stats;
+  Object.keys(s).forEach(k=>{ c[k]=(c[k]||0)+s[k]; });
+  p.stats = p.isP?emptyPitStats():emptyHitStats();
+}
+function blendSalary(p){
+  // re-evaluate salary based on new ovr, keep within reason
+  const fair=salaryFor(p);
+  return clamp(round(((p.salary*0.5)+(fair*0.5))*10)/10, 0.7, 45);
+}
+
+function buildDraft(G){
+  // generate draft class: 5 rounds * 30 picks = 150 young prospects
+  const cls=[];
+  for(let i=0;i<150;i++){
+    let p;
+    if(chance(0.45)) p=makePitcher(chance(0.6)?"SP":"RP",[18,22]);
+    else p=makeHitter(pick(INF_OF.concat(["DH"])),[18,22]);
+    // prospects: lower current, boosted potential
+    p.teamId=null; p.years=4; p.salary=0.7;
+    cls.push(p.id); G.players[p.id]=p;
+  }
+  // draft order: reverse of standings (worst picks first)
+  const order=[...G.teams].sort((a,b)=>pct(a)-pct(b)).map(t=>t.id);
+  G.draftOrder=order; G.draftPick=0;
+  G.draftClass=cls.sort((a,b)=>G.players[b].pot-G.players[a].pot);
+}
+
+function Draft({G, commit, tShow}){
+  if(!G.draftClass.length && G.draftPick===0 && !G.draftOrder.length)
+    return <Card>The draft isn't ready yet — process the offseason from the Hub first.</Card>;
+  const rounds=5, totalPicks=rounds*G.teams.length;
+  const onClock = G.draftOrder[G.draftPick % G.teams.length];
+  const round = Math.floor(G.draftPick/G.teams.length)+1;
+  const isUser = onClock===G.userTeamId;
+  const avail = G.draftClass.map(id=>G.players[id]).filter(Boolean);
+
+  const draftPlayer=(pid)=>{
+    const p=G.players[pid]; if(!p) return;
+    p.teamId=onClock;
+    G.draftClass=G.draftClass.filter(x=>x!==pid);
+    G.draftPick++;
+    commit(G);
+  };
+  const aiPick=()=>{
+    // pick best potential that fills a need-ish; simple: best pot
+    const best=G.draftClass[0];
+    if(best!=null) draftPlayer(best);
+  };
+  const simToMe=()=>{
+    const g=G;
+    let guard=0;
+    while(g.draftPick<totalPicks && g.draftOrder[g.draftPick%g.teams.length]!==g.userTeamId && guard<totalPicks){
+      const best=g.draftClass[0]; if(best==null) break;
+      const p=g.players[best]; p.teamId=g.draftOrder[g.draftPick%g.teams.length];
+      g.draftClass=g.draftClass.filter(x=>x!==best); g.draftPick++; guard++;
+    }
+    commit(g);
+  };
+  const simAll=()=>{
+    const g=G; let guard=0;
+    while(g.draftPick<totalPicks && guard<totalPicks+5){
+      const best=g.draftClass[0]; if(best==null) break;
+      const tid=g.draftOrder[g.draftPick%g.teams.length];
+      const p=g.players[best]; p.teamId=tid;
+      g.draftClass=g.draftClass.filter(x=>x!==best); g.draftPick++; guard++;
+    }
+    // trim rosters after draft
+    g.teams.forEach(t=>trimRoster(g,t));
+    commit(g); tShow("Draft complete");
+  };
+
+  if(G.draftPick>=totalPicks){
+    return <Card><div className="font-bold mb-2">✅ Draft complete</div>
+      <p className="text-sm text-slate-300">Your picks have joined the roster (check Roster). Head to Free Agency or start the season from the Hub.</p></Card>;
+  }
+
+  return (
+    <div className="space-y-3">
+      <Card>
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="text-sm">Round <b>{round}</b> · Pick <b>{(G.draftPick%G.teams.length)+1}</b> · Overall <b>{G.draftPick+1}</b>/{totalPicks}</div>
+          <div className={"px-2 py-0.5 rounded text-sm font-semibold "+(isUser?"bg-emerald-500 text-slate-900":"bg-[#16213a]")}>
+            On the clock: {G.teams[onClock].name}{isUser?" (YOU)":""}
+          </div>
+          <div className="ml-auto flex gap-2">
+            {!isUser && <button onClick={aiPick} className="px-3 py-1 bg-[#16213a] rounded text-sm">Next Pick</button>}
+            <button onClick={simToMe} className="px-3 py-1 bg-[#16213a] rounded text-sm">Sim to My Pick</button>
+            <button onClick={simAll} className="px-3 py-1 bg-[#16213a] rounded text-sm">Sim Rest</button>
+          </div>
+        </div>
+      </Card>
+      <Card>
+        <div className="text-xs text-slate-400 mb-1">Best Available ({avail.length})</div>
+        <div className="overflow-x-auto max-h-[65vh] overflow-y-auto">
+          <table className="w-full text-sm tnum">
+            <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Pos</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th>{isUser&&<th></th>}</tr></thead>
+            <tbody>
+              {avail.slice(0,60).map(p=>(
+                <tr key={p.id} className="border-b border-[#15203a]">
+                  <td className="text-slate-400">{p.pos}</td><td className="text-left">{p.name}</td>
+                  <td className="text-center">{p.age}</td><td className="text-center"><OvrPill v={p.ovr}/></td>
+                  <td className="text-center text-amber-300 font-semibold">{p.pot}</td>
+                  {isUser&&<td className="text-right"><button onClick={()=>draftPlayer(p.id)} className="px-2 py-0.5 bg-emerald-600 rounded text-xs hover:bg-emerald-500">Draft</button></td>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function trimRoster(G, team){
+  let ros=rosterOf(G,team.id).sort((a,b)=>b.ovr-a.ovr);
+  // ensure minimum pitchers/hitters; cap at 30
+  while(ros.length>30){
+    const cut=ros.pop();
+    cut.teamId=null; if(!G.freeAgents.includes(cut.id)) G.freeAgents.push(cut.id);
+  }
+}
+
+function startNewSeason(G){
+  // AI free agency: each AI team fills to ~26 and addresses cap
+  G.teams.forEach(t=>{
+    if(t.id===G.userTeamId) return;
+    let ros=rosterOf(G,t.id);
+    let guard=0;
+    while(ros.length<26 && G.freeAgents.length && guard<60){
+      // pick best affordable FA
+      const space=t.budget-payroll(G,t.id);
+      const cand=G.freeAgents.map(id=>G.players[id]).filter(p=>p&&p.salary<=Math.max(space,1)).sort((a,b)=>b.ovr-a.ovr)[0];
+      if(!cand) break;
+      cand.teamId=t.id; G.freeAgents=G.freeAgents.filter(id=>id!==cand.id);
+      ros=rosterOf(G,t.id); guard++;
+    }
+    trimRoster(G,t);
+    autoSetLineups(t, G.players);
+  });
+  // make sure user roster is valid for play
+  const me=G.teams[G.userTeamId];
+  let mr=rosterOf(G,me.id);
+  // auto-fill user roster minimally if short on pitchers/hitters so sim works
+  ensureLineup(me, G.players);
+  // reset records & stats
+  G.teams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0; });
+  G.schedule = buildSchedule(G.teams.map(t=>t.id));
+  G.day=0; G.season++; G.phase="regular";
+  G.playoffs=null; G.draftClass=[]; G.draftOrder=[]; G.draftPick=0; G.offStep=null;
+}
+
+/* ----------------------------- mount ----------------------------------- */
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+<script>
+  (function(){
+    try {
+      var src = document.getElementById("app-src").textContent;
+      var out = Babel.transform(src, { presets: [["react", { runtime: "classic" }]] }).code;
+      (0, eval)(out);
+    } catch (e) {
+      document.getElementById("root").innerHTML =
+        '<pre style="color:#f87171;padding:16px;white-space:pre-wrap">App failed to start:\n' +
+        (e && (e.message || e)) + '</pre>';
+      console.error(e);
+    }
+  })();
+</script>
+</body>
+</html>
