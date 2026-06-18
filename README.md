@@ -43,6 +43,10 @@ header to keep a JSON backup that survives updates.
 - Standings and 17 stat leaderboards (AVG, HR, RBI, OBP, SLG, OPS, Hits, Runs, BB, SB, ERA,
   Innings, K, K−BB, W, SV, WHIP) with qualifiers that scale through the season
 - Trades with value-based AI, free agency with a salary cap, contracts & budget view
+- **Re-sign your own players** to early extensions before they hit free agency — winning earns a
+  hometown discount, but a struggling club pays a premium (and its stars may walk)
+- **Play the postseason game by game** — sim one game at a time and watch each series' line scores,
+  or fast-forward a whole round
 - Full postseason: Wild Card → Division Series → League Championship → World Series
 - Multi-season franchise loop: player aging/development, retirements, expiring contracts,
   a 5-round amateur draft, and season rollover

@@ -61,7 +61,11 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   scales with the original team's projected finish (worse team → earlier slot → more value). The draft
   builds its selection order from owned picks (`G.draftPicks`, by round then orig-team reverse
   standings), so traded picks keep their slot. `Trades` can include players (MLB or AAA) and picks.
-- **Postseason:** 6 seeds/league, Wild Card Bo3 → Division Bo5 → LCS Bo7 → World Series Bo7.
+- **Postseason:** 6 seeds/league, Wild Card Bo3 → Division Bo5 → LCS Bo7 → World Series Bo7. Played
+  **game by game** — each series is a `mkSeries` object (`hw/lw/games[]`); `playoffSeriesGame` plays one
+  game (2-2-1 home pattern), `activeSeriesList` is the round's live series, `buildNextRound` builds the
+  next round once they're all decided. The `Playoffs` UI offers **Sim Next Game** (one game per active
+  series, with line scores) / **Sim Whole Round** / **Advance**, then crowns the champion → offseason.
 - **Offseason loop:** aging/development toward potential + decline, retirements, contract expiry →
   free agency, `buildDraft()` (5-round amateur draft), then `startNewSeason()` rolls everything over
   (resets MLB + AAA records/schedules, regenerates next year's `G.picks`).
@@ -69,6 +73,10 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
 ## Player model
 - Hitters rated CON/POW/EYE/SPD/DEF; pitchers STU/CTL/STM. `computeOvr()` derives OVR; `pot` is ceiling.
 - `salaryFor()` scales salary by OVR + age (pre-arb discount). `playerValue()` drives trade/FA AI.
+- **Extensions:** `extensionTerms(G,p)` quotes a re-sign offer for your own players (Finances →
+  Contract Extensions, eligible when `years<=2`). Winning clubs get a hometown discount, losing clubs
+  pay a premium, and a star (`ovr>=75`) on a sub-.400 team refuses (wants to test FA). Uses a neutral
+  .500 baseline until the team has played ≥20 games.
 - **Talent curve:** rating means sit a bit high and ~8% of generated players get a `+8–18` "star"
   boost to their primary tools (in `makeHitter`/`makePitcher`) for a fat top end. If you bump these,
   re-check the `paOutcome` `hrP` formula — league HR is sensitive to the POW mean × `hrP` slope/cap.
