@@ -250,6 +250,16 @@ function buildAAARoster(aaaId){
   players.forEach(p=>{ p.teamId=aaaId; p.salary=Math.min(p.salary,0.7); });
   return players;
 }
+// Repair a depleted roster up to a fieldable minimum. Over many seasons, call-ups,
+// trades, and lopsided draft classes can drain a roster (esp. AAA) below what a game
+// needs — a team with no pitcher or no hitters used to CRASH the sim mid-day, hanging
+// the whole "Sim" loop. This guarantees every club can always field a game.
+function refillRoster(G, teamId, minH, minP, ageRange, meanAdj){
+  const ros=Object.values(G.players).filter(p=>p.teamId===teamId);
+  let h=ros.filter(p=>!p.isP).length, pi=ros.filter(p=>p.isP).length;
+  while(h<minH){ const p=makeHitter(FIELD_POS[h%FIELD_POS.length],ageRange,meanAdj||0); p.teamId=teamId; if(meanAdj<0) p.salary=Math.min(p.salary,0.7); G.players[p.id]=p; h++; }
+  while(pi<minP){ const p=makePitcher(pi<5?"SP":"RP",ageRange,meanAdj||0); p.teamId=teamId; if(meanAdj<0) p.salary=Math.min(p.salary,0.7); G.players[p.id]=p; pi++; }
+}
 
 /* ----------------------------- draft picks ----------------------------- */
 // Each MLB team owns 5 future picks (one per round). Picks are tradeable; the
@@ -1036,7 +1046,13 @@ function hashSeed(str){
 
 /* ----------------------------- Hub / sim ------------------------------- */
 function simDay(G){
-  const idx = rosterIndex(G.players);           // build the team→players index ONCE for the whole day
+  let idx = rosterIndex(G.players);             // build the team→players index ONCE for the whole day
+  // safety net: a team that can't field a lineup/staff would crash simGame and hang the
+  // whole Sim loop. Refill any depleted MLB/AAA roster to a playable minimum first.
+  let repaired=false;
+  for(const t of G.teams){ const r=idx[t.id]||[]; if(r.filter(p=>!p.isP).length<9 || r.filter(p=>p.isP).length<1){ refillRoster(G,t.id,14,12,[23,33],0); ensureLineup(t,G.players); repaired=true; } }
+  for(const t of G.aaaTeams){ const r=idx[t.id]||[]; if(r.filter(p=>!p.isP).length<9 || r.filter(p=>p.isP).length<1){ refillRoster(G,t.id,12,9,[19,26],-6); autoSetLineups(t,G.players); repaired=true; } }
+  if(repaired) idx = rosterIndex(G.players);     // rebuild after adding players
   const playDay = (sched) => {
     const day = sched[G.day];
     if(!day) return;

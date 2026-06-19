@@ -215,6 +215,11 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   `markGamesPlayed` so games don't each re-scan the whole player dict. Sim cost is now ~flat in total
   player count (≈0.5–2 ms/day) instead of O(players × games). If you add a hot per-game helper that needs
   a team's roster, take the optional `idx` and use `teamRoster(players, teamId, idx)`.
+- **Unfieldable-roster guard (`refillRoster`, in `simDay`):** over many seasons, call-ups/trades/lopsided
+  draft classes can drain a roster (esp. AAA) below what a game needs — a team with no pitcher or <9 hitters
+  used to **crash `simGame` mid-day, throwing out of the whole Sim loop and hanging the button forever**
+  (this was the real "days take forever / stuck" report, not slowness). `simDay` now checks every MLB/AAA
+  club against a playable minimum and refills depleted ones before any game (then rebuilds the index).
 - **Player-pool is bounded** so sim speed stays flat across seasons: `startNewSeason` caps AAA rosters
   (`trimRoster(t, AAA_CAP=38)`), sweeps orphaned teamless players (e.g. leftover draft class) into the FA
   pool, then `pruneFreeAgents` (keep best ~220, delete the rest from `G.players`). `migrate` runs a
