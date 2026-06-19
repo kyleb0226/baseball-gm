@@ -1041,6 +1041,14 @@ function OvrPill({v}){
   const c = v>=80?"bg-emerald-500 text-slate-900":v>=70?"bg-lime-500 text-slate-900":v>=60?"bg-yellow-500 text-slate-900":v>=50?"bg-orange-500 text-slate-900":"bg-slate-600 text-slate-100";
   return <span className={"inline-block w-8 text-center rounded font-bold text-xs py-0.5 "+c}>{v}</span>;
 }
+// muted "potential" chip shown beside OVR (outlined, amber) so ceiling reads at a glance
+function PotPill({v}){
+  return <span className="inline-block w-8 text-center rounded font-semibold text-xs py-0.5 border border-amber-500/50 text-amber-300/90" title="Potential">{v}</span>;
+}
+// OVR → POT pair, e.g. for tables/cards (small "→" between)
+function OvrPot({p}){
+  return <span className="inline-flex items-center gap-1"><OvrPill v={p.ovr}/><span className="text-slate-600 text-[10px]">→</span><PotPill v={p.pot}/></span>;
+}
 function StatusPill({s}){
   const st = s==="ST";
   return <span className={"inline-block w-7 text-center rounded font-bold text-[10px] py-0.5 "+(st?"bg-emerald-600 text-white":"bg-slate-600 text-slate-200")}>{s}</span>;
@@ -1206,7 +1214,7 @@ function Hub({G, commit, tShow, setTab}){
             const other=G.teams[o.fromId];
             const youGet=o.give.map(id=>G.players[id]).filter(Boolean);
             const youGive=o.get.map(id=>G.players[id]).filter(Boolean);
-            const desc=arr=>arr.map(p=>`${p.pos} ${p.name} (${p.ovr})`).join(", ")||"—";
+            const desc=arr=>arr.map(p=>`${p.pos} ${p.name} (${p.ovr}→${p.pot})`).join(", ")||"—";
             return (
               <div key={i} className="bg-[#13203a] rounded p-2">
                 <div className="text-xs text-slate-400 mb-1">{other.name} propose:</div>
@@ -2103,7 +2111,7 @@ function ContractModal({G, p, mode, capSpace, factor, refuses, onClose, onSign, 
           <OvrPill v={p.ovr}/>
           <div className="flex-1">
             <div className="font-bold">{mode==="sign"?"Sign":"Extend"} {p.name}</div>
-            <div className="text-xs text-slate-400">{p.pos} · Age {p.age} · OVR {p.ovr} · seeks ~{money(ask.fairAAV*(factor||1))}/yr</div>
+            <div className="text-xs text-slate-400">{p.pos} · Age {p.age} · OVR {p.ovr} · POT {p.pot} · seeks ~{money(ask.fairAAV*(factor||1))}/yr</div>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-white text-xl leading-none">×</button>
         </div>
@@ -2229,7 +2237,7 @@ function Finances({G, commit, tShow}){
         </div>
         <div className="overflow-x-auto">
         <table className="w-full text-sm tnum">
-          <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Player</th><th>Pos</th><th>Lvl</th><th>Age</th><th>OVR</th><th>Yrs</th><th className="text-right">This yr</th><th className="text-right">Schedule</th><th className="text-right">Inc/yr</th><th></th></tr></thead>
+          <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Player</th><th>Pos</th><th>Lvl</th><th>Age</th><th>OVR</th><th>POT</th><th>Yrs</th><th className="text-right">This yr</th><th className="text-right">Schedule</th><th className="text-right">Inc/yr</th><th></th></tr></thead>
           <tbody>
             {ros.map(p=>{ const aaa=isAAAId(p.teamId); const t=aaa?null:extFactor(p); return (
               <tr key={p.id} className={"border-b border-[#15203a] "+(aaa?"bg-amber-950/20":"")}>
@@ -2237,6 +2245,7 @@ function Finances({G, commit, tShow}){
                 <td className="text-center text-slate-400">{p.pos}</td>
                 <td className="text-center text-xs text-slate-500">{aaa?"AAA":"MLB"}</td>
                 <td className="text-center">{p.age}</td><td className="text-center"><OvrPill v={p.ovr}/></td>
+                <td className="text-center text-amber-300/90">{p.pot}</td>
                 <td className="text-center">{p.years}</td><td className="text-right">{money(p.salary)}</td>
                 <td className="text-right text-slate-500 text-xs">{(p.contract||[p.salary]).map(v=>v.toFixed(0)).join("/")}</td>
                 <td className="text-right text-slate-400">{incentivesPerYear(p)?money(incentivesPerYear(p)):"—"}</td>
@@ -2316,7 +2325,7 @@ function Trades({G, commit, tShow}){
         {ros.map(p=>(
           <label key={p.id} className={"flex items-center gap-2 px-2 py-1 rounded cursor-pointer text-sm "+(sel.includes(p.id)?"bg-emerald-900/40":"hover:bg-[#13203a]")}>
             <input type="checkbox" checked={sel.includes(p.id)} onChange={()=>toggle(sel,set,p.id)} />
-            <OvrPill v={p.ovr}/>
+            <OvrPot p={p}/>
             <span className="flex-1">{p.pos} {p.name} {isAAAId(p.teamId)&&<span className="text-amber-400 text-[10px] font-bold">AAA</span>}</span>
             <span className="text-slate-500 text-xs">{money(p.salary)}</span>
           </label>
