@@ -117,6 +117,18 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   `NEWS_META`) renders the full wire; the Hub shows the latest five. Backfilled empty in `migrate`.
 
 ## Player model
+- **Tracked stats:** hitters `G/PA/AB/H/2B/3B/HR/R/RBI/BB/SO/SB/CS`; pitchers
+  `G/GS/QS/OUT/H/ER/BB/SO/W/L/SV/HLD/HRA`. **CS** is logged in the steal-fail branch; **QS** (6+ IP,
+  ≤3 ER) is credited post-game by diffing the starter's OUT/ER against a pre-game snapshot (`startSnap`);
+  **HLD** is credited in `awardDecision` to used relievers in a ≤3-run win other than the winner/saver
+  (an approximation — it runs a bit high because relievers rotate ~per inning). Shown in
+  `HitterTable`/`PitcherTable`/`PlayerModal` and as **Quality Starts** / **Holds** leaderboards.
+- **Franchise records (`recordFranchiseRecords`, `team.records`):** each club's all-time single-season
+  bests (team wins; HR/RBI/H/R/SB/AVG by a hitter; W/K/SV/ERA by a pitcher), each `{value, holder, season}`.
+  Updated in `enterPlayoffs` (after `computeAwards`, before stats reset) with PA≥300 / OUT≥120 qualifiers.
+  Rendered on the **Hall of Fame** tab with a team selector.
+- **Prospect rankings (`prospectGrade`):** AAA players + young (≤22) MLB rookies ranked by a scouting grade
+  (POT-weighted + current ability + youth), with an `prospectETA` estimate, on the **AAA** tab (top 30).
 - Hitters rated CON/POW/EYE/SPD/DEF; pitchers STU/CTL/STM. `computeOvr()` derives OVR; `pot` is ceiling.
 - `salaryFor()` scales salary by OVR + age (pre-arb discount).
 - **Trade/FA value (`playerValue`):** built on `abilityValue(ovr)` — a steeply **convex** curve

@@ -61,8 +61,13 @@ header to keep a JSON backup that survives updates.
   pitchers show GS/IP/H/BB/SO/ER and ERA/WHIP/SV
 - Click any player for a detail card with **season, career, and full year-by-year history** — each
   season's stat line, the team(s) he played for that year, plus his draft pedigree (year, round, pick)
-- Standings and 17 stat leaderboards (AVG, HR, RBI, OBP, SLG, OPS, Hits, Runs, BB, SB, ERA,
-  Innings, K, K−BB, W, SV, WHIP) with qualifiers that scale through the season
+- Standings and 19 stat leaderboards (AVG, HR, RBI, OBP, SLG, OPS, Hits, Runs, BB, SB, ERA,
+  Innings, K, K−BB, W, Quality Starts, SV, Holds, WHIP) with qualifiers that scale through the season
+- Richer box scores — hitters add **caught stealing**, pitchers add **quality starts** and **holds**
+- **Franchise record books** — every club's all-time single-season bests (team wins, plus the top
+  HR/RBI/hits/runs/SB/AVG and pitcher W/K/SV/ERA), each with the holder and year, on the History tab
+- **League-wide prospect rankings** — every team's young talent ranked by a scouting grade (ceiling,
+  ability, and age) with an MLB-ready ETA, on the AAA tab
 - Trades with value-based AI on a **steep talent curve** — elite (80+) players are genuinely scarce
   and can't be matched by a pile of scrubs, while high-ceiling young prospects carry real value; free
   agency with a salary cap, contracts & budget view
