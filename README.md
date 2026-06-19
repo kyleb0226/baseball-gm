@@ -25,9 +25,9 @@ header to keep a JSON backup that survives updates.
 - Sim controls: day / week / month / straight to the playoffs
 - Deeper rosters (~30 players: a full lineup + bench and a 5-man rotation + bullpen), with a
   **fatter talent curve** so star players genuinely stand out
-- Roster screen split into **Starting Lineup / Bench / Rotation / Closer / Bullpen** with ST/BN
-  badges; editable batting order **and a defensive alignment** (assign all 8 field positions + a DH;
-  out-of-position players take a fielding penalty)
+- Roster screen split into **Starting Lineup / Bench / Rotation / Closer / Bullpen** with ST/BN badges
+- **Drag-and-drop lineup field** — tap or drag players onto a baseball diamond to set your defense;
+  positions follow the player, and out-of-position guys take a fielding penalty (shown in amber)
 - Editable **5-man rotation and bullpen priority** — set your closer & setup man; relief is role- and
   workload-based, so your **good arms get the high-leverage innings** (the closer locks down saves, the
   setup tier carries the load) while mop-up arms take blowouts and no one arm gets overworked — at the

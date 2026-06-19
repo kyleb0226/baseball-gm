@@ -60,8 +60,11 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   develop faster in the offseason. Roster screen has a **AAA Affiliate** section with `↑ up` / `↓ AAA`
   (`callUp`/`sendDown`); the **AAA** tab shows affiliate standings + top prospects. Draftees report to AAA.
 - **Defensive positions:** `team.pos` maps playerId → assigned position (8 fielders + one DH). The
-  `LineupEditor` assigns them (swapping to keep a valid permutation) and flags missing/duplicates.
-  `teamDefRating` applies an out-of-position penalty and ignores the DH.
+  `LineupEditor` is a **drag-and-drop field diagram** (tap a player then a spot, or drag) backed by
+  `placeAtPosition`, which glues the position to the player and keeps the lineup a valid permutation
+  (bench bat dropped on a fielder takes his batting-order slot). It flags missing/duplicates;
+  `teamDefRating` applies an out-of-position penalty and ignores the DH. The Hub shows an end-of-season
+  reminder linking to Finances → Contract Extensions when players are in a contract year (`years<=1`).
 - **Draft picks:** `G.picks` is a flat list of owned, **tradeable** picks (5 per team). `pickValue`
   scales with the original team's projected finish (worse team → earlier slot → more value). The draft
   builds its selection order from owned picks (`G.draftPicks`, by round then orig-team reverse
