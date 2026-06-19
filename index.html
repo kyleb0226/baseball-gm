@@ -856,6 +856,11 @@ function migrate(G){
     if(G.tradeDeadline==null) G.tradeDeadline = Math.round((G.schedule?G.schedule.length:224)*0.58);
     if(!Array.isArray(G.hof)) G.hof = [];
     if(!Array.isArray(G.champions)) G.champions = G.champion ? [{season:G.champion.season, id:G.champion.id}] : [];
+    // de-dupe any accidental repeat champions (one entry per season; keep the winner)
+    if(Array.isArray(G.champions)){
+      const seen=new Set();
+      G.champions = G.champions.filter(c=>{ if(c==null||seen.has(c.season)) return false; seen.add(c.season); return true; });
+    }
     if(G.teams.some(t=>t.rivalId==null)) assignRivals(G.teams);
     Object.values(G.players||{}).forEach(p=>{ if(p.peakOvr==null) p.peakOvr=p.ovr; ensureContract(p); });
     const fixTeam = t=>{
@@ -2640,8 +2645,10 @@ function buildNextRound(G){
   } else if(po.round==="cs"){
     po.ws=mkSeries(po.Empire.cs.winner, po.Pioneer.cs.winner); po.round="ws";
   } else if(po.round==="ws"){
+    if(po.wsWinner!=null) return;          // already crowned — guard against double-click
     po.wsWinner=po.ws.winner; G.champion={id:po.ws.winner, season:G.season};
-    G.champions = G.champions||[]; G.champions.push({season:G.season, id:po.ws.winner});
+    G.champions = G.champions||[];
+    if(!G.champions.some(c=>c.season===G.season)) G.champions.push({season:G.season, id:po.ws.winner});
     logNews(G,"champ",`🏆 ${G.teams[po.ws.winner].name} won the ${G.season} World Series!`, po.ws.winner);
     startOffseason(G);
   }
