@@ -109,6 +109,12 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   `inductIfWorthy` adds a snapshot to `G.hof` when `hofScore(p) >= HOF_THRESHOLD` (175) — a counting-stat
   score with a strong peak-greatness bonus so only true stars get in. The **Hall of Fame** tab shows the
   champions roll + inductees.
+- **League news / transaction wire (`logNews`, `G.news`):** a persistent, newest-first, capped-250 log of
+  notable moves — FA **signings** + extensions, **trades**, **roster** moves (call-up/option/release),
+  the user's **draft** picks, end-of-season **awards** (MVP/Cy Young), and World Series **titles**. Each
+  entry is `{season, day, phase, type, msg, teamId}`. Hooked in at each action site (FreeAgency, Finances,
+  Trades, Roster, Draft, `computeAwards`, `buildNextRound`). The **News** tab (`NewsFeed`, type-filtered via
+  `NEWS_META`) renders the full wire; the Hub shows the latest five. Backfilled empty in `migrate`.
 
 ## Player model
 - Hitters rated CON/POW/EYE/SPD/DEF; pitchers STU/CTL/STM. `computeOvr()` derives OVR; `pot` is ceiling.

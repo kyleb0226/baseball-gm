@@ -26,6 +26,9 @@ header to keep a JSON backup that survives updates.
   next meeting show on the Hub and rival games are flagged on the schedule
 - **Hall of Fame & history** — past champions and every team's season records are saved, and great
   players are inducted into the Hall of Fame when they retire after a legendary career
+- **League News wire** — a persistent, filterable transaction feed logs every signing, extension,
+  trade, call-up/option/release, your draft picks, season awards, and World Series title; the Hub
+  shows the latest headlines
 - **Freshly randomized league every new franchise** — optionally shuffle cities across
   divisions, or enter a **seed** (number or word) to reproduce/share an exact league
 - Sim controls: day / week / month / straight to the playoffs

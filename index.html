@@ -724,6 +724,16 @@ function saveGame(G){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(G)); }c
 function loadGame(){ try{ const s=localStorage.getItem(SAVE_KEY); return s?migrate(JSON.parse(s)):null; }catch(e){ return null; } }
 function clearSave(){ localStorage.removeItem(SAVE_KEY); }
 
+// League news / transaction wire. Every notable move (signing, trade, call-up,
+// draft pick, award, title) is logged here so the franchise keeps a persistent,
+// scrollable history. Newest first; capped so saves stay small.
+function logNews(G, type, msg, teamId){
+  if(!G) return;
+  if(!Array.isArray(G.news)) G.news=[];
+  G.news.unshift({ season:G.season, day:(G.day||0)+1, phase:G.phase, type, msg, teamId: teamId==null?null:teamId });
+  if(G.news.length>250) G.news.length=250;
+}
+
 // Forward-compatibility: backfill fields added by newer versions so an existing
 // franchise keeps loading (and playing) across updates instead of being wiped.
 function migrate(G){
@@ -734,6 +744,7 @@ function migrate(G){
     if(!G.picks) G.picks = buildPicks((G.season||2026)+1, G.teams);
     if(!Array.isArray(G.draftPicks)) G.draftPicks = [];
     if(!Array.isArray(G.awardHistory)) G.awardHistory = [];
+    if(!Array.isArray(G.news)) G.news = [];
     if(!Array.isArray(G.hof)) G.hof = [];
     if(!Array.isArray(G.champions)) G.champions = G.champion ? [{season:G.champion.season, id:G.champion.id}] : [];
     if(G.teams.some(t=>t.rivalId==null)) assignRivals(G.teams);
@@ -809,7 +820,7 @@ function newGame(userTeamId, opts={}){
     userTeamId, teams, aaaTeams, players, schedule, aaaSchedule,
     picks: buildPicks(2027, teams),
     freeAgents: [], draftClass: [], draftPicks: [], draftPick: 0,
-    playoffs: null, champion: null, champions: [], hof: [], log: [],
+    playoffs: null, champion: null, champions: [], hof: [], log: [], news: [],
   };
 }
 
@@ -849,7 +860,7 @@ function App(){
   const TABS = [
     ["hub","Hub"],["roster","Roster"],["lineup","Lineup"],["players","Players"],
     ["standings","Standings"],["aaa","AAA"],["stats","Leaders"],["awards","Awards"],
-    ["hof","Hall of Fame"],["schedule","Schedule"],["trades","Trades"],["fa","Free Agency"],["finances","Finances"],
+    ["hof","Hall of Fame"],["news","News"],["schedule","Schedule"],["trades","Trades"],["fa","Free Agency"],["finances","Finances"],
   ];
   if(G.phase==="offseason") TABS.push(["draft","Draft"]);
   if(G.phase==="playoffs"||G.playoffs) TABS.push(["playoffs","Playoffs"]);
@@ -894,6 +905,7 @@ function App(){
         {tab==="stats" && <Leaders G={G} />}
         {tab==="awards" && <Awards G={G} />}
         {tab==="hof" && <HallOfFame G={G} />}
+        {tab==="news" && <NewsFeed G={G} />}
         {tab==="schedule" && <Schedule G={G} />}
         {tab==="trades" && <Trades G={G} commit={commit} tShow={tShow} />}
         {tab==="fa" && <FreeAgency G={G} commit={commit} tShow={tShow} />}
@@ -1084,6 +1096,21 @@ function Hub({G, commit, tShow, setTab}){
         );
       })()}
 
+      {(G.news&&G.news.length>0) && <Card>
+        <div className="flex items-center justify-between mb-1">
+          <div className="text-xs font-semibold text-slate-300">📰 Around the League</div>
+          <button onClick={()=>setTab("news")} className="text-xs text-emerald-400 hover:text-emerald-300">full wire →</button>
+        </div>
+        <div className="space-y-0.5">
+          {G.news.slice(0,5).map((n,i)=>(
+            <div key={i} className="flex items-center gap-2 text-xs">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400/70 flex-shrink-0"></span>
+              <span className="flex-1 truncate text-slate-300">{n.msg}</span>
+            </div>
+          ))}
+        </div>
+      </Card>}
+
       {userLast && <Card>
         <div className="text-xs text-slate-400 mb-1">LAST GAME</div>
         <GameLine G={G} g={userLast} />
@@ -1135,16 +1162,22 @@ function Roster({G, team, commit}){
   const aaaRos = rosterOf(G, aaaIdOf(team.id)).sort((a,b)=>b.ovr-a.ovr);
   const release = (p)=>{
     if(!confirm(`Release ${p.name}? He becomes a free agent.`)) return;
-    movePlayerToFA(G, p); commit(G);
+    movePlayerToFA(G, p);
+    logNews(G,"roster",`${team.abbr} released ${p.pos} ${p.name} (${p.ovr})`, team.id);
+    commit(G);
   };
   const sendDown = (p)=>{                         // MLB -> AAA
     movePlayer(G, p, team.id); p.teamId = aaaIdOf(team.id);
-    autoSetLineups(aaa, G.players); ensureLineup(team, G.players); commit(G);
+    autoSetLineups(aaa, G.players); ensureLineup(team, G.players);
+    logNews(G,"roster",`${team.abbr} optioned ${p.pos} ${p.name} (${p.ovr}) to AAA`, team.id);
+    commit(G);
   };
   const callUp = (p)=>{                           // AAA -> MLB
     movePlayer(G, p, team.id);                    // movePlayer keeps level; override to MLB
     p.teamId = team.id;
-    autoSetLineups(aaa, G.players); commit(G);
+    autoSetLineups(aaa, G.players);
+    logNews(G,"roster",`${team.abbr} called up ${p.pos} ${p.name} (${p.ovr}) from AAA`, team.id);
+    commit(G);
   };
 
   // hitters: starting lineup (in batting order) vs bench
@@ -1805,6 +1838,7 @@ function Finances({G, commit, tShow}){
     if(spaceAfter<0){ tShow(`Not enough budget — needs ${money(t.salary)}/yr`); return; }
     if(!confirm(`Re-sign ${p.name} for ${t.years} more years at ${money(t.salary)}/yr?`)) return;
     p.years += t.years; p.salary = t.salary;
+    logNews(G,"signing",`${team.abbr} extended ${p.pos} ${p.name} (${p.ovr}) — +${t.years}y / ${money(t.salary)}`, team.id);
     commit(G); tShow(`✅ ${p.name} re-signed — +${t.years}y / ${money(t.salary)}`);
   };
   return (
@@ -1899,6 +1933,9 @@ function Trades({G, commit, tShow}){
       getPk.forEach(id=>{ const pk=G.picks.find(p=>p.id===id); if(pk) pk.owner=me.id; });
       autoSetLineups(other, G.players); autoSetLineups(G.aaaTeams[other.id], G.players);
       ensureLineup(me, G.players); autoSetLineups(G.aaaTeams[me.id], G.players);
+      const getDesc = get.map(id=>G.players[id].name).concat(getPk.length?[`${getPk.length} pick${getPk.length>1?"s":""}`]:[]).join(", ");
+      const giveDesc = give.map(id=>G.players[id].name).concat(givePk.length?[`${givePk.length} pick${givePk.length>1?"s":""}`]:[]).join(", ");
+      logNews(G,"trade",`${me.abbr} acquired ${getDesc||"picks"} from ${other.abbr} for ${giveDesc||"picks"}`, me.id);
       reset(); commit(G); tShow("✅ Trade accepted!");
     } else {
       const need = (getVal*0.97 - giveVal);
@@ -1985,6 +2022,7 @@ function FreeAgency({G, commit, tShow}){
   const sign=(p)=>{
     if(p.salary>space){ tShow(`Not enough cap space (need ${money(p.salary)})`); return; }
     p.teamId=me.id; p.incentive=0; G.freeAgents=G.freeAgents.filter(id=>id!==p.id);
+    logNews(G,"signing",`${me.abbr} signed ${p.pos} ${p.name} (${p.ovr}) — ${money(p.salary)}/${p.years}y`, me.id);
     commit(G); tShow(`✅ Signed ${p.name}`);
   };
   // Incentive-laden deal: lower guaranteed base (cap hit) in exchange for off-cap
@@ -1995,6 +2033,7 @@ function FreeAgency({G, commit, tShow}){
     if(base>space){ tShow(`Not enough cap space (need ${money(base)} base)`); return; }
     p.teamId=me.id; p.incentive=round(p.salary*0.6*10)/10; p.salary=base;
     G.freeAgents=G.freeAgents.filter(id=>id!==p.id);
+    logNews(G,"signing",`${me.abbr} signed ${p.pos} ${p.name} (${p.ovr}) — ${money(base)} base + ${money(p.incentive)} inc`, me.id);
     commit(G); tShow(`✅ Signed ${p.name} — ${money(base)} base + ${money(p.incentive)} incentives`);
   };
   if(!G.freeAgents.length) return <Card>No free agents available right now. They appear after the season when contracts expire.</Card>;
@@ -2072,8 +2111,8 @@ function computeAwards(G){
     });
     const asPit=[...pitchers].sort((a,b)=>cyScore(b)-cyScore(a)).slice(0,6);
     out.leagues[lg]={ mvp:recOf(mvp), cy:recOf(cy), allStars:{hitters:asHit.map(recOf), pitchers:asPit.map(recOf)} };
-    if(mvp) addAccolade(mvp,G.season,"MVP",lg);
-    if(cy) addAccolade(cy,G.season,"Cy Young",lg);
+    if(mvp){ addAccolade(mvp,G.season,"MVP",lg); logNews(G,"award",`🏅 ${mvp.name} won the ${lg} League MVP`, mvp.teamId); }
+    if(cy){ addAccolade(cy,G.season,"Cy Young",lg); logNews(G,"award",`🏅 ${cy.name} won the ${lg} League Cy Young`, cy.teamId); }
     asHit.forEach(p=>addAccolade(p,G.season,"All-Star",lg));
     asPit.forEach(p=>addAccolade(p,G.season,"All-Star",lg));
   });
@@ -2139,6 +2178,7 @@ function buildNextRound(G){
   } else if(po.round==="ws"){
     po.wsWinner=po.ws.winner; G.champion={id:po.ws.winner, season:G.season};
     G.champions = G.champions||[]; G.champions.push({season:G.season, id:po.ws.winner});
+    logNews(G,"champ",`🏆 ${G.teams[po.ws.winner].name} won the ${G.season} World Series!`, po.ws.winner);
     startOffseason(G);
   }
 }
@@ -2467,6 +2507,8 @@ function Draft({G, commit, tShow}){
     p.teamId=aaaIdOf(ownerId); };
   const draftPlayer=(pid)=>{
     if(!G.players[pid]) return;
+    const p=G.players[pid];
+    logNews(G,"draft",`${G.teams[onClock].abbr} drafted ${p.pos} ${p.name} (POT ${p.pot}) — Rd ${round}, #${G.draftPick+1}`, onClock);
     assign(G,pid,onClock);
     G.draftClass=G.draftClass.filter(x=>x!==pid);
     G.draftPick++; commit(G);
@@ -2638,6 +2680,51 @@ function HallOfFame({G}){
             </table>
           </div>
         ) : <div className="text-sm text-slate-500">Empty so far. Play several seasons and your stars will earn their plaques on the way out.</div>}
+      </Card>
+    </div>
+  );
+}
+
+/* ----------------------------- News / League Wire ---------------------- */
+const NEWS_META = {
+  trade:   {label:"Trades",   dot:"bg-sky-400"},
+  signing: {label:"Signings", dot:"bg-emerald-400"},
+  roster:  {label:"Roster",   dot:"bg-slate-400"},
+  draft:   {label:"Draft",    dot:"bg-amber-400"},
+  award:   {label:"Awards",   dot:"bg-fuchsia-400"},
+  champ:   {label:"Titles",   dot:"bg-yellow-400"},
+};
+function NewsFeed({G}){
+  const [filt,setFilt]=useState("ALL");
+  const news = (G.news||[]).filter(n=>filt==="ALL"||n.type===filt);
+  const types = ["ALL"].concat(Object.keys(NEWS_META));
+  const when = n => n.phase==="regular" ? `${n.season} · D${n.day}` : n.phase==="playoffs" ? `${n.season} · PO` : n.phase==="offseason" ? `${n.season} · OFF` : `${n.season}`;
+  return (
+    <div className="space-y-3">
+      <Card>
+        <div className="flex items-center gap-2 flex-wrap">
+          <h3 className="font-bold mr-2">📰 League Wire <span className="text-slate-500 text-sm font-normal">({(G.news||[]).length})</span></h3>
+          {types.map(t=>(
+            <button key={t} onClick={()=>setFilt(t)} className={"px-2 py-0.5 rounded text-xs "+(filt===t?"bg-emerald-500 text-slate-900 font-semibold":"bg-[#16213a] text-slate-300 hover:bg-[#1c2c4a]")}>
+              {t==="ALL"?"All":NEWS_META[t].label}
+            </button>
+          ))}
+        </div>
+      </Card>
+      <Card>
+        {news.length ? (
+          <div className="space-y-0.5 max-h-[74vh] overflow-y-auto">
+            {news.map((n,i)=>{ const m=NEWS_META[n.type]||{dot:"bg-slate-500"};
+              return (
+                <div key={i} className="flex items-start gap-2 px-2 py-1.5 rounded hover:bg-[#13203a] border-b border-[#15203a]">
+                  <span className={"mt-1.5 w-2 h-2 rounded-full flex-shrink-0 "+m.dot}></span>
+                  <span className="flex-1 text-sm text-slate-200">{n.msg}</span>
+                  <span className="text-[10px] text-slate-500 whitespace-nowrap tnum pt-0.5">{when(n)}</span>
+                </div>
+              );
+            })}
+          </div>
+        ) : <div className="text-sm text-slate-500">No transactions{filt!=="ALL"?" of this type":""} yet. Sign a free agent, swing a trade, make a roster move, or finish a season and the wire fills up.</div>}
       </Card>
     </div>
   );
