@@ -63,6 +63,12 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   rosters are younger/weaker (`buildAAARoster`, `meanAdj=-6`; **14 hitters + 5 SP + 8 RP**) and prospects
   develop faster in the offseason. Roster screen has a **AAA Affiliate** section with `↑ up` / `↓ AAA`
   (`callUp`/`sendDown`); the **AAA** tab shows affiliate standings + top prospects. Draftees report to AAA.
+- **AI roster management (`aiAlignOrg`):** keeps each org's BEST talent on the big-league club instead of
+  buried in AAA. Promotes by OVR while guaranteeing a natural fielder at every position and a 5-man-capable
+  staff (≤16 hitters + ≤14 pitchers up, the rest to the affiliate). Called at league gen (all clubs) and in
+  `startNewSeason` for AI clubs (after their FA fill, before `trimRoster`/`autoSetLineups`); the user's club is
+  left alone so manual call-ups stand. `migrate` runs it once on old saves (guarded by `G._aiAligned`,
+  skipping the user). Without it, randomly-generated/aged orgs stranded 70+ OVR players behind MLB scrubs.
 - **Defensive positions:** `team.pos` maps playerId → assigned position (8 fielders + one DH). The
   `LineupEditor` is a **drag-and-drop field diagram** (tap a player then a spot, or drag) backed by
   `placeAtPosition`, which glues the position to the player and keeps the lineup a valid permutation
@@ -120,6 +126,10 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
 - **Talent curve:** rating means sit a bit high and ~8% of generated players get a `+8–18` "star"
   boost to their primary tools (in `makeHitter`/`makePitcher`) for a fat top end. If you bump these,
   re-check the `paOutcome` `hrP` formula — league HR is sensitive to the POW mean × `hrP` slope/cap.
+- **HR formula (`paOutcome` `hrP`):** `0.019 + 0.074*(pow−.5) + 0.040*(con−.5) − 0.030*(pitStu−.5)`.
+  The **contact term is deliberate** — HR needs power *and* some contact, so a one-dimensional slugger who
+  can't make contact no longer leads the league in homers (the old power-only slope let a 58 OVR mash 36 HR).
+  Tuned targets (3-seed check): HR leader ~48–53, ~3–6 hitters over 40, no sub-60 OVR sluggers over ~32.
 - **Development & regression (`doProgression`, offseason):** each attribute shifts by `gauss(center,1.2)`.
   `center` ramps with age — young players climb toward potential (≤23 fastest, growth fades to a ~26-28
   peak), 29-30 gentle decline, 31-33 steeper, 34+ falls off a cliff. Modifiers: **AAA prospects (≤25)

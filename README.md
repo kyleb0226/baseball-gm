@@ -47,6 +47,9 @@ header to keep a JSON backup that survives updates.
   an award-history table; honors stick to a player's profile (e.g. "🏆 2× MVP")
 - **AAA affiliates** — every club runs a minor-league team that plays its own full season (with its
   own standings and stat lines). Develop prospects there, then **call them up / send players down**
+- **Smart AI front offices** — rival clubs keep their best talent on the big-league roster (they won't
+  leave a star buried in AAA behind a scrub), promoting by ability while still fielding a player at
+  every position
 - **Tradeable draft picks** — deal future picks whose value scales with each team's projected finish,
   alongside players (big-leaguers or prospects)
 - Inning-by-inning, plate-appearance sim engine driven by player ratings — including stolen

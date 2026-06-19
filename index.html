@@ -301,6 +301,32 @@ function autoSetLineups(team, players){
   team.bullpen = pitchers.filter(p=>!inRot.has(p.id)).sort((a,b)=>b.ovr-a.ovr).map(p=>p.id);
 }
 
+// Keep an organization's BEST players on the big-league club (AI roster management).
+// Without this, randomly-generated/aged orgs can leave 70+ OVR talent rotting in AAA
+// behind worse MLB scrubs. Promotes by OVR while guaranteeing a natural fielder at
+// every position and a 5-man-capable staff; everyone else is sent to the affiliate.
+function aiAlignOrg(G, mlbId){
+  const aaaId = aaaIdOf(mlbId);
+  const org = Object.values(G.players).filter(p=>p.teamId===mlbId || p.teamId===aaaId);
+  if(!org.length) return;
+  const hitters = org.filter(p=>!p.isP);
+  const pitchers = org.filter(p=>p.isP);
+  // hitters: first guarantee the best natural starter at each field position is up,
+  // then fill the rest of the (up to 16) hitter slots with the best remaining by OVR.
+  const upH = new Set();
+  FIELD_POS.forEach(pos=>{
+    const best = hitters.filter(p=>p.pos===pos && !upH.has(p.id)).sort((a,b)=>b.ovr-a.ovr)[0];
+    if(best) upH.add(best.id);
+  });
+  hitters.slice().sort((a,b)=>b.ovr-a.ovr).forEach(p=>{ if(upH.size<16 && !upH.has(p.id)) upH.add(p.id); });
+  hitters.forEach(p=>{ p.teamId = upH.has(p.id) ? mlbId : aaaId; });
+  // pitchers: keep the 5 best starters up, then the best arms overall (up to 14 total).
+  const upP = new Set();
+  pitchers.filter(p=>p.role==="SP").sort((a,b)=>b.ovr-a.ovr).slice(0,5).forEach(p=>upP.add(p.id));
+  pitchers.slice().sort((a,b)=>b.ovr-a.ovr).forEach(p=>{ if(upP.size<14 && !upP.has(p.id)) upP.add(p.id); });
+  pitchers.forEach(p=>{ p.teamId = upP.has(p.id) ? mlbId : aaaId; });
+}
+
 // Shuffle which city/nickname identities land in which league+division slot,
 // keeping the league/division structure (15+15, 5 per division) fixed and the
 // user's selected franchise pinned to its index so userTeamId stays valid.
@@ -326,6 +352,9 @@ function generateLeague(userTeamId, opts={}){
   // AAA affiliates: one per MLB team, each with its own prospect-laden roster
   const aaaTeams = teams.map(t=>makeAAATeam(t));
   aaaTeams.forEach(at=>buildAAARoster(at.id).forEach(p=>players[p.id]=p));
+  // sort each org so its best talent starts on the big-league club, not buried in AAA
+  const Gtmp = { players };
+  teams.forEach(t=>aiAlignOrg(Gtmp, t.id));
   teams.forEach(t=>autoSetLineups(t, players));
   aaaTeams.forEach(at=>autoSetLineups(at, players));
   setRng(null);
@@ -392,7 +421,9 @@ function paOutcome(bat, pit, defN){
   const ps=n01(pit.stu), pc=n01(pit.ctl);
   let kP = clamp(0.215 + 0.13*(ps-0.5) - 0.11*(bc-0.5) + 0.05*(pc-0.5), 0.04, 0.45);
   let bbP = clamp(0.085 + 0.08*(be-0.5) - 0.08*(pc-0.5) - 0.02*(ps-0.5), 0.02, 0.22);
-  let hrP = clamp(0.024 + 0.072*(bp-0.5) - 0.030*(ps-0.5), 0.003, 0.13);
+  // HR needs power AND some contact — a one-dimensional slugger who can't make contact
+  // shouldn't lead the league in homers, so a contact term gates the pure-power slope.
+  let hrP = clamp(0.019 + 0.074*(bp-0.5) + 0.040*(bc-0.5) - 0.030*(ps-0.5), 0.002, 0.13);
   const r = Math.random();
   if(r < kP) return {o:"K"};
   if(r < kP+bbP) return {o:"BB"};
@@ -718,6 +749,12 @@ function migrate(G){
     };
     G.teams.forEach(fixTeam);
     G.aaaTeams.forEach(fixTeam);
+    // one-time AI roster cleanup: promote each AI org's best talent out of AAA (skip the
+    // user's club so their own call-up decisions stand). Re-set the touched lineups.
+    if(!G._aiAligned){
+      G.teams.forEach(t=>{ if(t.id!==G.userTeamId){ aiAlignOrg(G, t.id); autoSetLineups(t, G.players); autoSetLineups(G.aaaTeams[t.id], G.players); } });
+      G._aiAligned = true;
+    }
     // normalize playoff series to the game-by-game shape (hw/lw/games)
     if(G.playoffs){
       const po=G.playoffs;
@@ -2517,6 +2554,7 @@ function startNewSeason(G){
       cand.teamId=t.id; G.freeAgents=G.freeAgents.filter(id=>id!==cand.id);
       ros=rosterOf(G,t.id); guard++;
     }
+    aiAlignOrg(G, t.id);          // promote the org's best to the bigs before trimming/lineups
     trimRoster(G,t);
     autoSetLineups(t, G.players);
   });
