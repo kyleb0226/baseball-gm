@@ -51,9 +51,13 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   good arms get the meaningful innings (~85–105 IP), fringe arms sit (~10–17 IP), no reliever outlier.
   Edit the rotation order and bullpen priority in the **Lineup** tab. NOTE: a deep enough pen matters —
   AAA carries 8 RP so its setup tier has ~5 arms like the bigs (too few → per-arm IP balloons).
-- **Season:** `buildSchedule()` = circle-method round-robin repeated to 162 games (15 games/day).
-  `simDay()` advances one day, simming **both** `G.schedule` (MLB) and `G.aaaSchedule` (AAA) — so a
-  full season is ~4860 game sims. At day 162 `enterPlayoffs()` fires (MLB only; AAA is regular-season).
+- **Season / schedule:** `buildSchedule(teams)` builds a 162-game slate **with off days** — it spreads
+  the games over ~224 days (~11 games/day, each team idle ~62 days), so not everyone plays daily.
+  Matchup counts come from `gamesBetween` — **18 per division rival, 8 per same-league team, 2 per
+  mirror-division interleague team, 0 other interleague** (72 + 80 + 10 = 162). Games are packed greedily
+  into the emptiest valid day (no team twice/day). `padSchedules` keeps MLB and AAA calendars the same
+  length. `simDay()` plays both `G.schedule` and `G.aaaSchedule` (~4860 sims/season); `enterPlayoffs()`
+  fires at `G.day >= G.schedule.length`. Anything that referenced "162 days" now uses `G.schedule.length`.
 - **AAA / minor leagues:** every org runs a AAA affiliate that plays its own 162-game season with the
   same `simGame` engine (it just operates on AAA team objects whose players carry the AAA teamId). AAA
   rosters are younger/weaker (`buildAAARoster`, `meanAdj=-6`; **14 hitters + 5 SP + 8 RP**) and prospects
@@ -89,7 +93,16 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   series, with line scores) / **Sim Whole Round** / **Advance**, then crowns the champion → offseason.
 - **Offseason loop:** aging/development toward potential + decline, retirements, contract expiry →
   free agency, `buildDraft()` (5-round amateur draft), then `startNewSeason()` rolls everything over
-  (resets MLB + AAA records/schedules, regenerates next year's `G.picks`).
+  (resets MLB + AAA records/schedules, regenerates next year's `G.picks`). Before resetting records,
+  `startNewSeason` pushes the finished season into each `team.history` (`{season,w,l,made,champ}`).
+- **Rivalries:** `assignRivals` pairs teams up (two pairs per division + the odd team gets a cross-league
+  mirror-division rival), stored as `team.rivalId`. Shown on the Hub (season series + next meeting) and
+  highlighted in the Schedule. Migrate backfills rivals for old saves.
+- **History / Hall of Fame:** `G.champions` is the title roll (pushed in `buildNextRound`'s WS case);
+  `team.history` holds per-season records. `p.peakOvr` tracks career-best OVR; on retirement
+  `inductIfWorthy` adds a snapshot to `G.hof` when `hofScore(p) >= HOF_THRESHOLD` (175) — a counting-stat
+  score with a strong peak-greatness bonus so only true stars get in. The **Hall of Fame** tab shows the
+  champions roll + inductees.
 
 ## Player model
 - Hitters rated CON/POW/EYE/SPD/DEF; pitchers STU/CTL/STM. `computeOvr()` derives OVR; `pot` is ceiling.

@@ -19,7 +19,13 @@ header to keep a JSON backup that survives updates.
 
 ## Features
 
-- Pick from 30 fictional teams in two leagues, then play a 162-game season
+- Pick from 30 fictional teams in two leagues, then play a 162-game season on a realistic schedule
+  **with off days** (spread over ~224 days) — you play division rivals most, your league next, and
+  interleague games are rare (only your mirror division)
+- **Rivalries** — every club has a rival (with a cross-league twist for some); your season series and
+  next meeting show on the Hub and rival games are flagged on the schedule
+- **Hall of Fame & history** — past champions and every team's season records are saved, and great
+  players are inducted into the Hall of Fame when they retire after a legendary career
 - **Freshly randomized league every new franchise** — optionally shuffle cities across
   divisions, or enter a **seed** (number or word) to reproduce/share an exact league
 - Sim controls: day / week / month / straight to the playoffs
