@@ -105,6 +105,14 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   game (2-2-1 home pattern), `activeSeriesList` is the round's live series, `buildNextRound` builds the
   next round once they're all decided. The `Playoffs` UI offers **Sim Next Game** (one game per active
   series, with line scores) / **Sim Whole Round** / **Advance**, then crowns the champion → offseason.
+- **Economy:** **revenue/budget evolves** at season rollover (`startNewSeason`) — `t.budget` shifts with
+  win% (`(wp-.5)*0.45`) plus playoff/championship bonuses, then regresses 6%/yr toward a ~160 market mean
+  (clamped 95–290) so a dynasty can't run payroll away forever. `t.budgetDelta` is stored and shown on the
+  Finances budget card; the user's change is logged to the news wire. **Waiver wire** (`G.waivers`): cut
+  players (in-season user releases via `placeOnWaivers`, plus occasional AI churn via `maybeAIWaive`) sit on
+  waivers ~2 days (user has first claim from the Free Agency tab) then `processWaivers` lets AI clubs claim
+  in reverse-standings order; unclaimed after ~4 days they clear to free agency. Cleared/flushed each new
+  season. ROSTER_CAP and cap space gate claims.
 - **Offseason loop:** aging/development toward potential + decline, retirements, contract expiry →
   free agency, `buildDraft()` (5-round amateur draft), then `startNewSeason()` rolls everything over
   (resets MLB + AAA records/schedules, regenerates next year's `G.picks`). Before resetting records,

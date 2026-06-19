@@ -765,6 +765,7 @@ function migrate(G){
     if(!Array.isArray(G.awardHistory)) G.awardHistory = [];
     if(!Array.isArray(G.news)) G.news = [];
     if(!Array.isArray(G.tradeOffers)) G.tradeOffers = [];
+    if(!Array.isArray(G.waivers)) G.waivers = [];
     if(G.tradeDeadline==null) G.tradeDeadline = Math.round((G.schedule?G.schedule.length:224)*0.58);
     if(!Array.isArray(G.hof)) G.hof = [];
     if(!Array.isArray(G.champions)) G.champions = G.champion ? [{season:G.champion.season, id:G.champion.id}] : [];
@@ -842,7 +843,7 @@ function newGame(userTeamId, opts={}){
     picks: buildPicks(2027, teams),
     freeAgents: [], draftClass: [], draftPicks: [], draftPick: 0,
     playoffs: null, champion: null, champions: [], hof: [], log: [], news: [],
-    tradeDeadline: Math.round(schedule.length*0.58), tradeOffers: [],
+    tradeDeadline: Math.round(schedule.length*0.58), tradeOffers: [], waivers: [],
   };
 }
 
@@ -1038,6 +1039,8 @@ function simDay(G){
     G.tradeOffers = G.tradeOffers.filter(o=>(G.day-o.day)<=12);
     if(G.tradeOffers.length<2 && chance(0.045)){ const off=makeAITradeOffer(G); if(off) G.tradeOffers.push(off); }
   }
+  // waiver wire: occasional AI cuts + claim processing
+  maybeAIWaive(G); processWaivers(G);
   if(G.day>=G.schedule.length){ enterPlayoffs(G); }
 }
 
@@ -1230,9 +1233,10 @@ function Roster({G, team, commit}){
   const aaa = G.aaaTeams[team.id];
   const aaaRos = rosterOf(G, aaaIdOf(team.id)).sort((a,b)=>b.ovr-a.ovr);
   const release = (p)=>{
-    if(!confirm(`Release ${p.name}? He becomes a free agent.`)) return;
-    movePlayerToFA(G, p);
-    logNews(G,"roster",`${team.abbr} released ${p.pos} ${p.name} (${p.ovr})`, team.id);
+    const inSeason = G.phase==="regular";
+    if(!confirm(inSeason?`Place ${p.name} on waivers? Other clubs may claim him; if he clears he becomes a free agent.`:`Release ${p.name}? He becomes a free agent.`)) return;
+    if(inSeason){ placeOnWaivers(G, p, team.id); logNews(G,"roster",`${team.abbr} placed ${p.pos} ${p.name} (${p.ovr}) on waivers`, team.id); }
+    else { movePlayerToFA(G, p); logNews(G,"roster",`${team.abbr} released ${p.pos} ${p.name} (${p.ovr})`, team.id); }
     commit(G);
   };
   const sendDown = (p)=>{                         // MLB -> AAA
@@ -1315,6 +1319,61 @@ function movePlayerToFA(G, p){
   if(t){ t.lineup=t.lineup.filter(x=>x!==p.id); t.rotation=t.rotation.filter(x=>x!==p.id); if(t.pos) delete t.pos[p.id]; }
   p.teamId=null;
   if(!G.freeAgents.includes(p.id)) G.freeAgents.push(p.id);
+}
+
+// ---- Waiver wire -------------------------------------------------------
+// A cut/surplus player goes on waivers (off all rosters) before reaching free
+// agency, giving other clubs — and the user — a chance to claim him cheaply.
+function placeOnWaivers(G, p, fromId){
+  const t=teamById(G,p.teamId);
+  if(t){ t.lineup=t.lineup.filter(x=>x!==p.id); t.rotation=t.rotation.filter(x=>x!==p.id); if(t.pos) delete t.pos[p.id]; }
+  p.teamId=null;
+  if(!Array.isArray(G.waivers)) G.waivers=[];
+  if(!G.waivers.some(w=>w.id===p.id)) G.waivers.push({id:p.id, day:G.day||0, season:G.season, fromId});
+  G.freeAgents=(G.freeAgents||[]).filter(id=>id!==p.id);
+}
+// AI clubs (worst record = first priority) claim useful waived players they can
+// fit; players unclaimed after the window clear to free agency. The user gets a
+// 2-day head start to claim from the Free Agency tab before AI can.
+function processWaivers(G){
+  if(!Array.isArray(G.waivers) || !G.waivers.length) return;
+  const order=[...G.teams].sort((a,b)=>pct(a)-pct(b));   // worst record claims first
+  const remaining=[];
+  G.waivers.forEach(w=>{
+    const p=G.players[w.id];
+    if(!p || p.teamId!=null) return;                      // claimed/gone already
+    const age=(G.day||0)-w.day;
+    if(age<2){ remaining.push(w); return; }               // user's head-start window
+    let claimed=null;
+    for(const t of order){
+      if(t.id===G.userTeamId || t.id===w.fromId) continue;
+      if(rosterOf(G,t.id).length>=ROSTER_CAP) continue;
+      if(p.salary > t.budget-payroll(G,t.id)) continue;
+      if(p.ovr<58) continue;                              // only claim useful arms/bats
+      claimed=t; break;
+    }
+    if(claimed){
+      p.teamId=claimed.id; autoSetLineups(claimed,G.players);
+      logNews(G,"roster",`${claimed.abbr} claimed ${p.pos} ${p.name} (${p.ovr}) off waivers`, claimed.id);
+    } else if(age>=4){
+      if(!G.freeAgents.includes(p.id)) G.freeAgents.push(p.id);  // cleared waivers → FA
+    } else remaining.push(w);
+  });
+  G.waivers=remaining;
+}
+// occasional in-season churn: a deep AI roster waives a low-value spare part,
+// so the waiver wire has something on it for the user to browse/claim.
+function maybeAIWaive(G){
+  if(!chance(0.04)) return;
+  const t=pick(G.teams.filter(x=>x.id!==G.userTeamId));
+  const ros=rosterOf(G,t.id);
+  if(ros.length<=27) return;
+  const cand=ros.filter(p=>!t.lineup.includes(p.id) && !t.rotation.includes(p.id))
+    .sort((a,b)=>playerValue(a)-playerValue(b))[0];
+  if(cand && cand.ovr<=66){
+    placeOnWaivers(G,cand,t.id); ensureLineup(t,G.players);
+    logNews(G,"roster",`${t.abbr} waived ${cand.pos} ${cand.name} (${cand.ovr})`, t.id);
+  }
 }
 
 function PlayerModal({p, team, onClose}){
@@ -1930,7 +1989,7 @@ function Finances({G, commit, tShow}){
   return (
     <div className="space-y-4">
       <div className="grid sm:grid-cols-3 gap-3">
-        <Card><div className="text-slate-400 text-xs">BUDGET</div><div className="text-2xl font-bold tnum">{money(team.budget)}</div></Card>
+        <Card><div className="text-slate-400 text-xs">BUDGET</div><div className="text-2xl font-bold tnum">{money(team.budget)}</div>{team.budgetDelta?<div className={"text-xs "+(team.budgetDelta>0?"text-emerald-400":"text-red-400")}>{team.budgetDelta>0?"▲ +":"▼ "}{team.budgetDelta} vs last yr</div>:<div className="text-xs text-slate-500">revenue grows as you win</div>}</Card>
         <Card><div className="text-slate-400 text-xs">PAYROLL</div><div className="text-2xl font-bold tnum">{money(total)}</div></Card>
         <Card><div className="text-slate-400 text-xs">CAP SPACE</div><div className={"text-2xl font-bold tnum "+(space>=0?"text-emerald-400":"text-red-400")}>{money(space)}</div></Card>
       </div>
@@ -2167,7 +2226,16 @@ function FreeAgency({G, commit, tShow}){
     logNews(G,"signing",`${me.abbr} signed ${p.pos} ${p.name} (${p.ovr}) — ${money(base)} base + ${money(p.incentive)} inc`, me.id);
     commit(G); tShow(`✅ Signed ${p.name} — ${money(base)} base + ${money(p.incentive)} incentives`);
   };
-  if(!G.freeAgents.length) return <Card>No free agents available right now. They appear after the season when contracts expire.</Card>;
+  const waived = (G.waivers||[]).map(w=>({w, p:G.players[w.id]})).filter(x=>x.p && x.p.teamId==null);
+  const claim=(p)=>{
+    if(p.salary>space){ tShow(`Not enough cap space (need ${money(p.salary)})`); return; }
+    p.teamId=me.id; p.incentive=0;
+    G.waivers=(G.waivers||[]).filter(w=>w.id!==p.id);
+    ensureLineup(me,G.players);
+    logNews(G,"roster",`${me.abbr} claimed ${p.pos} ${p.name} (${p.ovr}) off waivers`, me.id);
+    commit(G); tShow(`✅ Claimed ${p.name}`);
+  };
+  if(!G.freeAgents.length && !waived.length) return <Card>No free agents or waiver players available right now. They appear when teams make cuts mid-season, or after the season when contracts expire.</Card>;
   return (
     <div className="space-y-3">
       <Card>
@@ -2181,7 +2249,30 @@ function FreeAgency({G, commit, tShow}){
           </div>
         </div>
       </Card>
-      <Card>
+      {waived.length>0 && <Card className="border-sky-700/40">
+        <div className="text-sm font-semibold text-sky-300 mb-1">📋 Waiver Wire <span className="text-slate-500 text-xs font-normal">({waived.length})</span></div>
+        <p className="text-xs text-slate-400 mb-2">Players just cut by other clubs. You have first crack for ~2 days before rival teams (worst record first) can claim them.</p>
+        <div className="overflow-x-auto max-h-64 overflow-y-auto">
+          <table className="w-full text-sm tnum">
+            <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Pos</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th><th>From</th><th className="text-right">Salary</th><th></th></tr></thead>
+            <tbody>
+              {waived.map(({w,p})=>(
+                <tr key={p.id} className="border-b border-[#15203a]">
+                  <td className="text-slate-400">{p.pos}</td>
+                  <td className="text-left">{p.name}</td>
+                  <td className="text-center">{p.age}</td>
+                  <td className="text-center"><OvrPill v={p.ovr}/></td>
+                  <td className="text-center text-slate-400">{p.pot}</td>
+                  <td className="text-center text-slate-500 text-xs">{G.teams[w.fromId]?G.teams[w.fromId].abbr:"—"}</td>
+                  <td className="text-right">{money(p.salary)}</td>
+                  <td className="text-right"><button onClick={()=>claim(p)} className="px-2 py-0.5 bg-sky-600 rounded text-xs hover:bg-sky-500">Claim</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>}
+      {G.freeAgents.length>0 && <Card>
         <div className="overflow-x-auto max-h-[70vh] overflow-y-auto">
           <table className="w-full text-sm tnum">
             <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Pos</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th><th className="text-right">Ask</th><th></th></tr></thead>
@@ -2203,7 +2294,7 @@ function FreeAgency({G, commit, tShow}){
             </tbody>
           </table>
         </div>
-      </Card>
+      </Card>}
     </div>
   );
 }
@@ -2764,7 +2855,17 @@ function startNewSeason(G){
   G.teams.forEach(t=>{
     t.history = t.history||[];
     const made = (t.league==="Empire"?empSeeds:pioSeeds).includes(t.id);
-    t.history.push({ season:G.season, w:t.w, l:t.l, made, champ:t.id===champId });
+    const champ = t.id===champId;
+    t.history.push({ season:G.season, w:t.w, l:t.l, made, champ });
+    // revenue/budget evolves with success — winning fills seats — but regresses gently
+    // toward a market mean so a dynasty can't run the payroll away forever.
+    const wp=(t.w+t.l)?t.w/(t.w+t.l):0.5;
+    let delta=(wp-0.5)*0.45; if(made) delta+=0.04; if(champ) delta+=0.05;
+    const old=t.budget;
+    t.budget=clamp(round(t.budget*(1+delta) - (t.budget-160)*0.06), 95, 290);
+    t.budgetDelta=t.budget-old;
+    if(t.id===G.userTeamId && t.budgetDelta!==0)
+      logNews(G,"signing",`${t.abbr} ${t.budgetDelta>0?"revenue up":"budget tightens"} — payroll budget ${t.budgetDelta>0?"+":""}${t.budgetDelta} to ${money(t.budget)}`, t.id);
   });
   // reset records & stats (MLB + AAA)
   G.teams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0; });
@@ -2777,6 +2878,8 @@ function startNewSeason(G){
   G.picks = buildPicks(G.season+1, G.teams);   // next year's tradeable picks
   G.tradeDeadline = Math.round(G.schedule.length*0.58);   // recompute for the new calendar
   G.tradeOffers = [];                                      // pending offers don't carry over
+  (G.waivers||[]).forEach(w=>{ const p=G.players[w.id]; if(p&&p.teamId==null&&!G.freeAgents.includes(p.id)) G.freeAgents.push(p.id); });
+  G.waivers = [];                                          // anyone still on the wire clears to FA
 }
 
 /* ----------------------------- Hall of Fame UI ------------------------- */

@@ -78,6 +78,10 @@ header to keep a JSON backup that survives updates.
   hometown discount, but a struggling club pays a premium (and its stars may walk)
 - **Incentive-laden contracts** — sign a free agent for a lower guaranteed base (cap hit) plus off-cap
   performance bonuses, to fit a star under the budget for less up front
+- **Revenue that follows winning** — your payroll budget grows when you win (and shrinks when you lose),
+  with playoff and title bonuses, so building a winner pays off at the bank too
+- **Waiver wire** — when clubs cut players mid-season they hit waivers; claim them from the Free Agency
+  tab (you get first crack before rival GMs, worst record claiming first)
 - **Play the postseason game by game** — sim one game at a time and watch each series' line scores,
   or fast-forward a whole round
 - Full postseason: Wild Card → Division Series → League Championship → World Series
