@@ -42,18 +42,23 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
 - **Rotation & bullpen:** every team carries a **5-man rotation** (`autoSetLineups` promotes the best
   arms if short of true SPs) and each starter goes every 5th game (≈32–33 GS). The bullpen has a
   user-editable **priority order** (`team.bullpen`, resolved live by `bullpenOrder()`; `pen[0]` = closer).
-  `pickReliever` keeps the closer for 9th-inning saves, gives the 8th to the setup tier, shares earlier
-  relief across the better ~70% of arms (rotated by game/inning to avoid one arm pitching every day),
-  and dumps blowouts on mop-up arms — so better arms get the meaningful innings (~80–106 IP) and weak
-  arms sit (~25 IP). Edit the rotation order and bullpen priority in the **Lineup** tab.
+  `pickReliever` is **role + workload based**: the closer (`pen[0]`) only enters to finish a 9th+ save of
+  1–3; the **setup tier** (best ~55% of non-closers) carries normal relief; the fringe mop up blowouts
+  (|lead|≥7). Within a role it hands the ball to whoever's thrown the least — first **this game**
+  (`gOuts`), then **this season** (`stats.OUT`) — via `loadKey`/`leastLoaded`, and it *excludes the
+  current arm* so nobody pitches consecutive innings or runs away with the workload. This replaced an
+  older "fresh/unused" model whose exhaustion fallback let one arm soak 600+ IP (esp. in AAA). Result:
+  good arms get the meaningful innings (~85–105 IP), fringe arms sit (~10–17 IP), no reliever outlier.
+  Edit the rotation order and bullpen priority in the **Lineup** tab. NOTE: a deep enough pen matters —
+  AAA carries 8 RP so its setup tier has ~5 arms like the bigs (too few → per-arm IP balloons).
 - **Season:** `buildSchedule()` = circle-method round-robin repeated to 162 games (15 games/day).
   `simDay()` advances one day, simming **both** `G.schedule` (MLB) and `G.aaaSchedule` (AAA) — so a
   full season is ~4860 game sims. At day 162 `enterPlayoffs()` fires (MLB only; AAA is regular-season).
 - **AAA / minor leagues:** every org runs a AAA affiliate that plays its own 162-game season with the
   same `simGame` engine (it just operates on AAA team objects whose players carry the AAA teamId). AAA
-  rosters are younger/weaker (`buildAAARoster`, `meanAdj=-6`) and prospects develop faster in the
-  offseason. Roster screen has a **AAA Affiliate** section with `↑ up` / `↓ AAA` (`callUp`/`sendDown`);
-  the **AAA** tab shows affiliate standings + top prospects. Draftees report to AAA.
+  rosters are younger/weaker (`buildAAARoster`, `meanAdj=-6`; **14 hitters + 5 SP + 8 RP**) and prospects
+  develop faster in the offseason. Roster screen has a **AAA Affiliate** section with `↑ up` / `↓ AAA`
+  (`callUp`/`sendDown`); the **AAA** tab shows affiliate standings + top prospects. Draftees report to AAA.
 - **Defensive positions:** `team.pos` maps playerId → assigned position (8 fielders + one DH). The
   `LineupEditor` assigns them (swapping to keep a valid permutation) and flags missing/duplicates.
   `teamDefRating` applies an out-of-position penalty and ignores the DH.
@@ -61,6 +66,19 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   scales with the original team's projected finish (worse team → earlier slot → more value). The draft
   builds its selection order from owned picks (`G.draftPicks`, by round then orig-team reverse
   standings), so traded picks keep their slot. `Trades` can include players (MLB or AAA) and picks.
+  When a prospect is drafted (`assign`), `p.draftInfo = {year, round, overall, by}` is stamped on him
+  (shown in `PlayerModal`).
+- **Per-season history:** every game tags the team a player suited up for into `p._yrTeams`
+  (`tagTeam` in `markGamesPlayed` for hitters and at the end of `simGame` for the pitchers who threw —
+  so mid-season trades record *both* teams). At the offseason rollover `recordSeasonHistory(p, season)`
+  (called at the top of `doProgression`, before aging) pushes `{season, age, ovr, teams[], stats}` onto
+  `p.history` and clears `_yrTeams`; `mergeCareer` then folds the line into career totals. `PlayerModal`
+  renders a **Year by Year** table from `p.history`.
+- **Contract incentives:** a deal is `p.salary` (guaranteed **base = cap hit**) plus optional off-cap
+  `p.incentive` (performance bonus, not counted against budget). Free Agency offers **Sign** (full
+  salary as cap hit) or **+Inc** (`signInc`: base ≈ 0.6× the ask as cap hit + a matching incentive) so
+  you can fit a player under the cap for less up front. Finances shows base vs incentives; `payroll`
+  counts base only.
 - **Postseason:** 6 seeds/league, Wild Card Bo3 → Division Bo5 → LCS Bo7 → World Series Bo7. Played
   **game by game** — each series is a `mkSeries` object (`hw/lw/games[]`); `playoffSeriesGame` plays one
   game (2-2-1 home pattern), `activeSeriesList` is the round's live series, `buildNextRound` builds the

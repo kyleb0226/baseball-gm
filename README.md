@@ -28,8 +28,10 @@ header to keep a JSON backup that survives updates.
 - Roster screen split into **Starting Lineup / Bench / Rotation / Closer / Bullpen** with ST/BN
   badges; editable batting order **and a defensive alignment** (assign all 8 field positions + a DH;
   out-of-position players take a fielding penalty)
-- Editable **5-man rotation and bullpen priority** — set your closer & setup man; your best arms work
-  the high-leverage innings while mop-up arms take blowouts
+- Editable **5-man rotation and bullpen priority** — set your closer & setup man; relief is role- and
+  workload-based, so your **good arms get the high-leverage innings** (the closer locks down saves, the
+  setup tier carries the load) while mop-up arms take blowouts and no one arm gets overworked — at the
+  big-league club *and* at AAA
 - Players **develop and regress realistically** — young players climb toward their potential (fastest
   in AAA, and faster still when they produce, so a kid promoted early who rakes keeps improving), peak
   in their mid-20s, then decline with age; the offseason shows a **risers & decliners report**
@@ -45,7 +47,8 @@ header to keep a JSON backup that survives updates.
   bases and a rotating bullpen — produces realistic stat lines
 - Rich box-score stats everywhere: hitters show G/AB/R/H/HR/RBI/BB/SO/SB and AVG/OBP/SLG/OPS;
   pitchers show GS/IP/H/BB/SO/ER and ERA/WHIP/SV
-- Click any player for a detail card with season + career splits
+- Click any player for a detail card with **season, career, and full year-by-year history** — each
+  season's stat line, the team(s) he played for that year, plus his draft pedigree (year, round, pick)
 - Standings and 17 stat leaderboards (AVG, HR, RBI, OBP, SLG, OPS, Hits, Runs, BB, SB, ERA,
   Innings, K, K−BB, W, SV, WHIP) with qualifiers that scale through the season
 - Trades with value-based AI on a **steep talent curve** — elite (80+) players are genuinely scarce
@@ -53,6 +56,8 @@ header to keep a JSON backup that survives updates.
   agency with a salary cap, contracts & budget view
 - **Re-sign your own players** to early extensions before they hit free agency — winning earns a
   hometown discount, but a struggling club pays a premium (and its stars may walk)
+- **Incentive-laden contracts** — sign a free agent for a lower guaranteed base (cap hit) plus off-cap
+  performance bonuses, to fit a star under the budget for less up front
 - **Play the postseason game by game** — sim one game at a time and watch each series' line scores,
   or fast-forward a whole round
 - Full postseason: Wild Card → Division Series → League Championship → World Series
