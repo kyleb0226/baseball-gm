@@ -470,42 +470,52 @@ function advance(bases, out, batter){
   return runs;
 }
 
+// Per-team roster index, built ONCE per sim-day so games don't each re-scan the
+// entire (potentially thousands-large) player dict. Hot sim helpers take an
+// optional `idx`; when absent they fall back to a full scan (fine for one-off UI).
+function rosterIndex(players){
+  const idx={};
+  for(const id in players){ const p=players[id]; if(p.teamId==null) continue; (idx[p.teamId]=idx[p.teamId]||[]).push(p); }
+  return idx;
+}
+const teamRoster = (players, teamId, idx) => idx ? (idx[teamId]||[]) : Object.values(players).filter(p=>p.teamId===teamId);
+
 // ordered list of bullpen pitcher ids (everyone not in the rotation), honoring the
 // user's saved priority (team.bullpen) and appending any new arms by OVR. best-first.
-function bullpenOrder(team, players){
-  const ros = Object.values(players).filter(p=>p.teamId===team.id && p.isP);
+function bullpenOrder(team, players, idx){
+  const ros = teamRoster(players, team.id, idx).filter(p=>p.isP);
   const inRot = new Set(team.rotation||[]);
   const pool = ros.filter(p=>!inRot.has(p.id));
   const listed = (team.bullpen||[]).filter(id=>pool.some(p=>p.id===id));
   const rest = pool.filter(p=>!listed.includes(p.id)).sort((a,b)=>b.ovr-a.ovr).map(p=>p.id);
   return listed.concat(rest);
 }
-function getPitchers(team, players){
-  const ros = Object.values(players).filter(p=>p.teamId===team.id && p.isP);
+function getPitchers(team, players, idx){
+  const ros = teamRoster(players, team.id, idx).filter(p=>p.isP);
   const gi = team.w + team.l;
   const rotIds = team.rotation.length?team.rotation:ros.filter(p=>p.role==="SP").map(p=>p.id);
   let starter = players[rotIds[gi % Math.max(1,rotIds.length)]] || ros.find(p=>p.role==="SP") || ros[0];
   // pen is best-first by priority; pen[0] is the closer
-  const pen = bullpenOrder(team, players).map(id=>players[id]).filter(Boolean);
+  const pen = bullpenOrder(team, players, idx).map(id=>players[id]).filter(Boolean);
   return { starter, pen };
 }
 
-function lineupHitters(team, players){
+function lineupHitters(team, players, idx){
   let hs = team.lineup.map(id=>players[id]).filter(p=>p&&!p.isP);
   if(hs.length<9){
-    const extra = Object.values(players).filter(p=>p.teamId===team.id && !p.isP && !team.lineup.includes(p.id));
+    const extra = teamRoster(players, team.id, idx).filter(p=>!p.isP && !team.lineup.includes(p.id));
     extra.sort((a,b)=>b.ovr-a.ovr);
     hs = hs.concat(extra).slice(0,9);
   }
   return hs.slice(0,9);
 }
 
-function simGame(home, away, players){
+function simGame(home, away, players, idx){
   const out = { home, away };
-  const lineups = { [home.id]: lineupHitters(home,players), [away.id]: lineupHitters(away,players) };
+  const lineups = { [home.id]: lineupHitters(home,players,idx), [away.id]: lineupHitters(away,players,idx) };
   const order = { [home.id]:0, [away.id]:0 };
   const defN = { [home.id]: n01(teamDefRating(home,players)), [away.id]: n01(teamDefRating(away,players)) };
-  const arms = { [home.id]: getPitchers(home,players), [away.id]: getPitchers(away,players) };
+  const arms = { [home.id]: getPitchers(home,players,idx), [away.id]: getPitchers(away,players,idx) };
   const cur = { [home.id]:{p:arms[home.id].starter, outs:0, er:0, idx:0, gs:true},
                 [away.id]:{p:arms[away.id].starter, outs:0, er:0, idx:0, gs:true} };
   const starterTarget = id => 12 + round(n01(arms[id].starter.stm)*9); // ~12-21 outs (4-7 ip)
@@ -629,8 +639,8 @@ function simGame(home, away, players){
   }
   score[home.id] = Math.max(score[home.id], 0);
   // approximate R (runs scored) by team: distribute = runs among hitters via RBI proportion (simplified)
-  distributeRuns(home, players, score[home.id]);
-  distributeRuns(away, players, score[away.id]);
+  distributeRuns(home, players, score[home.id], idx);
+  distributeRuns(away, players, score[away.id], idx);
 
   out.hs = score[home.id]; out.as = score[away.id];
   // decisions
@@ -652,9 +662,9 @@ function simGame(home, away, players){
   return out;
 }
 
-function distributeRuns(team, players, runs){
+function distributeRuns(team, players, runs, idx){
   // give R to hitters roughly weighted by OBP-ish (con+eye); simplistic but keeps totals sane
-  const hs = Object.values(players).filter(p=>p.teamId===team.id && !p.isP && p.stats.PA>0);
+  const hs = teamRoster(players, team.id, idx).filter(p=>!p.isP && p.stats.PA>0);
   let remaining = runs;
   // HR already credited a run to batter; subtract those from pool
   const hrRuns = hs.reduce((s,h)=>s+(h._hrThisGame||0),0);
@@ -694,10 +704,10 @@ function awardDecision(winnerId, loserId, arms, usedPen, players, ctx){
 // record (deduped) a team label a player actually suited up for this season
 function tagTeam(p, lbl){ if(!p) return; if(!p._yrTeams) p._yrTeams=[]; if(!p._yrTeams.includes(lbl)) p._yrTeams.push(lbl); }
 const teamLabel = t => t.abbr + (t.aaa?" AAA":"");
-function markGamesPlayed(home, away, players){
+function markGamesPlayed(home, away, players, idx){
   [home,away].forEach(t=>{
     const lbl=teamLabel(t);
-    lineupHitters(t,players).forEach(h=>{ h.stats.G++; tagTeam(h,lbl); });
+    lineupHitters(t,players,idx).forEach(h=>{ h.stats.G++; tagTeam(h,lbl); });
   });
 }
 
@@ -787,6 +797,12 @@ function migrate(G){
     if(!G._aiAligned){
       G.teams.forEach(t=>{ if(t.id!==G.userTeamId){ aiAlignOrg(G, t.id); autoSetLineups(t, G.players); autoSetLineups(G.aaaTeams[t.id], G.players); } });
       G._aiAligned = true;
+    }
+    // one-time cleanup for saves bloated by seasons of un-pruned free agents/prospects
+    // (sim speed scales with total player count). Only fires on an already-large pool.
+    if(Array.isArray(G.freeAgents) && Object.keys(G.players).length>2800){
+      G.aaaTeams.forEach(t=>{ if(typeof AAA_CAP!=="undefined") trimRoster(G,t,AAA_CAP); });
+      pruneFreeAgents(G);
     }
     // normalize playoff series to the game-by-game shape (hw/lw/games)
     if(G.playoffs){
@@ -1015,14 +1031,15 @@ function hashSeed(str){
 
 /* ----------------------------- Hub / sim ------------------------------- */
 function simDay(G){
+  const idx = rosterIndex(G.players);           // build the team→players index ONCE for the whole day
   const playDay = (sched) => {
     const day = sched[G.day];
     if(!day) return;
     day.forEach(g=>{
       if(g.played) return;
       const home=teamById(G,g.home), away=teamById(G,g.away);
-      const res = simGame(home, away, G.players);
-      markGamesPlayed(home, away, G.players);
+      const res = simGame(home, away, G.players, idx);
+      markGamesPlayed(home, away, G.players, idx);
       g.played=true; g.hs=res.hs; g.as=res.as;
       if(res.hs>res.as){ home.w++; away.l++; } else { away.w++; home.l++; }
       home.rs+=res.hs; home.ra+=res.as; away.rs+=res.as; away.ra+=res.hs;
@@ -2816,13 +2833,24 @@ function Draft({G, commit, tShow}){
 }
 
 const ROSTER_CAP = 32;
-function trimRoster(G, team){
+const AAA_CAP = 38;     // affiliates hold prospects but still need a ceiling
+function trimRoster(G, team, cap=ROSTER_CAP){
   let ros=rosterOf(G,team.id).sort((a,b)=>b.ovr-a.ovr);
   // cap roster size (keep the best by OVR); supports the deeper 30-man rosters
-  while(ros.length>ROSTER_CAP){
+  while(ros.length>cap){
     const cut=ros.pop();
     cut.teamId=null; if(!G.freeAgents.includes(cut.id)) G.freeAgents.push(cut.id);
   }
+}
+// Keep the free-agent pool (and thus the whole player dict) from growing without
+// bound across seasons — sim speed scales with total player count. Keep the best
+// ~220 free agents; delete the rest from the game entirely.
+function pruneFreeAgents(G, keepN=220){
+  if(!G.freeAgents || G.freeAgents.length<=keepN) return;
+  const ranked = G.freeAgents.map(id=>G.players[id]).filter(Boolean).sort((a,b)=>playerValue(b)-playerValue(a));
+  const keep = new Set(ranked.slice(0,keepN).map(p=>p.id));
+  ranked.slice(keepN).forEach(p=>{ delete G.players[p.id]; });
+  G.freeAgents = G.freeAgents.filter(id=>keep.has(id) && G.players[id]);
 }
 
 function startNewSeason(G){
@@ -2846,8 +2874,13 @@ function startNewSeason(G){
   // make sure user roster is valid for play
   const me=G.teams[G.userTeamId];
   ensureLineup(me, G.players);
-  // AAA rosters changed (draft, call-ups/send-downs) — refresh their lineups
+  // AAA rosters changed (draft, call-ups/send-downs) — cap depth, then refresh lineups
+  G.aaaTeams.forEach(t=>trimRoster(G, t, AAA_CAP));
   G.aaaTeams.forEach(t=>autoSetLineups(t, G.players));
+  // sweep any orphaned teamless players (e.g. leftover draft class, stray cuts) into
+  // the FA pool, then prune — keeps the player dict bounded so sim speed stays flat.
+  Object.values(G.players).forEach(p=>{ if(p.teamId==null && !G.freeAgents.includes(p.id)) G.freeAgents.push(p.id); });
+  pruneFreeAgents(G);
   // archive the season that just finished into each team's record history
   const champId = G.champion ? G.champion.id : null;
   const empSeeds = playoffSeeds(G.teams,"Empire").map(t=>t.id);

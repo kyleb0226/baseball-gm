@@ -201,5 +201,12 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
 - HR distribution is the most sensitive balance knob. Targets after a full season: AVG leader
   ~.330–.355, HR leader ~45–55 with ~6–10 hitters over 40, ERA leader ~1.8–2.2. Verify by simming a
   fresh league to playoffs and checking total W === total L (2430 per league; both MLB and AAA balance).
-- Sim cost doubled with AAA (both leagues sim every day). "Sim to Playoffs" on a fresh league takes a
-  few seconds. If it ever needs to be faster, AAA is the place to gate (e.g. sim AAA less often).
+- **Sim performance:** `simDay` builds a `rosterIndex(G.players)` (team→players) **once per day** and
+  threads it (`idx`) into `simGame`/`getPitchers`/`bullpenOrder`/`lineupHitters`/`distributeRuns`/
+  `markGamesPlayed` so games don't each re-scan the whole player dict. Sim cost is now ~flat in total
+  player count (≈0.5–2 ms/day) instead of O(players × games). If you add a hot per-game helper that needs
+  a team's roster, take the optional `idx` and use `teamRoster(players, teamId, idx)`.
+- **Player-pool is bounded** so sim speed stays flat across seasons: `startNewSeason` caps AAA rosters
+  (`trimRoster(t, AAA_CAP=38)`), sweeps orphaned teamless players (e.g. leftover draft class) into the FA
+  pool, then `pruneFreeAgents` (keep best ~220, delete the rest from `G.players`). `migrate` runs a
+  one-time cleanup on already-bloated saves (>2800 players). Without this the dict grew +150/yr forever.
