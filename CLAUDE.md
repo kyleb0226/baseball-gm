@@ -74,7 +74,7 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   `placeAtPosition`, which glues the position to the player and keeps the lineup a valid permutation
   (bench bat dropped on a fielder takes his batting-order slot). It flags missing/duplicates;
   `teamDefRating` applies an out-of-position penalty and ignores the DH. The Hub shows an end-of-season
-  reminder linking to Finances → Contract Extensions when players are in a contract year (`years<=1`).
+  reminder linking to Finances → Contracts when players are in a contract year (`years<=1`).
 - **Draft picks:** `G.picks` is a flat list of owned, **tradeable** picks (5 per team). `pickValue`
   scales with the original team's projected finish (worse team → earlier slot → more value). The draft
   builds its selection order from owned picks (`G.draftPicks`, by round then orig-team reverse
@@ -95,11 +95,22 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   (called at the top of `doProgression`, before aging) pushes `{season, age, ovr, teams[], stats}` onto
   `p.history` and clears `_yrTeams`; `mergeCareer` then folds the line into career totals. `PlayerModal`
   renders a **Year by Year** table from `p.history`.
-- **Contract incentives:** a deal is `p.salary` (guaranteed **base = cap hit**) plus optional off-cap
-  `p.incentive` (performance bonus, not counted against budget). Free Agency offers **Sign** (full
-  salary as cap hit) or **+Inc** (`signInc`: base ≈ 0.6× the ask as cap hit + a matching incentive) so
-  you can fit a player under the cap for less up front. Finances shows base vs incentives; `payroll`
-  counts base only.
+- **Contracts:** each deal is `p.contract` — a per-year array of guaranteed salaries (cap hits);
+  `p.salary` mirrors `contract[0]` (the current-year hit everything reads), `p.years = contract.length`.
+  `p.incentives` is a list of off-cap, stat-based bonuses `{stat, need, amount}` (multiple per deal;
+  hitting stats for hitters, pitching for pitchers, via `STAT_INCENTIVES`). Helpers: `setContract`
+  (install a flat schedule), `ensureContract` (migrate/backfill — also heals empty contracts),
+  `requiredAAV`/`willSign` (acceptance; incentives count **½** toward the ask, with a price `factor`
+  for hometown discounts), `contractLabel`, `payIncentives`.
+  - **Negotiation** runs through `ContractModal` (sign a FA or extend your own: set years + base AAV +
+    add incentives, live accept/“wants more” verdict) and `RestructureModal` (defer current-year money
+    to later years for a 10% premium). Finances → Contracts has Extend/Restructure; Free Agency has
+    Negotiate. `payroll` counts only the base (`p.salary`).
+  - **Money:** incentives are off-cap but real — `payIncentives` (called in `enterPlayoffs`) settles
+    earned bonuses and **deducts them from the team's budget** (`t.incentivesPaid`), so the growth
+    formula in `startNewSeason` builds on the reduced figure. Each offseason a rostered contract
+    `shift()`s a year and expires to FA when empty; **free agents are skipped** (their contract is an
+    ask, not a deal in progress).
 - **Postseason:** 6 seeds/league, Wild Card Bo3 → Division Bo5 → LCS Bo7 → World Series Bo7. Played
   **game by game** — each series is a `mkSeries` object (`hw/lw/games[]`); `playoffSeriesGame` plays one
   game (2-2-1 home pattern), `activeSeriesList` is the round's live series, `buildNextRound` builds the
@@ -153,10 +164,11 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   `youth = (28−age)/13` clamped), weighted toward projection for the young — so high-ceiling prospects
   are worth a lot (a 19yo pot-90 ≈ a mid-30s star). Past-prime players take a decline tax; salary is a
   small drag. `pickValue` is tuned to match (a top pick ≈ a blue-chip prospect).
-- **Extensions:** `extensionTerms(G,p)` quotes a re-sign offer for your own players (Finances →
-  Contract Extensions, eligible when `years<=2`). Winning clubs get a hometown discount, losing clubs
-  pay a premium, and a star (`ovr>=75`) on a sub-.400 team refuses (wants to test FA). Uses a neutral
-  .500 baseline until the team has played ≥20 games.
+- **Extensions:** `extensionTerms(G,p)` supplies the price `factor` + `refuses` flag for the extend
+  `ContractModal` (Finances → Contracts, eligible when `years<=2`). Winning clubs get a hometown
+  discount, losing clubs pay a premium, and a star (`ovr>=75`) on a sub-.400 team refuses (wants to
+  test FA). Uses a neutral .500 baseline until the team has played ≥20 games. The factor is threaded
+  into `requiredAAV`/`willSign` so the displayed discount actually drives acceptance.
 - **Talent curve:** rating means sit a bit high and ~8% of generated players get a `+8–18` "star"
   boost to their primary tools (in `makeHitter`/`makePitcher`) for a fat top end. If you bump these,
   re-check the `paOutcome` `hrP` formula — league HR is sensitive to the POW mean × `hrP` slope/cap.

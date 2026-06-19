@@ -131,6 +131,7 @@ function makeHitter(pos, ageRange, meanAdj=0){
     stats: emptyHitStats(), career: emptyHitStats(),
   };
   computeOvr(p); setPotential(p); p.peakOvr = p.ovr; p.salary = salaryFor(p); p.years = rint(1,5);
+  ensureContract(p);
   return p;
 }
 function makePitcher(role, ageRange, meanAdj=0){
@@ -150,6 +151,7 @@ function makePitcher(role, ageRange, meanAdj=0){
     stats: emptyPitStats(), career: emptyPitStats(),
   };
   computeOvr(p); setPotential(p); p.peakOvr = p.ovr; p.salary = salaryFor(p); p.years = rint(1,5);
+  ensureContract(p);
   return p;
 }
 function computeOvr(p){
@@ -247,7 +249,7 @@ function buildAAARoster(aaaId){
   for(let i=0;i<5;i++) players.push(makeHitter(pick(INF_OF),[19,26],-6)); // 14 hitters
   for(let i=0;i<5;i++) players.push(makePitcher("SP",[19,25],-6));
   for(let i=0;i<8;i++) players.push(makePitcher("RP",[19,26],-6));        // 13 arms (deep enough pen)
-  players.forEach(p=>{ p.teamId=aaaId; p.salary=Math.min(p.salary,0.7); });
+  players.forEach(p=>{ p.teamId=aaaId; setContract(p, Math.min(p.salary,0.7), p.years, []); });
   return players;
 }
 // Repair a depleted roster up to a fieldable minimum. Over many seasons, call-ups,
@@ -257,8 +259,8 @@ function buildAAARoster(aaaId){
 function refillRoster(G, teamId, minH, minP, ageRange, meanAdj){
   const ros=Object.values(G.players).filter(p=>p.teamId===teamId);
   let h=ros.filter(p=>!p.isP).length, pi=ros.filter(p=>p.isP).length;
-  while(h<minH){ const p=makeHitter(FIELD_POS[h%FIELD_POS.length],ageRange,meanAdj||0); p.teamId=teamId; if(meanAdj<0) p.salary=Math.min(p.salary,0.7); G.players[p.id]=p; h++; }
-  while(pi<minP){ const p=makePitcher(pi<5?"SP":"RP",ageRange,meanAdj||0); p.teamId=teamId; if(meanAdj<0) p.salary=Math.min(p.salary,0.7); G.players[p.id]=p; pi++; }
+  while(h<minH){ const p=makeHitter(FIELD_POS[h%FIELD_POS.length],ageRange,meanAdj||0); p.teamId=teamId; if(meanAdj<0) setContract(p,Math.min(p.salary,0.7),p.years,[]); G.players[p.id]=p; h++; }
+  while(pi<minP){ const p=makePitcher(pi<5?"SP":"RP",ageRange,meanAdj||0); p.teamId=teamId; if(meanAdj<0) setContract(p,Math.min(p.salary,0.7),p.years,[]); G.players[p.id]=p; pi++; }
 }
 
 /* ----------------------------- draft picks ----------------------------- */
@@ -761,6 +763,66 @@ const f3 = v => v.toFixed(3).replace(/^0/,"");
 const f2 = v => v.toFixed(2);
 const f1 = v => v.toFixed(1);
 
+/* ----------------------------- contracts ------------------------------- */
+// A contract is a per-year guaranteed-salary schedule `p.contract` (cap hits; length =
+// years left), with `p.salary` mirroring contract[0] (the current-year hit everything
+// reads). `p.incentives` is a list of off-cap, stat-based bonuses {stat, need, amount}.
+const STAT_INCENTIVES = {
+  HR:  {label:"HR",            hit:true,  get:s=>s.HR,    units:""},
+  RBI: {label:"RBI",           hit:true,  get:s=>s.RBI,   units:""},
+  H:   {label:"Hits",          hit:true,  get:s=>s.H,     units:""},
+  R:   {label:"Runs",          hit:true,  get:s=>s.R,     units:""},
+  SB:  {label:"Steals",        hit:true,  get:s=>s.SB,    units:""},
+  AVG: {label:"AVG (pts)",     hit:true,  get:s=>Math.round(avg(s)*1000), units:" (e.g. 300)"},
+  W:   {label:"Wins",          hit:false, get:s=>s.W,     units:""},
+  SO:  {label:"Strikeouts",    hit:false, get:s=>s.SO,    units:""},
+  SV:  {label:"Saves",         hit:false, get:s=>s.SV,    units:""},
+  QS:  {label:"Quality Starts",hit:false, get:s=>s.QS||0, units:""},
+  IP:  {label:"Innings",       hit:false, get:s=>Math.floor((s.OUT||0)/3), units:""},
+};
+function incentivesPerYear(p){ return (p.incentives||[]).reduce((a,i)=>a+(i.amount||0),0); }
+function contractTotal(p){ return (p.contract||[p.salary]).reduce((a,b)=>a+b,0); }
+// what the player is looking for (annual value + preferred length)
+function contractAsk(p){
+  return { fairAAV: salaryFor(p), years: p.age>=34?2 : p.age>=31?3 : 4 };
+}
+// What `aav`/yr the player requires for `years`, given a price `factor` (hometown
+// discount <1 when winning, premium >1 when losing). Short deals push the AAV up.
+function requiredAAV(p, years, factor){
+  const ask=contractAsk(p);
+  const yearAdj = clamp(1 + (ask.years - years)*0.04, 0.85, 1.20);
+  return ask.fairAAV * (factor||1) * yearAdj;
+}
+// Will the player accept `aav`/yr for `years` with `incTotal`/yr of incentives?
+// Incentives count at HALF toward his ask, so you can trade guaranteed $ for upside.
+function willSign(p, aav, years, incTotal, factor){
+  return (aav + 0.5*(incTotal||0)) >= requiredAAV(p, years, factor)*0.98;
+}
+// install a flat (even) contract schedule + incentives onto a player
+function setContract(p, aav, years, incentives){
+  p.salary = clamp(round(aav*10)/10, 0.5, 70);
+  p.years = Math.max(1, years|0);
+  p.contract = Array(p.years).fill(p.salary);
+  p.incentives = incentives ? incentives.slice() : [];
+  p.incentive = incentivesPerYear(p);   // back-compat aggregate (Finances/PlayerModal)
+}
+// ensure a player has the per-year contract fields (migration / freshly-generated)
+function ensureContract(p){
+  if(!Array.isArray(p.contract) || p.contract.length===0)
+    p.contract = Array(Math.max(1, p.years||1)).fill(p.salary!=null?p.salary:0.7);
+  p.years = p.contract.length;
+  p.salary = p.contract[0];
+  if(!Array.isArray(p.incentives))
+    p.incentives = (p.incentive>0) ? [{stat:"_flat", need:0, amount:p.incentive, label:"bonus"}] : [];
+  p.incentive = incentivesPerYear(p);
+}
+// a label like "4y · $20.3M/yr ($81.2M)"
+function contractLabel(p){
+  const yrs=p.years||(p.contract?p.contract.length:1);
+  const tot=contractTotal(p);
+  return `${yrs}y · ${money(p.salary)}/yr${yrs>1?` (${money(tot)})`:""}`;
+}
+
 /* ----------------------------- save/load ------------------------------- */
 const SAVE_KEY = "pocketgm_baseball_v2";
 const SAVE_VERSION = 4;
@@ -795,7 +857,7 @@ function migrate(G){
     if(!Array.isArray(G.hof)) G.hof = [];
     if(!Array.isArray(G.champions)) G.champions = G.champion ? [{season:G.champion.season, id:G.champion.id}] : [];
     if(G.teams.some(t=>t.rivalId==null)) assignRivals(G.teams);
-    Object.values(G.players||{}).forEach(p=>{ if(p.peakOvr==null) p.peakOvr=p.ovr; });
+    Object.values(G.players||{}).forEach(p=>{ if(p.peakOvr==null) p.peakOvr=p.ovr; ensureContract(p); });
     const fixTeam = t=>{
       if(!t.pos) t.pos = {};
       if(!Array.isArray(t.lineup)) t.lineup = [];
@@ -2007,80 +2069,189 @@ function extensionTerms(G, p){
   return { market, salary, years, factor, refuses, discountPct: round((1-factor)*100) };
 }
 
+/* ---- Contract negotiation modal (sign a FA / extend your own player) ---- */
+const DEFAULT_NEED = { HR:25, RBI:80, H:150, R:80, SB:25, AVG:290, W:14, SO:180, SV:30, QS:18, IP:180 };
+function ContractModal({G, p, mode, capSpace, factor, refuses, onClose, onSign, tShow}){
+  const ask=contractAsk(p);
+  const [years,setYears]=useState(ask.years);
+  const [aav,setAav]=useState(Math.max(0.5, round(ask.fairAAV*(factor||1)*10)/10));
+  const [incs,setIncs]=useState([]);
+  const isP=p.isP;
+  const statOpts=Object.entries(STAT_INCENTIVES).filter(([k,v])=>v.hit!==isP);
+  const addInc=()=>{ const d=statOpts[0]; setIncs([...incs,{stat:d[0], need:DEFAULT_NEED[d[0]]||10, amount:1.0}]); };
+  const updInc=(i,k,v)=>{ const a=incs.slice(); a[i]={...a[i],[k]:v}; setIncs(a); };
+  const delInc=(i)=>setIncs(incs.filter((_,j)=>j!==i));
+  const incTotal=incs.reduce((s,x)=>s+(+x.amount||0),0);
+  const required=requiredAAV(p, years, factor);
+  const neededBase=Math.max(0.5, round((required-0.5*incTotal)*10)/10);
+  const capProblem = mode==="sign" && +aav>capSpace+0.001;
+  // he signs once the offer (base + half the incentives) meets his ask and it fits the cap
+  const accepts = !refuses && +aav>=0.5 && willSign(p, +aav, years, incTotal, factor) && !capProblem;
+  const inp="bg-[#0b1220] border border-[#1d2940] rounded px-2 py-1 text-sm";
+  const offer=()=>{
+    if(refuses){ tShow&&tShow(`${p.name} wants to test free agency`); return; }
+    if(capProblem){ tShow&&tShow(`Not enough cap space (base ${money(+aav)})`); return; }
+    if(!accepts){ tShow&&tShow(`${p.name} wants more — try ~${money(neededBase)}/yr base`); return; }
+    onSign(+aav, years, incs.map(x=>({stat:x.stat, need:+x.need, amount:+x.amount, label:(STAT_INCENTIVES[x.stat]||{}).label||"bonus"})));
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-[#101a30] border border-[#1d2940] rounded-xl p-4 max-w-lg w-full max-h-[88vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center gap-3 mb-2">
+          <OvrPill v={p.ovr}/>
+          <div className="flex-1">
+            <div className="font-bold">{mode==="sign"?"Sign":"Extend"} {p.name}</div>
+            <div className="text-xs text-slate-400">{p.pos} · Age {p.age} · OVR {p.ovr} · seeks ~{money(ask.fairAAV*(factor||1))}/yr</div>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-white text-xl leading-none">×</button>
+        </div>
+        {refuses && <div className="text-sm text-red-300 bg-red-900/20 border border-red-800/40 rounded p-2 mb-2">He won't talk extension on a losing club — win more, or let him test free agency.</div>}
+        <div className="grid grid-cols-2 gap-3 mb-3">
+          <label className="text-xs text-slate-400">Years
+            <div className="flex items-center gap-2 mt-1">
+              <button onClick={()=>setYears(Math.max(1,years-1))} className="px-2 bg-[#16213a] rounded">−</button>
+              <span className="tnum font-bold text-slate-100 w-6 text-center">{years}</span>
+              <button onClick={()=>setYears(Math.min(8,years+1))} className="px-2 bg-[#16213a] rounded">+</button>
+            </div>
+          </label>
+          <label className="text-xs text-slate-400">Salary $M/yr (base)
+            <input type="number" step="0.1" min="0.5" value={aav} onChange={e=>setAav(e.target.value)} className={inp+" w-full mt-1"} />
+          </label>
+        </div>
+        <div className="text-xs text-slate-400 mb-1 flex items-center justify-between">
+          <span>Performance incentives <span className="text-slate-600">(off-cap; count ½ toward his ask)</span></span>
+          <button onClick={addInc} className="px-2 py-0.5 bg-[#16213a] rounded hover:bg-[#1c2c4a] text-emerald-300">+ add</button>
+        </div>
+        <div className="space-y-1 mb-3">
+          {incs.length===0 && <div className="text-xs text-slate-600">No incentives. Add stat bonuses to sweeten the deal for less guaranteed money.</div>}
+          {incs.map((x,i)=>(
+            <div key={i} className="flex items-center gap-1.5 text-xs bg-[#13203a] rounded px-2 py-1">
+              <span className="text-emerald-400">+{money(+x.amount||0)}</span>
+              <span className="text-slate-500">if</span>
+              <select value={x.stat} onChange={e=>updInc(i,"stat",e.target.value)} className={inp}>
+                {statOpts.map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
+              </select>
+              <span className="text-slate-500">≥</span>
+              <input type="number" value={x.need} onChange={e=>updInc(i,"need",e.target.value)} className={inp+" w-16"} />
+              <span className="text-slate-500 ml-1">$</span>
+              <input type="number" step="0.1" value={x.amount} onChange={e=>updInc(i,"amount",e.target.value)} className={inp+" w-14"} />
+              <button onClick={()=>delInc(i)} className="ml-auto text-red-400 hover:text-red-300">×</button>
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center justify-between text-sm border-t border-[#1d2940] pt-2 mb-2">
+          <div className="text-slate-400 text-xs">
+            Guaranteed <b className="text-slate-200">{money((+aav||0)*years)}</b> over {years}y
+            {incTotal>0 && <span> · up to <b className="text-slate-200">{money(((+aav||0)+incTotal)*years)}</b> w/ incentives</span>}
+          </div>
+          <div className={accepts?"text-emerald-400 font-semibold":"text-amber-400"}>
+            {refuses?"Refusing":accepts?"✅ He'll sign":capProblem?"⛔ Over budget":`💬 Wants ~${money(neededBase)}/yr`}
+          </div>
+        </div>
+        <button onClick={offer} disabled={!accepts} className="w-full py-2 bg-emerald-500 text-slate-900 rounded-lg font-bold disabled:opacity-40 disabled:cursor-not-allowed">
+          {mode==="sign"?"Sign Contract":"Offer Extension"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ---- Restructure modal: defer current-year money to later years (+premium) ---- */
+function RestructureModal({G, p, onClose, onApply, tShow}){
+  const cur=(p.contract||[p.salary]).slice();
+  const laterYears=cur.length-1;
+  const maxMove=Math.max(0, round((cur[0]-0.5)*10)/10);
+  const [move,setMove]=useState(Math.round(maxMove*5)/10);  // default ~half
+  const PREMIUM=0.10;
+  const mv=clamp(+move||0, 0, maxMove);
+  const deferred=mv*(1+PREMIUM);
+  const perLater=laterYears>0?deferred/laterYears:0;
+  const sched=cur.map((v,i)=> i===0 ? round((v-mv)*10)/10 : round((v+perLater)*10)/10);
+  const apply=()=>{ if(laterYears<=0){ tShow&&tShow("Need 2+ years left to restructure"); return; } if(mv<=0){ tShow&&tShow("Move some money first"); return; } onApply(sched); };
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-[#101a30] border border-[#1d2940] rounded-xl p-4 max-w-md w-full" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center gap-3 mb-2">
+          <OvrPill v={p.ovr}/>
+          <div className="flex-1"><div className="font-bold">Restructure {p.name}</div><div className="text-xs text-slate-400">Defer current-year salary to later years (+10% premium he pockets)</div></div>
+          <button onClick={onClose} className="text-slate-400 hover:text-white text-xl leading-none">×</button>
+        </div>
+        {laterYears<=0 ? <div className="text-sm text-slate-400">He's in the last year of his deal — nothing to restructure.</div> : <>
+          <label className="text-xs text-slate-400">Move from this year: <b className="text-slate-100">{money(mv)}</b> (max {money(maxMove)})</label>
+          <input type="range" min="0" max={maxMove} step="0.1" value={mv} onChange={e=>setMove(e.target.value)} className="w-full my-2" />
+          <div className="grid grid-cols-2 gap-3 text-sm mb-3">
+            <div><div className="text-xs text-slate-500 mb-1">Now</div>{cur.map((v,i)=><div key={i} className="tnum">Yr{i+1}: {money(v)}</div>)}</div>
+            <div><div className="text-xs text-slate-500 mb-1">After</div>{sched.map((v,i)=><div key={i} className={"tnum "+(i===0?"text-emerald-400":"text-slate-300")}>Yr{i+1}: {money(v)}</div>)}</div>
+          </div>
+          <div className="text-xs text-slate-400 mb-2">Frees <b className="text-emerald-400">{money(mv)}</b> in cap now · adds {money(deferred)} (incl. +{money(deferred-mv)} premium) to later years. Total +{money(deferred-mv)}.</div>
+          <button onClick={apply} className="w-full py-2 bg-emerald-500 text-slate-900 rounded-lg font-bold">Restructure (he agrees)</button>
+        </>}
+      </div>
+    </div>
+  );
+}
+
 function Finances({G, commit, tShow}){
   const team=G.teams[G.userTeamId];
   const ros = rosterOf(G,team.id).sort((a,b)=>b.salary-a.salary);
   const total=payroll(G,team.id);
   const space=team.budget-total;
-  // players in the last year or two of their deal — eligible to re-sign early
-  const expiring = rosterOf(G,team.id).filter(p=>p.years<=2).sort((a,b)=>b.ovr-a.ovr);
-  const extend=(p)=>{
-    const t=extensionTerms(G,p);
-    if(t.refuses){ tShow(`${p.name} wants to test free agency — win more to keep your stars`); return; }
-    const spaceAfter = team.budget - (payroll(G,team.id) - p.salary) - t.salary;
-    if(spaceAfter<0){ tShow(`Not enough budget — needs ${money(t.salary)}/yr`); return; }
-    if(!confirm(`Re-sign ${p.name} for ${t.years} more years at ${money(t.salary)}/yr?`)) return;
-    p.years += t.years; p.salary = t.salary;
-    logNews(G,"signing",`${team.abbr} extended ${p.pos} ${p.name} (${p.ovr}) — +${t.years}y / ${money(t.salary)}`, team.id);
-    commit(G); tShow(`✅ ${p.name} re-signed — +${t.years}y / ${money(t.salary)}`);
+  const [extendT,setExtendT]=useState(null);       // player being extended (ContractModal)
+  const [restructT,setRestructT]=useState(null);   // player being restructured
+  const extFactor=p=>extensionTerms(G,p);
+  const doExtend=(p, aav, years, incs)=>{
+    const spaceAfter = team.budget - (payroll(G,team.id) - p.salary) - aav;
+    if(spaceAfter<0){ tShow(`Not enough budget — that's ${money(aav)}/yr`); return; }
+    setContract(p, aav, years, incs);
+    const it=incentivesPerYear(p);
+    logNews(G,"signing",`${team.abbr} extended ${p.pos} ${p.name} (${p.ovr}) — ${contractLabel(p)}${it?` +${money(it)}/yr inc`:""}`, team.id);
+    setExtendT(null); commit(G); tShow(`✅ ${p.name} extended`);
+  };
+  const doRestruct=(p, sched)=>{
+    p.contract=sched.slice(); p.salary=sched[0]; p.years=sched.length; p.incentive=incentivesPerYear(p);
+    logNews(G,"signing",`${team.abbr} restructured ${p.name}'s deal — ${money(sched[0])} cap hit this year`, team.id);
+    setRestructT(null); commit(G); tShow(`✅ Restructured ${p.name}`);
   };
   return (
     <div className="space-y-4">
       <div className="grid sm:grid-cols-3 gap-3">
         <Card><div className="text-slate-400 text-xs">BUDGET</div><div className="text-2xl font-bold tnum">{money(team.budget)}</div>{team.budgetDelta?<div className={"text-xs "+(team.budgetDelta>0?"text-emerald-400":"text-red-400")}>{team.budgetDelta>0?"▲ +":"▼ "}{team.budgetDelta} vs last yr</div>:<div className="text-xs text-slate-500">revenue grows as you win</div>}</Card>
-        <Card><div className="text-slate-400 text-xs">PAYROLL</div><div className="text-2xl font-bold tnum">{money(total)}</div></Card>
+        <Card><div className="text-slate-400 text-xs">PAYROLL</div><div className="text-2xl font-bold tnum">{money(total)}</div>{team.incentivesPaid>0&&<div className="text-xs text-amber-400">+{money(team.incentivesPaid)} incentives paid</div>}</Card>
         <Card><div className="text-slate-400 text-xs">CAP SPACE</div><div className={"text-2xl font-bold tnum "+(space>=0?"text-emerald-400":"text-red-400")}>{money(space)}</div></Card>
       </div>
       <Card>
-        <h3 className="font-bold mb-2">Contract Extensions</h3>
-        <p className="text-xs text-slate-400 mb-2">Re-sign players in the last year or two of their deal before they reach free agency. A winning club earns a hometown discount; if you're losing, your stars cost more — or walk.</p>
-        {expiring.length ? (
-          <div className="overflow-x-auto">
-          <table className="w-full text-sm tnum">
-            <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Player</th><th>Pos</th><th>Age</th><th>OVR</th><th>Yrs left</th><th className="text-right">Current</th><th className="text-right">Re-sign offer</th><th></th></tr></thead>
-            <tbody>
-              {expiring.map(p=>{ const t=extensionTerms(G,p); return (
-                <tr key={p.id} className="border-b border-[#15203a]">
-                  <td className="text-left py-1">{p.name}</td>
-                  <td className="text-center text-slate-400">{p.pos}</td>
-                  <td className="text-center">{p.age}</td>
-                  <td className="text-center"><OvrPill v={p.ovr}/></td>
-                  <td className="text-center">{p.years}</td>
-                  <td className="text-right text-slate-300">{money(p.salary)}</td>
-                  <td className="text-right">
-                    {t.refuses ? <span className="text-red-400 text-xs">wants out</span>
-                      : <span>+{t.years}y / {money(t.salary)} <span className={t.discountPct>=0?"text-emerald-400 text-xs":"text-amber-400 text-xs"}>{t.discountPct>=0?`−${t.discountPct}%`:`+${-t.discountPct}%`}</span></span>}
-                  </td>
-                  <td className="text-right">
-                    {t.refuses ? <span className="text-slate-600 text-xs">—</span>
-                      : <button onClick={()=>extend(p)} className="px-2 py-0.5 bg-emerald-600 rounded text-xs hover:bg-emerald-500">Re-sign</button>}
-                  </td>
-                </tr>
-              ); })}
-            </tbody>
-          </table>
-          </div>
-        ) : <div className="text-sm text-slate-500">No players entering free agency in the next two years.</div>}
-      </Card>
-      <Card>
         <div className="flex items-baseline justify-between mb-2">
           <h3 className="font-bold">Contracts</h3>
-          <span className="text-xs text-slate-500">Base salary = cap hit. Incentives are off-cap bonuses paid only if earned.</span>
+          <span className="text-xs text-slate-500">Base = cap hit. Incentives are off-cap. Extend before FA · Restructure to free cap now.</span>
         </div>
+        <div className="overflow-x-auto">
         <table className="w-full text-sm tnum">
-          <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Player</th><th>Pos</th><th>Age</th><th>OVR</th><th>Years</th><th className="text-right">Base (cap)</th><th className="text-right">Incentives</th></tr></thead>
+          <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Player</th><th>Pos</th><th>Age</th><th>OVR</th><th>Yrs</th><th className="text-right">This yr</th><th className="text-right">Schedule</th><th className="text-right">Inc/yr</th><th></th></tr></thead>
           <tbody>
-            {ros.map(p=>(
+            {ros.map(p=>{ const t=extFactor(p); return (
               <tr key={p.id} className="border-b border-[#15203a]">
                 <td className="text-left py-1">{p.name}</td><td className="text-center text-slate-400">{p.pos}</td>
                 <td className="text-center">{p.age}</td><td className="text-center"><OvrPill v={p.ovr}/></td>
                 <td className="text-center">{p.years}</td><td className="text-right">{money(p.salary)}</td>
-                <td className="text-right text-slate-400">{p.incentive?money(p.incentive):"—"}</td>
+                <td className="text-right text-slate-500 text-xs">{(p.contract||[p.salary]).map(v=>v.toFixed(0)).join("/")}</td>
+                <td className="text-right text-slate-400">{incentivesPerYear(p)?money(incentivesPerYear(p)):"—"}</td>
+                <td className="text-right whitespace-nowrap">
+                  {p.years<=2 && (t.refuses
+                    ? <span className="text-red-400 text-xs mr-1" title="Wants to test free agency">wants out</span>
+                    : <button onClick={()=>setExtendT(p)} className="px-2 py-0.5 bg-emerald-600 rounded text-xs hover:bg-emerald-500 mr-1">Extend</button>)}
+                  {p.years>=2 && <button onClick={()=>setRestructT(p)} className="px-2 py-0.5 bg-[#16213a] rounded text-xs hover:bg-[#1c2c4a]">Restructure</button>}
+                </td>
               </tr>
-            ))}
+            ); })}
           </tbody>
         </table>
+        </div>
+        <p className="text-xs text-slate-500 mt-2">Winning clubs get a hometown discount on extensions; a star on a losing team may refuse. Restructuring pushes this year's money to later years for a 10% premium he pockets.</p>
       </Card>
+      {extendT && <ContractModal G={G} p={extendT} mode="extend" capSpace={space+extendT.salary}
+        factor={extFactor(extendT).factor} refuses={extFactor(extendT).refuses}
+        onClose={()=>setExtendT(null)} onSign={(a,y,inc)=>doExtend(extendT,a,y,inc)} tShow={tShow} />}
+      {restructT && <RestructureModal G={G} p={restructT} onClose={()=>setRestructT(null)} onApply={(s)=>doRestruct(restructT,s)} tShow={tShow} />}
     </div>
   );
 }
@@ -2247,27 +2418,18 @@ function FreeAgency({G, commit, tShow}){
     .filter(p=>pos==="ALL" || (pos==="P"?p.isP:(!p.isP && p.pos===pos)))
     .sort((a,b)=>b.ovr-a.ovr);
   const space = me.budget - payroll(G,me.id);
-  const sign=(p)=>{
-    if(p.salary>space){ tShow(`Not enough cap space (need ${money(p.salary)})`); return; }
-    p.teamId=me.id; p.incentive=0; G.freeAgents=G.freeAgents.filter(id=>id!==p.id);
-    logNews(G,"signing",`${me.abbr} signed ${p.pos} ${p.name} (${p.ovr}) — ${money(p.salary)}/${p.years}y`, me.id);
-    commit(G); tShow(`✅ Signed ${p.name}`);
-  };
-  // Incentive-laden deal: lower guaranteed base (cap hit) in exchange for off-cap
-  // performance bonuses — lets you fit a player under the cap for less up front.
-  const incBase = p => Math.max(0.7, round(p.salary*0.6*10)/10);
-  const signInc=(p)=>{
-    const base=incBase(p);
-    if(base>space){ tShow(`Not enough cap space (need ${money(base)} base)`); return; }
-    p.teamId=me.id; p.incentive=round(p.salary*0.6*10)/10; p.salary=base;
-    G.freeAgents=G.freeAgents.filter(id=>id!==p.id);
-    logNews(G,"signing",`${me.abbr} signed ${p.pos} ${p.name} (${p.ovr}) — ${money(base)} base + ${money(p.incentive)} inc`, me.id);
-    commit(G); tShow(`✅ Signed ${p.name} — ${money(base)} base + ${money(p.incentive)} incentives`);
+  const [negotiate, setNegotiate] = useState(null);   // FA being signed via ContractModal
+  const doSign=(p, aav, years, incentives)=>{
+    setContract(p, aav, years, incentives);
+    p.teamId=me.id; G.freeAgents=G.freeAgents.filter(id=>id!==p.id);
+    const incTot=incentivesPerYear(p);
+    logNews(G,"signing",`${me.abbr} signed ${p.pos} ${p.name} (${p.ovr}) — ${contractLabel(p)}${incTot?` +${money(incTot)}/yr inc`:""}`, me.id);
+    ensureLineup(me,G.players); setNegotiate(null); commit(G); tShow(`✅ Signed ${p.name}`);
   };
   const waived = (G.waivers||[]).map(w=>({w, p:G.players[w.id]})).filter(x=>x.p && x.p.teamId==null);
   const claim=(p)=>{
     if(p.salary>space){ tShow(`Not enough cap space (need ${money(p.salary)})`); return; }
-    p.teamId=me.id; p.incentive=0;
+    p.teamId=me.id;
     G.waivers=(G.waivers||[]).filter(w=>w.id!==p.id);
     ensureLineup(me,G.players);
     logNews(G,"roster",`${me.abbr} claimed ${p.pos} ${p.name} (${p.ovr}) off waivers`, me.id);
@@ -2322,10 +2484,9 @@ function FreeAgency({G, commit, tShow}){
                   <td className="text-center">{p.age}</td>
                   <td className="text-center"><OvrPill v={p.ovr}/></td>
                   <td className="text-center text-slate-400">{p.pot}</td>
-                  <td className="text-right">{money(p.salary)} · {p.years}y</td>
+                  <td className="text-right text-slate-400">~{money(salaryFor(p))}/yr</td>
                   <td className="text-right pl-2 whitespace-nowrap">
-                    <button onClick={()=>sign(p)} className="px-2 py-0.5 bg-emerald-600 rounded text-xs hover:bg-emerald-500 mr-1">Sign</button>
-                    <button onClick={()=>signInc(p)} title={`Sign for ${money(incBase(p))} base + incentives`} className="px-2 py-0.5 bg-[#16213a] rounded text-xs hover:bg-[#1c2c4a]">+Inc</button>
+                    <button onClick={()=>setNegotiate(p)} className="px-2 py-0.5 bg-emerald-600 rounded text-xs hover:bg-emerald-500">Negotiate</button>
                   </td>
                 </tr>
               ))}
@@ -2333,6 +2494,8 @@ function FreeAgency({G, commit, tShow}){
           </table>
         </div>
       </Card>}
+      {negotiate && <ContractModal G={G} p={negotiate} mode="sign" capSpace={space} factor={1} refuses={false}
+        onClose={()=>setNegotiate(null)} onSign={(a,y,inc)=>doSign(negotiate,a,y,inc)} tShow={tShow} />}
     </div>
   );
 }
@@ -2404,6 +2567,7 @@ function recordFranchiseRecords(G){
 function enterPlayoffs(G){
   computeAwards(G);   // hand out hardware while season stats are still live
   recordFranchiseRecords(G);   // update the all-time record book before stats reset
+  payIncentives(G);   // settle stat-based contract bonuses (off-cap)
   G.phase="playoffs";
   const mk = league => {
     const seeds = playoffSeeds(G.teams, league).map(t=>t.id);
@@ -2598,7 +2762,7 @@ function OffseasonHub({G, commit, tShow, setTab}){
       p._lastDelta = p.ovr - before;        // for the offseason development report
       // reset season stats -> career
       mergeCareer(p);
-      p.salary = blendSalary(p);
+      // a signed contract is fixed by its schedule — don't re-price it here
     });
     // retirements: driven by BOTH age and quality. Good players hang on (a 35+ vet who's
     // still ~62 OVR keeps grinding); washed-up players quit much earlier the older they get.
@@ -2624,15 +2788,21 @@ function OffseasonHub({G, commit, tShow, setTab}){
       G.freeAgents=G.freeAgents.filter(x=>x!==id);
       delete G.players[id];
     });
-    // decrement contracts, then expire to free agency
-    Object.values(G.players).forEach(p=>{ p.years--; });
+    // advance each rostered contract one year (drop the season just played), then expire to FA.
+    // Free agents keep their ask intact — their "contract" is a demand, not a deal in progress.
+    Object.values(G.players).forEach(p=>{
+      if(p.teamId==null){ ensureContract(p); return; }
+      if(Array.isArray(p.contract) && p.contract.length) p.contract.shift();
+      p.years = Array.isArray(p.contract) ? p.contract.length : Math.max(0, (p.years||1)-1);
+      if(Array.isArray(p.contract) && p.contract.length){ p.salary = p.contract[0]; p.incentive = incentivesPerYear(p); }
+    });
     Object.values(G.players).forEach(p=>{
       if(p.years<=0 && p.teamId!=null){
-        // young prospects in the minors stay under team control
-        if(isAAAId(p.teamId) && p.age<25){ p.years=rint(2,4); return; }
+        // young prospects in the minors stay under team control (fresh control years)
+        if(isAAAId(p.teamId) && p.age<25){ setContract(p, p.salary, rint(2,4), []); return; }
         const t=teamById(G, p.teamId);
         if(t){ t.lineup=t.lineup.filter(x=>x!==p.id); t.rotation=t.rotation.filter(x=>x!==p.id); if(t.pos) delete t.pos[p.id]; }
-        p.teamId=null; p.years=rint(1,4); p.salary=salaryFor(p);
+        p.teamId=null; setContract(p, salaryFor(p), rint(1,4), []);   // new market ask as a free agent
         if(!G.freeAgents.includes(p.id)) G.freeAgents.push(p.id);
       }
     });
@@ -2746,10 +2916,28 @@ function mergeCareer(p){
   Object.keys(s).forEach(k=>{ c[k]=(c[k]||0)+s[k]; });
   p.stats = p.isP?emptyPitStats():emptyHitStats();
 }
-function blendSalary(p){
-  // re-evaluate salary based on new ovr, keep within reason
-  const fair=salaryFor(p);
-  return clamp(round(((p.salary*0.5)+(fair*0.5))*10)/10, 0.7, 45);
+// At season end, settle stat-based incentives. They're off-cap (don't count toward the
+// in-season payroll), but the owner really pays them — so earned bonuses come out of the
+// team's budget, leaving less to spend the following year.
+function payIncentives(G){
+  G.teams.forEach(t=>{ t.incentivesPaid = 0; });
+  Object.values(G.players).forEach(p=>{
+    if(!p.incentives || !p.incentives.length || p.teamId==null || isAAAId(p.teamId)) return;
+    const t=G.teams[p.teamId]; if(!t) return;
+    let earned=0; const hits=[];
+    p.incentives.forEach(inc=>{
+      const def=STAT_INCENTIVES[inc.stat];
+      const got = def ? def.get(p.stats) : (inc.stat==="_flat"?inc.need:0);
+      const met = inc.stat==="_flat" ? true : (got>=(inc.need||0));
+      if(met){ earned+=inc.amount||0; hits.push(def?def.label:"bonus"); }
+    });
+    if(earned>0){
+      t.incentivesPaid += earned;
+      t.budget = clamp(round((t.budget - earned)*10)/10, 70, 290);   // owner pays — less budget next year
+      if(p.teamId===G.userTeamId)
+        logNews(G,"signing",`${t.abbr} paid ${p.name} ${money(earned)} in incentives (${hits.join(", ")}) — off this year's budget`, p.teamId);
+    }
+  });
 }
 
 function buildDraft(G){
@@ -2760,7 +2948,7 @@ function buildDraft(G){
     if(chance(0.45)) p=makePitcher(chance(0.6)?"SP":"RP",[18,22]);
     else p=makeHitter(pick(INF_OF.concat(["DH"])),[18,22]);
     // prospects: lower current, boosted potential
-    p.teamId=null; p.years=4; p.salary=0.7;
+    p.teamId=null; setContract(p, 0.7, 4, []);
     cls.push(p.id); G.players[p.id]=p;
   }
   // selection order from owned picks: by round, then the ORIGINAL team's
