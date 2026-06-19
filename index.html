@@ -764,6 +764,8 @@ function migrate(G){
     if(!Array.isArray(G.draftPicks)) G.draftPicks = [];
     if(!Array.isArray(G.awardHistory)) G.awardHistory = [];
     if(!Array.isArray(G.news)) G.news = [];
+    if(!Array.isArray(G.tradeOffers)) G.tradeOffers = [];
+    if(G.tradeDeadline==null) G.tradeDeadline = Math.round((G.schedule?G.schedule.length:224)*0.58);
     if(!Array.isArray(G.hof)) G.hof = [];
     if(!Array.isArray(G.champions)) G.champions = G.champion ? [{season:G.champion.season, id:G.champion.id}] : [];
     if(G.teams.some(t=>t.rivalId==null)) assignRivals(G.teams);
@@ -840,6 +842,7 @@ function newGame(userTeamId, opts={}){
     picks: buildPicks(2027, teams),
     freeAgents: [], draftClass: [], draftPicks: [], draftPick: 0,
     playoffs: null, champion: null, champions: [], hof: [], log: [], news: [],
+    tradeDeadline: Math.round(schedule.length*0.58), tradeOffers: [],
   };
 }
 
@@ -1027,6 +1030,14 @@ function simDay(G){
   playDay(G.schedule);                          // MLB
   if(G.aaaSchedule) playDay(G.aaaSchedule);      // AAA affiliates
   G.day++;
+  // trade market: drop offers once they're stale or the deadline passes; before the
+  // deadline an AI club occasionally pitches the user a deal.
+  if(!Array.isArray(G.tradeOffers)) G.tradeOffers=[];
+  if(G.day>G.tradeDeadline){ G.tradeOffers=[]; }
+  else {
+    G.tradeOffers = G.tradeOffers.filter(o=>(G.day-o.day)<=12);
+    if(G.tradeOffers.length<2 && chance(0.045)){ const off=makeAITradeOffer(G); if(off) G.tradeOffers.push(off); }
+  }
   if(G.day>=G.schedule.length){ enterPlayoffs(G); }
 }
 
@@ -1044,6 +1055,17 @@ function Hub({G, commit, tShow, setTab}){
   const lastDay = G.day>0 ? G.schedule[G.day-1] : null;
   const userLast = lastDay && lastDay.find(x=>x.home===G.userTeamId||x.away===G.userTeamId);
   const next = userNextGame(G);
+
+  const acceptOffer=(i)=>{
+    const o=(G.tradeOffers||[])[i]; if(!o) return;
+    const other=G.teams[o.fromId];
+    const getDesc=o.give.map(id=>G.players[id]&&G.players[id].name).filter(Boolean).join(", ");
+    const giveDesc=o.get.map(id=>G.players[id]&&G.players[id].name).filter(Boolean).join(", ");
+    executeOffer(G,o);
+    logNews(G,"trade",`${user.abbr} acquired ${getDesc} from ${other.abbr} for ${giveDesc}`, user.id);
+    G.tradeOffers.splice(i,1); commit(G); tShow("✅ Trade completed!");
+  };
+  const rejectOffer=(i)=>{ if(!G.tradeOffers) return; G.tradeOffers.splice(i,1); commit(G); tShow("Offer turned down"); };
 
   const runDays = (count)=>{
     setBusy(true);
@@ -1073,6 +1095,29 @@ function Hub({G, commit, tShow, setTab}){
         <Card><div className="text-slate-400 text-xs">RUN DIFF</div><div className={"text-2xl font-bold tnum "+((user.rs-user.ra)>=0?"text-emerald-400":"text-red-400")}>{user.rs-user.ra>=0?"+":""}{user.rs-user.ra}</div><div className="text-xs text-slate-500">{user.rs} RS / {user.ra} RA</div></Card>
         <Card><div className="text-slate-400 text-xs">PAYROLL</div><div className="text-2xl font-bold tnum">{money(payroll(G,user.id))}</div><div className="text-xs text-slate-500">Budget {money(user.budget)}</div></Card>
       </div>
+
+      {(G.tradeOffers&&G.tradeOffers.length>0) && <Card className="border-sky-700/50">
+        <div className="text-xs font-semibold text-sky-300 mb-2">📨 Trade Offers ({G.tradeOffers.length})</div>
+        <div className="space-y-2">
+          {G.tradeOffers.map((o,i)=>{
+            const other=G.teams[o.fromId];
+            const youGet=o.give.map(id=>G.players[id]).filter(Boolean);
+            const youGive=o.get.map(id=>G.players[id]).filter(Boolean);
+            const desc=arr=>arr.map(p=>`${p.pos} ${p.name} (${p.ovr})`).join(", ")||"—";
+            return (
+              <div key={i} className="bg-[#13203a] rounded p-2">
+                <div className="text-xs text-slate-400 mb-1">{other.name} propose:</div>
+                <div className="text-sm"><span className="text-emerald-400 text-xs">You get </span>{desc(youGet)}</div>
+                <div className="text-sm"><span className="text-red-400 text-xs">You give </span>{desc(youGive)}</div>
+                <div className="flex gap-2 mt-2">
+                  <button onClick={()=>acceptOffer(i)} className="px-3 py-1 bg-emerald-500 text-slate-900 rounded text-xs font-semibold hover:bg-emerald-400">Accept</button>
+                  <button onClick={()=>rejectOffer(i)} className="px-3 py-1 bg-[#16213a] rounded text-xs hover:bg-[#1c2c4a]">Reject</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>}
 
       {(()=>{
         const rival = user.rivalId!=null ? G.teams[user.rivalId] : null;
@@ -1148,6 +1193,11 @@ function Hub({G, commit, tShow, setTab}){
           <button disabled={busy} onClick={()=>runDays(400)} className="px-4 py-2 bg-[#16213a] rounded-lg hover:bg-[#1c2c4a] disabled:opacity-50">Sim to Playoffs</button>
         </div>
         {busy && <div className="text-xs text-slate-400 mt-2">Simulating…</div>}
+        <div className="text-xs text-slate-500 mt-2">
+          {G.day>G.tradeDeadline
+            ? "🔒 Trade deadline has passed — the market is closed until the offseason"
+            : `Trade deadline: Day ${G.tradeDeadline+1} (${G.tradeDeadline-G.day+1} days away)`}
+        </div>
       </Card>
     </div>
   );
@@ -1959,7 +2009,9 @@ function Trades({G, commit, tShow}){
   const giveVal = give.reduce((s,id)=>s+playerValue(G.players[id]),0) + givePk.reduce((s,id)=>s+pickValue(G,(G.picks||[]).find(p=>p.id===id)||{round:5,orig:me.id}),0);
   const getVal  = get.reduce((s,id)=>s+playerValue(G.players[id]),0)  + getPk.reduce((s,id)=>s+pickValue(G,(G.picks||[]).find(p=>p.id===id)||{round:5,orig:other.id}),0);
 
+  const deadlinePassed = G.phase==="regular" && G.day>G.tradeDeadline;
   const propose=()=>{
+    if(deadlinePassed){ tShow("⛔ The trade deadline has passed"); return; }
     if(!give.length && !get.length && !givePk.length && !getPk.length){ tShow("Add players or picks to the trade"); return; }
     if(getVal===0){ tShow("Select something to acquire"); return; }
     if(giveVal >= getVal*0.97){
@@ -2011,6 +2063,10 @@ function Trades({G, commit, tShow}){
 
   return (
     <div className="space-y-4">
+      {deadlinePassed && <Card className="border-amber-600/60">
+        <div className="text-sm text-amber-300 font-semibold">🔒 The trade deadline (Day {G.tradeDeadline+1}) has passed.</div>
+        <div className="text-xs text-slate-400 mt-0.5">No more trades until the offseason. You can still browse rosters below.</div>
+      </Card>}
       <Card>
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm text-slate-400">Trade with:</span>
@@ -2027,7 +2083,7 @@ function Trades({G, commit, tShow}){
         {pickBox(`${me.nick} picks to send`, myPicks, givePk, setGivePk)}
         {pickBox(`${other.nick} picks to acquire`, otPicks, getPk, setGetPk)}
       </div>
-      <button onClick={propose} className="px-6 py-2 bg-emerald-500 text-slate-900 rounded-lg font-bold">Propose Trade</button>
+      <button onClick={propose} disabled={deadlinePassed} className="px-6 py-2 bg-emerald-500 text-slate-900 rounded-lg font-bold disabled:opacity-40 disabled:cursor-not-allowed">{deadlinePassed?"Deadline Passed":"Propose Trade"}</button>
     </div>
   );
 }
@@ -2046,6 +2102,45 @@ function ensureLineup(team, players){
   if(team.lineup.length<9 || team.rotation.length<5) autoSetLineups(team, players);
 }
 function rosterOf2(players, teamId){ return Object.values(players).filter(p=>p.teamId===teamId); }
+
+// An AI club proposes a trade to the user: it covets one of the user's useful
+// (not untouchable) MLB players and assembles a package of comparable value from
+// players it can spare. Returns an offer object or null. Roughly fair — the user
+// decides whether the fit is worth it.
+function makeAITradeOffer(G){
+  const meId=G.userTeamId;
+  const userMlb = rosterOf(G, meId);
+  if(userMlb.length<11) return null;
+  const targets = userMlb.filter(p=>p.ovr>=58 && p.ovr<=84);
+  if(!targets.length) return null;
+  const target = pick(targets);
+  const tval = playerValue(target);
+  if(tval<3) return null;
+  const other = pick(G.teams.filter(t=>t.id!==meId));
+  const otherOrg = rosterOf(G, other.id).concat(rosterOf(G, aaaIdOf(other.id)));
+  if(otherOrg.length<12) return null;
+  // pieces they'd part with — but never a single player worth far more than the target
+  // (no gutting their roster for a mid player). Build a package of comparable value.
+  const spare = otherOrg.map(p=>({p,v:playerValue(p)})).filter(c=>c.v<=tval*1.12).sort((a,b)=>b.v-a.v);
+  let give=[], acc=0;
+  for(const c of spare){
+    if(acc>=tval*0.97 || give.length>=3) break;
+    if(acc+c.v<=tval*1.15){ give.push(c.p.id); acc+=c.v; }
+  }
+  if(acc < tval*0.90 || give.length===0) return null;   // couldn't put together a fair package
+  return { fromId:other.id, get:[target.id], give, givePk:[], getPk:[], season:G.season, day:G.day };
+}
+// Execute an accepted offer: AI's `give` players come to the user; the user's
+// `get` players go to the AI. Levels (MLB/AAA) are preserved; lineups refreshed.
+function executeOffer(G, o){
+  const meId=G.userTeamId, other=G.teams[o.fromId];
+  o.give.forEach(id=>{ const p=G.players[id]; if(p) movePlayer(G,p,meId); });
+  o.get.forEach(id=>{ const p=G.players[id]; if(p) movePlayer(G,p,o.fromId); });
+  (o.givePk||[]).forEach(id=>{ const pk=(G.picks||[]).find(p=>p.id===id); if(pk) pk.owner=meId; });
+  (o.getPk||[]).forEach(id=>{ const pk=(G.picks||[]).find(p=>p.id===id); if(pk) pk.owner=o.fromId; });
+  ensureLineup(G.teams[meId], G.players); autoSetLineups(G.aaaTeams[meId], G.players);
+  autoSetLineups(other, G.players); autoSetLineups(G.aaaTeams[other.id], G.players);
+}
 
 /* ----------------------------- Free Agency ----------------------------- */
 function FreeAgency({G, commit, tShow}){
@@ -2680,6 +2775,8 @@ function startNewSeason(G){
   G.day=0; G.season++; G.phase="regular";
   G.playoffs=null; G.draftClass=[]; G.draftPicks=[]; G.draftPick=0; G.offStep=null;
   G.picks = buildPicks(G.season+1, G.teams);   // next year's tradeable picks
+  G.tradeDeadline = Math.round(G.schedule.length*0.58);   // recompute for the new calendar
+  G.tradeOffers = [];                                      // pending offers don't carry over
 }
 
 /* ----------------------------- Hall of Fame UI ------------------------- */

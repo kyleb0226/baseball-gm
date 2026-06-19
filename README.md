@@ -55,6 +55,9 @@ header to keep a JSON backup that survives updates.
   every position
 - **Tradeable draft picks** — deal future picks whose value scales with each team's projected finish,
   alongside players (big-leaguers or prospects)
+- **Trade deadline** — the market closes partway through the season; load up before it passes or stand pat
+- **AI trade offers** — rival GMs come to you mid-season with deals for your players, shown on the Hub
+  with Accept / Reject — fair-value packages you can take or leave
 - Inning-by-inning, plate-appearance sim engine driven by player ratings — including stolen
   bases and a rotating bullpen — produces realistic stat lines
 - Rich box-score stats everywhere: hitters show G/AB/R/H/HR/RBI/BB/SO/SB and AVG/OBP/SLG/OPS;

@@ -81,6 +81,14 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   standings), so traded picks keep their slot. `Trades` can include players (MLB or AAA) and picks.
   When a prospect is drafted (`assign`), `p.draftInfo = {year, round, overall, by}` is stamped on him
   (shown in `PlayerModal`).
+- **Trade market:** a **deadline** (`G.tradeDeadline` ≈ 58% through the calendar) closes the market —
+  `Trades` disables proposing past it (banner + disabled button) and the Hub shows a countdown.
+  **AI-initiated offers** (`makeAITradeOffer`): each sim-day before the deadline an AI club may pitch the
+  user a deal (`chance(0.045)`, ≤2 pending, expire after 12 days), coveting a useful user MLB player and
+  assembling a comparable-value package (no single piece worth ≫ the target; total ~0.9–1.15× — fair,
+  user decides). Offers live in `G.tradeOffers`; the **Hub** renders Accept/Reject cards. Accept runs
+  `executeOffer` (preserves MLB/AAA level, refreshes lineups, logs to the news wire). `startNewSeason`
+  recomputes the deadline and clears pending offers.
 - **Per-season history:** every game tags the team a player suited up for into `p._yrTeams`
   (`tagTeam` in `markGamesPlayed` for hitters and at the end of `simGame` for the pitchers who threw —
   so mid-season trades record *both* teams). At the offseason rollover `recordSeasonHistory(p, season)`
