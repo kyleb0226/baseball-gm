@@ -166,6 +166,11 @@ function setPotential(p){
   // younger players have more growth room
   const room = clamp(round((26 - p.age) * 1.6 + gauss(2,4)), -4, 24);
   p.pot = clamp(p.ovr + Math.max(0, room), p.ovr, 99);
+  // rare "boom" prospect: a raw, low-rated youngster with a sky-high ceiling — a long
+  // grind that occasionally turns into a star (e.g. a 55 OVR with 85 potential).
+  if(p.age<=22 && chance(0.035)){
+    p.pot = clamp(p.pot + rint(14,28), p.ovr, 99);
+  }
 }
 function salaryFor(p){
   const o = p.ovr;
@@ -2579,11 +2584,21 @@ function OffseasonHub({G, commit, tShow, setTab}){
       mergeCareer(p);
       p.salary = blendSalary(p);
     });
-    // retirements: old players, and washed-up fringe vets, hang it up
+    // retirements: driven by BOTH age and quality. Good players hang on (a 35+ vet who's
+    // still ~62 OVR keeps grinding); washed-up players quit much earlier the older they get.
+    // A stable per-player longevity factor adds variety so careers don't all end at once.
     const retired=[];
     Object.values(G.players).forEach(p=>{
-      let retP = p.age>=39? 0.85 : p.age>=37? 0.5 : p.age>=35? 0.25 : p.age>=33? 0.08 : 0.004;
-      if(p.age>=32 && p.ovr<48) retP = Math.max(retP, 0.45); // fringe vets retire rather than ride the minors
+      let retP;
+      if(p.age<32) retP = 0.003;
+      else {
+        retP = (p.age-31)*0.06;                 // age ramp: 32→.06, 35→.24, 39→.48, 42→.66
+        retP -= ((p.ovr-60)/100)*1.4;           // quality: stars (>60) hang on, scrubs (<60) leave sooner
+        if(p.ovr<55) retP += (p.age-33)*0.05;   // genuinely bad + getting old → push them out
+      }
+      const lng = 0.78 + ((p.id*2654435761>>>0)%1000)/2273;   // ~0.78–1.22, stable per player
+      retP = clamp(retP*lng, 0, 0.95);
+      if(p.age>=44) retP = Math.max(retP, 0.9);                // almost nobody plays past 44
       if(chance(retP)){ retired.push(p.id); }
     });
     retired.forEach(id=>{

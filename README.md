@@ -44,6 +44,10 @@ header to keep a JSON backup that survives updates.
 - Players **develop and regress realistically** — young players climb toward their potential (fastest
   in AAA, and faster still when they produce, so a kid promoted early who rakes keeps improving), peak
   in their mid-20s, then decline with age; the offseason shows a **risers & decliners report**
+- **Rare boom prospects** — once in a while a raw, low-rated youngster carries a sky-high ceiling (think
+  55 overall, 85 potential): a long-shot grind that can pay off years later with a homegrown star
+- **Realistic retirements** — players hang it up based on both age *and* skill, so a still-productive
+  veteran keeps grinding into his late 30s while a washed-up one walks away — with natural variety
 - Browse **every player in the league** on the Players tab — filter by team, level (MLB/AAA/FA),
   position, and age, then sort by OVR, potential, trade value, salary, or any stat
 - End-of-season **awards**: Player of the Year, Cy Young, and full **All-Star teams** per league, with

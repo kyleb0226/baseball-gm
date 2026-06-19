@@ -164,6 +164,15 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   The **contact term is deliberate** — HR needs power *and* some contact, so a one-dimensional slugger who
   can't make contact no longer leads the league in homers (the old power-only slope let a 58 OVR mash 36 HR).
   Tuned targets (3-seed check): HR leader ~48–53, ~3–6 hitters over 40, no sub-60 OVR sluggers over ~32.
+- **Potential & boom prospects (`setPotential`):** `pot = ovr + age-scaled room` (room up to ~24). On top,
+  young players (≤22) have a ~3.5% chance to be a **boom prospect** — a raw, low-OVR youngster with a
+  huge ceiling (e.g. 55 OVR / 85 POT, gaps up to ~45). Rare, and most never fully realize it, but a
+  long-grind star can emerge from the draft/AAA.
+- **Retirement (`doProgression`, offseason):** retirement odds are driven by **both age and quality** —
+  base ramps with age (`(age-31)*0.06` past 31), reduced for good players (`(ovr-60)/100*1.4`, so a 35+
+  vet still ~65 OVR keeps playing) and increased for genuinely bad aging players (`ovr<55` adds
+  `(age-33)*0.05`). A stable per-player longevity factor (~0.78–1.22 from the id) adds variety; 44+ almost
+  always retire. Replaced the old flat age-bucket table.
 - **Development & regression (`doProgression`, offseason):** each attribute shifts by `gauss(center,1.2)`.
   `center` ramps with age — young players climb toward potential (≤23 fastest, growth fades to a ~26-28
   peak), 29-30 gentle decline, 31-33 steeper, 34+ falls off a cliff. Modifiers: **AAA prospects (≤25)
