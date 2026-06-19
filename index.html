@@ -2780,7 +2780,7 @@ function OffseasonHub({G, commit, tShow, setTab}){
     const retired=[];
     Object.values(G.players).forEach(p=>{
       let retP;
-      if(p.age<32) retP = 0.003;
+      if(p.age<32) retP = 0;          // nobody retires young — careers end from age & decline only
       else {
         retP = (p.age-31)*0.06;                 // age ramp: 32→.06, 35→.24, 39→.48, 42→.66
         retP -= ((p.ovr-60)/100)*1.4;           // quality: stars (>60) hang on, scrubs (<60) leave sooner
@@ -3129,8 +3129,9 @@ function startNewSeason(G){
   // make sure user roster is valid for play
   const me=G.teams[G.userTeamId];
   ensureLineup(me, G.players);
-  // AAA rosters changed (draft, call-ups/send-downs) — cap depth, then refresh lineups
-  G.aaaTeams.forEach(t=>trimRoster(G, t, AAA_CAP));
+  // AAA rosters changed (draft, call-ups/send-downs) — cap depth, top up thin affiliates
+  // to a fieldable, prospect-developing minimum, then refresh lineups
+  G.aaaTeams.forEach(t=>{ trimRoster(G, t, AAA_CAP); refillRoster(G, t.id, 12, 9, [19,26], -6); });
   G.aaaTeams.forEach(t=>autoSetLineups(t, G.players));
   // sweep any orphaned teamless players (e.g. leftover draft class, stray cuts) into
   // the FA pool, then prune — keeps the player dict bounded so sim speed stays flat.
