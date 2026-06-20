@@ -56,7 +56,13 @@ function gauss(mean, sd) {
 const rateGauss = (mean, sd) => clamp(round(gauss(mean, sd)), 20, 99);
 const n01 = r => (r - 20) / 79; // normalize 20..99 -> 0..1
 const money = m => (m >= 1 ? "$" + m.toFixed(1) + "M" : "$" + round(m * 1000) + "K");
-const uid = (() => { let i = 1; return () => i++; })();
+// Player-id generator. NOTE: this counter lives in memory and resets to 1 on every
+// page load, but player ids are persisted in the save. After loading a franchise we
+// MUST resume it past the highest existing id (see uid.atLeast in migrate) — otherwise
+// freshly generated players (draft, AAA refill, FA fill) reuse low ids and silently
+// OVERWRITE existing players in the G.players dict. That was the "my players keep
+// disappearing every season" bug (your oldest = lowest-id starters got clobbered first).
+const uid = (() => { let i = 1; const f = () => i++; f.atLeast = n => { if(Number.isFinite(n) && n >= i) i = n + 1; }; return f; })();
 
 /* ----------------------------- name pools ------------------------------ */
 const FIRST = ["Jake","Marcus","Tyler","Diego","Carlos","Aaron","Liam","Noah","Mason","Ethan","Wyatt","Cole","Hunter","Owen","Luca","Mateo","Andre","Brett","Chase","Dax","Eli","Felix","Gavin","Hugo","Isaac","Jaylen","Kai","Logan","Miles","Nash","Omar","Parker","Quinn","Reed","Sawyer","Trent","Victor","Wade","Xander","Zane","Beau","Caleb","Drew","Emmett","Grant","Jonah","Kyle","Lane","Max","Reid","Shane","Tate","Vince","Wesley","Yusuf","Brody","Dane","Finn","Garrett","Heath"];
@@ -845,6 +851,14 @@ function logNews(G, type, msg, teamId){
 function migrate(G){
   if(!G || !Array.isArray(G.teams)) return G;
   try{
+    // CRITICAL: resume the in-memory uid() counter past every id already in this save,
+    // BEFORE anything generates new players. uid() restarts at 1 each page load; without
+    // this, draft/refill/FA players reuse low ids and overwrite existing players in the
+    // dict (the "my players disappear every season" bug). Scan rostered players + draft class.
+    let maxId = 0;
+    Object.values(G.players||{}).forEach(p=>{ if(typeof p.id==="number" && p.id>maxId) maxId=p.id; });
+    (G.draftClass||[]).forEach(p=>{ if(p && typeof p.id==="number" && p.id>maxId) maxId=p.id; });
+    uid.atLeast(maxId);
     if(!G.aaaTeams){ G.aaaTeams = G.teams.map(t=>makeAAATeam(t)); }
     if(!G.aaaSchedule) G.aaaSchedule = buildSchedule(G.aaaTeams);
     if(!G.picks) G.picks = buildPicks((G.season||2026)+1, G.teams);
