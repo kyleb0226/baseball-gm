@@ -1557,10 +1557,12 @@ function PlayerModal({p, team, onClose}){
         <div className="flex gap-1 mb-3 flex-wrap">
           {rateRow.map(([k,v])=><span key={k} className="text-xs bg-[#16213a] rounded px-2 py-1">{k} <b className="text-slate-200">{v}</b></span>)}
         </div>
-        {p.accolades && p.accolades.length>0 && (()=>{
-          const ct={}; p.accolades.forEach(a=>{ct[a.award]=(ct[a.award]||0)+1;});
+        {((p.accolades&&p.accolades.length>0) || (p.rings&&p.rings.length>0)) && (()=>{
+          const ct={}; (p.accolades||[]).forEach(a=>{ct[a.award]=(ct[a.award]||0)+1;});
           const order=["MVP","Cy Young","All-Star"];
+          const rings=(p.rings||[]).length;
           return <div className="flex gap-1 mb-3 flex-wrap">
+            {rings>0 && <span className="text-xs bg-sky-500/20 text-sky-300 border border-sky-500/40 rounded px-2 py-1" title={"Champion: "+p.rings.join(", ")}>💍 {rings}× Ring{rings>1?"s":""}</span>}
             {order.filter(k=>ct[k]).map(k=><span key={k} className="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded px-2 py-1">🏆 {ct[k]}× {k}</span>)}
           </div>;
         })()}
@@ -2733,9 +2735,29 @@ function recordFranchiseRecords(G){
   });
 }
 
+// All-time, league-wide single-season records (the best mark by ANYONE, ever).
+// Run at season end (in enterPlayoffs, before stats reset), same qualifiers as franchise records.
+function recordLeagueRecords(G){
+  const lr = G.leagueRecords = G.leagueRecords || {};
+  const up = (key,value,holder,team)=>{ if(value==null||value<=0) return; if(!lr[key]||value>lr[key].value) lr[key]={value,holder,team,season:G.season}; };
+  const lo = (key,value,holder,team)=>{ if(value==null) return; if(!lr[key]||value<lr[key].value) lr[key]={value,holder,team,season:G.season}; };
+  G.teams.forEach(t=>up("teamWins", t.w, t.name, t.abbr));
+  const teamAbbr = p=>{ const t=teamById(G,p.teamId); return t?t.abbr:""; };
+  const mlb = Object.values(G.players).filter(p=>{ const t=teamById(G,p.teamId); return t && !t.aaa; });
+  const hitters = mlb.filter(p=>!p.isP && p.stats.PA>=300);
+  const pitchers = mlb.filter(p=>p.isP && p.stats.OUT>=120);
+  const bestH=(fn,key)=>{ const b=hitters.reduce((a,c)=>(!a||fn(c)>fn(a))?c:a,null); if(b) up(key,fn(b),b.name,teamAbbr(b)); };
+  bestH(p=>p.stats.HR,"HR"); bestH(p=>p.stats.RBI,"RBI"); bestH(p=>p.stats.H,"H");
+  bestH(p=>p.stats.R,"R"); bestH(p=>p.stats.SB,"SB"); bestH(p=>+avg(p.stats).toFixed(3),"AVG");
+  const bestP=(fn,key)=>{ const b=pitchers.reduce((a,c)=>(!a||fn(c)>fn(a))?c:a,null); if(b) up(key,fn(b),b.name,teamAbbr(b)); };
+  bestP(p=>p.stats.W,"pW"); bestP(p=>p.stats.SO,"pK"); bestP(p=>p.stats.SV,"pSV");
+  const bERA=pitchers.reduce((a,c)=>(!a||era(c.stats)<era(a.stats))?c:a,null); if(bERA) lo("ERA",+era(bERA.stats).toFixed(2),bERA.name,teamAbbr(bERA));
+}
+
 function enterPlayoffs(G){
   computeAwards(G);   // hand out hardware while season stats are still live
   recordFranchiseRecords(G);   // update the all-time record book before stats reset
+  recordLeagueRecords(G);      // and the league-wide single-season records
   payIncentives(G);   // settle stat-based contract bonuses (off-cap)
   G.phase="playoffs";
   const mk = league => {
@@ -2795,7 +2817,11 @@ function buildNextRound(G){
     if(po.wsWinner!=null) return;          // already crowned — guard against double-click
     po.wsWinner=po.ws.winner; G.champion={id:po.ws.winner, season:G.season};
     G.champions = G.champions||[];
-    if(!G.champions.some(c=>c.season===G.season)) G.champions.push({season:G.season, id:po.ws.winner});
+    if(!G.champions.some(c=>c.season===G.season)){
+      G.champions.push({season:G.season, id:po.ws.winner});
+      // hand a championship ring to everyone on the title-winning MLB roster
+      rosterOf(G, po.ws.winner).forEach(pl=>{ (pl.rings=pl.rings||[]).push(G.season); });
+    }
     logNews(G,"champ",`🏆 ${G.teams[po.ws.winner].name} won the ${G.season} World Series!`, po.ws.winner);
     startOffseason(G);
   }
@@ -3073,14 +3099,21 @@ function OffseasonHub({G, commit, tShow, setTab}){
 const HOF_THRESHOLD = 175;
 // a career score weighing counting stats plus a strong bonus for peak greatness,
 // so only players who were genuinely elite (not just long-lived) get in.
+// counts an award/honor across a player's career (accolades survive retirement)
+function accCount(p, award){ return (p.accolades||[]).filter(a=>a.award===award).length; }
+function ringCount(p){ return (p.rings||[]).length; }
 function hofScore(p){
   const c=p.career||{}; const peak=p.peakOvr||p.ovr||0;
   const peakBonus = Math.max(0, peak-75)*4;
+  // hardware & rings weigh heavily — a decorated career (MVPs, Cy Youngs, All-Star
+  // selections, championships) is what separates a legend from a compiler.
+  const accBonus = accCount(p,"MVP")*28 + accCount(p,"Cy Young")*24
+                 + accCount(p,"All-Star")*7 + ringCount(p)*9;
   if(p.isP){
     const ip=(c.OUT||0)/3;
-    return (c.W||0)*1.1 + (c.SV||0)*0.7 + (c.SO||0)*0.018 + ip*0.03 + peakBonus;
+    return (c.W||0)*1.1 + (c.SV||0)*0.7 + (c.SO||0)*0.018 + ip*0.03 + peakBonus + accBonus;
   }
-  return (c.HR||0)*0.45 + (c.H||0)*0.035 + (c.RBI||0)*0.032 + (c.SB||0)*0.12 + (c.R||0)*0.02 + peakBonus;
+  return (c.HR||0)*0.45 + (c.H||0)*0.035 + (c.RBI||0)*0.032 + (c.SB||0)*0.12 + (c.R||0)*0.02 + peakBonus + accBonus;
 }
 function inductIfWorthy(G, p){
   if(hofScore(p) < HOF_THRESHOLD) return;
@@ -3092,6 +3125,7 @@ function inductIfWorthy(G, p){
     age:p.age, inducted:G.season, lastTeam:lt,
     seasons:(p.history?p.history.length:0),
     score:round(hofScore(p)),
+    mvp:accCount(p,"MVP"), cy:accCount(p,"Cy Young"), allStar:accCount(p,"All-Star"), rings:ringCount(p),
     career:Object.assign({}, p.career||{}),
   });
 }
@@ -3426,6 +3460,24 @@ function HallOfFame({G}){
       </Card>
 
       <Card>
+        <h3 className="font-bold mb-2">🌐 League Records <span className="text-slate-500 text-sm font-normal">— all-time single-season bests</span></h3>
+        {(()=>{ const lr=G.leagueRecords||{}; return RECDEFS.some(([k])=>lr[k]) ? (
+          <div className="grid sm:grid-cols-2 gap-1">
+            {RECDEFS.filter(([k])=>lr[k]).map(([k,label])=>{ const r=lr[k];
+              const val = k==="AVG"?f3(r.value):k==="ERA"?f2(r.value):r.value;
+              return (
+                <div key={k} className="flex items-center gap-2 px-2 py-1 rounded bg-[#13203a] text-sm">
+                  <span className="text-slate-400 text-xs flex-1">{label}</span>
+                  <span className="font-bold tnum text-amber-300">{val}</span>
+                  <span className="text-slate-500 text-xs truncate max-w-[140px]">{k==="teamWins"?`${r.holder} '${String(r.season).slice(-2)}`:`${r.holder}${r.team?" ("+r.team+")":""} '${String(r.season).slice(-2)}`}</span>
+                </div>
+              );
+            })}
+          </div>
+        ) : <div className="text-sm text-slate-500">No league records yet — finish a season to set the all-time marks.</div>; })()}
+      </Card>
+
+      <Card>
         <h3 className="font-bold mb-1">🎖️ Hall of Fame <span className="text-slate-500 text-sm">({hof.length})</span></h3>
         <p className="text-xs text-slate-500 mb-2">Legends are inducted when they retire after a truly great career.</p>
         {hof.length ? (
@@ -3433,6 +3485,7 @@ function HallOfFame({G}){
             <table className="w-full text-sm tnum">
               <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]">
                 <th className="text-left py-1">Inducted</th><th className="text-left">Player</th><th>Pos</th><th>Peak</th><th>Yrs</th>
+                <th className="text-left pl-3">Honors</th>
                 <th className="text-left pl-3">Career</th>
               </tr></thead>
               <tbody>
@@ -3440,6 +3493,11 @@ function HallOfFame({G}){
                   const line = h.isP
                     ? `${c.W||0}-${c.L||0}, ${c.SV||0} SV, ${c.SO||0} K, ${((c.OUT||0)/3).toFixed(0)} IP`
                     : `${c.H||0} H, ${c.HR||0} HR, ${c.RBI||0} RBI, ${c.SB||0} SB`;
+                  const honors=[];
+                  if(h.rings) honors.push(`💍${h.rings}`);
+                  if(h.mvp) honors.push(`${h.mvp}× MVP`);
+                  if(h.cy) honors.push(`${h.cy}× Cy`);
+                  if(h.allStar) honors.push(`${h.allStar}× AS`);
                   return (
                     <tr key={i} className="border-b border-[#15203a]">
                       <td className="py-1 text-slate-400">{h.inducted}</td>
@@ -3447,6 +3505,7 @@ function HallOfFame({G}){
                       <td className="text-center text-slate-400">{h.pos}</td>
                       <td className="text-center"><OvrPill v={h.peakOvr}/></td>
                       <td className="text-center text-slate-400">{h.seasons||"—"}</td>
+                      <td className="text-left pl-3 text-amber-300/90 text-xs whitespace-nowrap">{honors.length?honors.join(" · "):"—"}</td>
                       <td className="text-left pl-3 text-slate-300">{line}</td>
                     </tr>
                   );

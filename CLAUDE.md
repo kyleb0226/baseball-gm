@@ -134,10 +134,17 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   mirror-division rival), stored as `team.rivalId`. Shown on the Hub (season series + next meeting) and
   highlighted in the Schedule. Migrate backfills rivals for old saves.
 - **History / Hall of Fame:** `G.champions` is the title roll (pushed in `buildNextRound`'s WS case);
-  `team.history` holds per-season records. `p.peakOvr` tracks career-best OVR; on retirement
-  `inductIfWorthy` adds a snapshot to `G.hof` when `hofScore(p) >= HOF_THRESHOLD` (175) — a counting-stat
-  score with a strong peak-greatness bonus so only true stars get in. The **Hall of Fame** tab shows the
-  champions roll + inductees.
+  `team.history` holds per-season records. **Championship rings:** when a team wins the WS, every player on
+  its MLB roster gets a ring (`p.rings` = array of seasons) in `buildNextRound`. `p.peakOvr` tracks
+  career-best OVR; on retirement `inductIfWorthy` adds a snapshot to `G.hof` when `hofScore(p) >=
+  HOF_THRESHOLD` (175). **`hofScore` weighs counting stats + a peak-greatness bonus + hardware**:
+  `accCount(p,award)` (MVP ×28, Cy Young ×24, All-Star ×7) and `ringCount(p)` (×9) — so a decorated,
+  ring-laden career clears the bar that a mere compiler wouldn't. The hof entry stores `mvp/cy/allStar/rings`
+  counts for display. `PlayerModal` shows a 💍 ring badge next to MVP/All-Star honors.
+- **Records:** `recordFranchiseRecords` (per-club, `team.records`) and **`recordLeagueRecords`**
+  (`G.leagueRecords`, all-time single-season league-wide bests with holder name + team + season) both run in
+  `enterPlayoffs` before stats reset (PA≥300 / OUT≥120 qualifiers). The **Hall of Fame** tab renders
+  champions roll, per-team Franchise Records, league-wide League Records, and inductees (with an Honors column).
 - **League news / transaction wire (`logNews`, `G.news`):** a persistent, newest-first, capped-250 log of
   notable moves — FA **signings** + extensions, **trades**, **roster** moves (call-up/option/release),
   the user's **draft** picks, end-of-season **awards** (MVP/Cy Young), and World Series **titles**. Each
