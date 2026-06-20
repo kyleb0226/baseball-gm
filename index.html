@@ -891,6 +891,33 @@ function migrate(G){
       G.champions = G.champions.filter(c=>{ if(c==null||seen.has(c.season)) return false; seen.add(c.season); return true; });
     }
     if(G.teams.some(t=>t.rivalId==null)) assignRivals(G.teams);
+    // One-time retroactive backfill for saves that predate rings/league records:
+    // award championship rings from the teams a player actually suited up for (per
+    // p.history) in each title season, and seed G.leagueRecords from the best of every
+    // club's franchise records. Guarded so it only runs once per save.
+    if(!G._honorsBackfilled){
+      const abbrById={}; G.teams.forEach(t=>abbrById[t.id]=t.abbr);
+      const champBySeason={}; (G.champions||[]).forEach(c=>{ if(c) champBySeason[c.season]=abbrById[c.id]; });
+      Object.values(G.players||{}).forEach(p=>{
+        const got=new Set(p.rings||[]);
+        (p.history||[]).forEach(e=>{
+          const champ=champBySeason[e.season]; if(!champ) return;
+          // an MLB stint (AAA labels end " AAA") with that year's champion = a ring
+          if((e.teams||[]).some(tl=>!/ AAA$/.test(tl) && tl===champ)) got.add(e.season);
+        });
+        if(got.size) p.rings=[...got].sort((a,b)=>a-b);
+      });
+      const lr=G.leagueRecords=G.leagueRecords||{};
+      ["teamWins","HR","RBI","H","R","SB","AVG","pW","pK","pSV","ERA"].forEach(k=>{
+        let best=null,bteam=null;
+        G.teams.forEach(t=>{ const r=(t.records||{})[k]; if(!r) return;
+          const better = k==="ERA" ? (best==null||r.value<best.value) : (best==null||r.value>best.value);
+          if(better){ best=r; bteam=t.abbr; }
+        });
+        if(best && !lr[k]) lr[k]={ value:best.value, holder:best.holder, team:bteam, season:best.season };
+      });
+      G._honorsBackfilled=true;
+    }
     Object.values(G.players||{}).forEach(p=>{ if(p.peakOvr==null) p.peakOvr=p.ovr; ensureContract(p); });
     const fixTeam = t=>{
       if(!t.pos) t.pos = {};
