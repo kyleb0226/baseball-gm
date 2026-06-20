@@ -121,6 +121,19 @@ function teamById(G, id){ return id==null?null : (id>=AAA_OFFSET ? G.aaaTeams[id
 /* ----------------------------- player gen ------------------------------ */
 function emptyHitStats(){return{G:0,PA:0,AB:0,H:0,_2B:0,_3B:0,HR:0,R:0,RBI:0,BB:0,SO:0,SB:0,CS:0};}
 function emptyPitStats(){return{G:0,GS:0,OUT:0,H:0,ER:0,BB:0,SO:0,W:0,L:0,SV:0,HRA:0,QS:0,HLD:0};}
+// Per-level (MLB vs AAA) stat splitting for the year-by-year history. The sim
+// pools everything into p.stats; we snapshot at each level change (call-up / send-down)
+// and at season end, attributing the delta since the last snapshot to the level the
+// player was just at. So a season split between the bigs and AAA yields two history rows.
+function flushLevel(p){
+  if(!p || !p.stats) return;
+  const lvl = isAAAId(p.teamId) ? "AAA" : "MLB";
+  if(!p._levelStats) p._levelStats = {};
+  if(!p._levelStats[lvl]) p._levelStats[lvl] = p.isP?emptyPitStats():emptyHitStats();
+  const snap = p._levelSnap || {}, bucket = p._levelStats[lvl];
+  for(const k in p.stats) bucket[k] = (bucket[k]||0) + (p.stats[k] - (snap[k]||0));
+  p._levelSnap = Object.assign({}, p.stats);
+}
 
 function makeHitter(pos, ageRange, meanAdj=0){
   const age = rint(ageRange[0], ageRange[1]);
@@ -1370,12 +1383,14 @@ function Roster({G, team, commit}){
     commit(G);
   };
   const sendDown = (p)=>{                         // MLB -> AAA
+    flushLevel(p);                                // bank his MLB stats before he changes level
     movePlayer(G, p, team.id); p.teamId = aaaIdOf(team.id);
     autoSetLineups(aaa, G.players); ensureLineup(team, G.players);
     logNews(G,"roster",`${team.abbr} optioned ${p.pos} ${p.name} (${p.ovr}) to AAA`, team.id);
     commit(G);
   };
   const callUp = (p)=>{                           // AAA -> MLB
+    flushLevel(p);                                // bank his AAA stats before he changes level
     movePlayer(G, p, team.id);                    // movePlayer keeps level; override to MLB
     p.teamId = team.id;
     autoSetLineups(aaa, G.players);
@@ -1559,15 +1574,20 @@ function PlayerModal({p, team, onClose}){
             <div className="overflow-x-auto">
               <table className="w-full text-xs tnum">
                 <thead><tr className="text-slate-500 border-b border-[#1d2940]">
-                  <th className="text-left py-1">Yr</th><th className="text-left">Team</th><th>Age</th><th>OVR</th>
+                  <th className="text-left py-1">Yr</th><th>Lvl</th><th className="text-left">Team</th><th>Age</th><th>OVR</th>
                   {(p.isP?[["W-L","wl"],["IP","ip"],["ERA","era"],["SO","SO"],["SV","SV"],["WHIP","whip"]]
                         :[["G","G"],["HR","HR"],["RBI","RBI"],["SB","SB"],["AVG","avg"],["OPS","ops"]]).map(([h])=><th key={h}>{h}</th>)}
                 </tr></thead>
                 <tbody>
-                  {[...p.history].reverse().map((h,i)=>{ const st=h.stats; return (
+                  {[...p.history].reverse().map((h,i)=>{ const st=h.stats;
+                    // level: explicit on new rows; inferred from team labels on legacy rows
+                    const lvl = h.level || ((h.teams||[]).length && (h.teams||[]).every(t=>/ AAA$/.test(t)) ? "AAA" : "MLB");
+                    const teamTxt = (h.teams&&h.teams.length) ? h.teams.map(t=>t.replace(/ AAA$/,"")).join("/") : "—";
+                    return (
                     <tr key={i} className="border-b border-[#15203a]">
                       <td className="text-left py-1">{h.season}</td>
-                      <td className="text-left text-slate-400">{h.teams&&h.teams.length?h.teams.join("/"):"—"}</td>
+                      <td className="text-center"><span className={lvl==="AAA"?"text-amber-400 font-semibold":"text-sky-300"}>{lvl}</span></td>
+                      <td className="text-left text-slate-400">{teamTxt}</td>
                       <td className="text-center">{h.age}</td>
                       <td className="text-center text-slate-400">{h.ovr}</td>
                       {p.isP
@@ -2989,16 +3009,22 @@ function inductIfWorthy(G, p){
 // snapshot the season that just ended into per-year history (with team[s] played for),
 // then clear the year's team tags. Call BEFORE aging/development so age & OVR reflect the season.
 function recordSeasonHistory(p, season){
-  const s=p.stats;
-  const played = p.isP ? (s.OUT>0) : (s.PA>0);
-  if(played){
-    p.history = p.history||[];
-    p.history.push({ season, age:p.age, ovr:p.ovr, isP:p.isP,
-      teams:(p._yrTeams&&p._yrTeams.length)?p._yrTeams.slice():[],
-      stats:Object.assign({}, s) });
-    if(p.history.length>30) p.history.shift();
-  }
-  p._yrTeams=[];
+  flushLevel(p);                                  // bank the final stint to its level
+  const ls = p._levelStats || {};
+  const yt = p._yrTeams || [];
+  // team labels carry a " AAA" suffix for minor-league stints; split them by level
+  const teamsFor = lvl => yt.filter(t => / AAA$/.test(t) === (lvl==="AAA"));
+  p.history = p.history||[];
+  // one row per level actually played — so a season split MLB/AAA produces two rows
+  ["MLB","AAA"].forEach(lvl=>{
+    const st = ls[lvl]; if(!st) return;
+    const played = p.isP ? (st.OUT>0) : (st.PA>0);
+    if(!played) return;
+    p.history.push({ season, age:p.age, ovr:p.ovr, isP:p.isP, level:lvl,
+      teams: teamsFor(lvl), stats: Object.assign({}, st) });
+  });
+  while(p.history.length>40) p.history.shift();    // ~20 yrs even if every year is split
+  p._yrTeams=[]; p._levelStats=null; p._levelSnap=null;
 }
 function mergeCareer(p){
   const c=p.career, s=p.stats;
