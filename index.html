@@ -1061,7 +1061,7 @@ function App(){
         {tab==="trades" && <Trades G={G} commit={commit} tShow={tShow} tradeFocus={tradeFocus} setTradeFocus={setTradeFocus} />}
         {tab==="fa" && <FreeAgency G={G} commit={commit} tShow={tShow} />}
         {tab==="finances" && <Finances G={G} commit={commit} tShow={tShow} />}
-        {tab==="draft" && <Draft G={G} commit={commit} tShow={tShow} />}
+        {tab==="draft" && <Draft G={G} commit={commit} tShow={tShow} setTab={setTab} />}
         {tab==="playoffs" && <Playoffs G={G} commit={commit} tShow={tShow} />}
       </main>
 
@@ -3163,7 +3163,7 @@ function buildDraft(G){
   G.draftClass=cls.sort((a,b)=>G.players[b].pot-G.players[a].pot);
 }
 
-function Draft({G, commit, tShow}){
+function Draft({G, commit, tShow, setTab}){
   const picksArr = G.draftPicks||[];
   if(!picksArr.length)
     return <Card>The draft isn't ready yet — process the offseason from the Hub first.</Card>;
@@ -3217,6 +3217,8 @@ function Draft({G, commit, tShow}){
     commit(g); tShow("Draft complete");
   };
 
+  const myUpcoming = picksArr.filter((pk,i)=>i>=G.draftPick && pk.owner===G.userTeamId).length;
+
   return (
     <div className="space-y-3">
       <Card>
@@ -3226,30 +3228,62 @@ function Draft({G, commit, tShow}){
             On the clock: {G.teams[onClock].name}{isUser?" (YOU)":""}{traded?` (via ${G.teams[curPick.orig].abbr})`:""}
           </div>
           <div className="ml-auto flex gap-2">
+            {setTab && <button onClick={()=>setTab("trades")} className="px-3 py-1 bg-amber-700 hover:bg-amber-600 rounded text-sm font-semibold">⇄ Trade Picks</button>}
             {!isUser && <button onClick={aiPick} className="px-3 py-1 bg-[#16213a] rounded text-sm">Next Pick</button>}
             <button onClick={simToMe} className="px-3 py-1 bg-[#16213a] rounded text-sm">Sim to My Pick</button>
             <button onClick={simAll} className="px-3 py-1 bg-[#16213a] rounded text-sm">Sim Rest</button>
           </div>
         </div>
       </Card>
-      <Card>
-        <div className="text-xs text-slate-400 mb-1">Best Available ({avail.length})</div>
-        <div className="overflow-x-auto max-h-[65vh] overflow-y-auto">
-          <table className="w-full text-sm tnum">
-            <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Pos</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th>{isUser&&<th></th>}</tr></thead>
-            <tbody>
-              {avail.slice(0,60).map(p=>(
-                <tr key={p.id} className="border-b border-[#15203a]">
-                  <td className="text-slate-400">{p.pos}</td><td className="text-left">{p.name}</td>
-                  <td className="text-center">{p.age}</td><td className="text-center"><OvrPill v={p.ovr}/></td>
-                  <td className="text-center text-amber-300 font-semibold">{p.pot}</td>
-                  {isUser&&<td className="text-right"><button onClick={()=>draftPlayer(p.id)} className="px-2 py-0.5 bg-emerald-600 rounded text-xs hover:bg-emerald-500">Draft</button></td>}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
+
+      <div className="grid lg:grid-cols-3 gap-3">
+        {/* best available — takes 2/3 on wide screens */}
+        <Card className="lg:col-span-2">
+          <div className="text-xs text-slate-400 mb-1">Best Available ({avail.length})</div>
+          <div className="overflow-x-auto max-h-[65vh] overflow-y-auto">
+            <table className="w-full text-sm tnum">
+              <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Pos</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th>{isUser&&<th></th>}</tr></thead>
+              <tbody>
+                {avail.slice(0,60).map(p=>(
+                  <tr key={p.id} className="border-b border-[#15203a]">
+                    <td className="text-slate-400">{p.pos}</td><td className="text-left">{p.name}</td>
+                    <td className="text-center">{p.age}</td><td className="text-center"><OvrPill v={p.ovr}/></td>
+                    <td className="text-center text-amber-300 font-semibold">{p.pot}</td>
+                    {isUser&&<td className="text-right"><button onClick={()=>draftPlayer(p.id)} className="px-2 py-0.5 bg-emerald-600 rounded text-xs hover:bg-emerald-500">Draft</button></td>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+
+        {/* draft order sidebar */}
+        <Card>
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-xs text-slate-400 font-semibold">Draft Order</div>
+            <div className="text-[11px] text-emerald-400">{myUpcoming} of your picks left</div>
+          </div>
+          {setTab && <button onClick={()=>setTab("trades")} className="w-full mb-2 px-2 py-1 bg-amber-700 hover:bg-amber-600 rounded text-xs font-semibold">⇄ Propose a pick trade</button>}
+          <div className="max-h-[60vh] overflow-y-auto space-y-0.5 text-sm tnum">
+            {picksArr.map((pk,i)=>{
+              const done=i<G.draftPick, cur=i===G.draftPick, mine=pk.owner===G.userTeamId;
+              const t=G.teams[pk.owner];
+              return (
+                <div key={i} className={"flex items-center gap-2 px-2 py-1 rounded "+
+                  (cur?"bg-emerald-500/20 ring-1 ring-emerald-500":mine?"bg-emerald-900/25":done?"opacity-40":"bg-[#0e1830]")}>
+                  <span className="text-slate-500 text-xs w-9 shrink-0">#{i+1}</span>
+                  <span className="text-slate-600 text-[10px] w-7 shrink-0">R{pk.round}</span>
+                  <span className={"flex-1 truncate "+(mine?"text-emerald-300 font-semibold":"")}>
+                    {cur&&<span className="text-emerald-400">▸ </span>}{t?t.abbr:"?"} {t?t.nick:""}
+                    {pk.owner!==pk.orig && <span className="text-slate-500 text-[10px]"> (via {G.teams[pk.orig]?G.teams[pk.orig].abbr:"?"})</span>}
+                  </span>
+                  {mine&&!done&&<span className="text-emerald-400 text-[10px] font-bold shrink-0">YOU</span>}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      </div>
     </div>
   );
 }
