@@ -65,8 +65,10 @@ const money = m => (m >= 1 ? "$" + m.toFixed(1) + "M" : "$" + round(m * 1000) + 
 const uid = (() => { let i = 1; const f = () => i++; f.atLeast = n => { if(Number.isFinite(n) && n >= i) i = n + 1; }; return f; })();
 
 /* ----------------------------- name pools ------------------------------ */
-const FIRST = ["Jake","Marcus","Tyler","Diego","Carlos","Aaron","Liam","Noah","Mason","Ethan","Wyatt","Cole","Hunter","Owen","Luca","Mateo","Andre","Brett","Chase","Dax","Eli","Felix","Gavin","Hugo","Isaac","Jaylen","Kai","Logan","Miles","Nash","Omar","Parker","Quinn","Reed","Sawyer","Trent","Victor","Wade","Xander","Zane","Beau","Caleb","Drew","Emmett","Grant","Jonah","Kyle","Lane","Max","Reid","Shane","Tate","Vince","Wesley","Yusuf","Brody","Dane","Finn","Garrett","Heath"];
-const LAST = ["Reyes","Walker","Brooks","Cruz","Hayes","Bennett","Foster","Russo","Carter","Diaz","Ellison","Frost","Garza","Holt","Ibarra","Jennings","Knox","Lopez","Mercer","Nakai","Ortega","Pruitt","Quintero","Ramos","Santos","Tran","Underwood","Vargas","Whitlock","York","Zimmer","Abbott","Boyd","Calderon","Dixon","Estrada","Flores","Gibson","Hannigan","Iverson","Jacobs","Keller","Lambert","Marsh","Novak","Ocampo","Patel","Riggs","Salazar","Tucker","Valdez","Webb","Yancey","Ainsworth","Barlow","Cardenas","Delgado","Easton","Fitch","Galloway"];
+const FIRST = ["Jake","Marcus","Tyler","Diego","Carlos","Aaron","Liam","Noah","Mason","Ethan","Wyatt","Cole","Hunter","Owen","Luca","Mateo","Andre","Brett","Chase","Dax","Eli","Felix","Gavin","Hugo","Isaac","Jaylen","Kai","Logan","Miles","Nash","Omar","Parker","Quinn","Reed","Sawyer","Trent","Victor","Wade","Xander","Zane","Beau","Caleb","Drew","Emmett","Grant","Jonah","Kyle","Lane","Max","Reid","Shane","Tate","Vince","Wesley","Yusuf","Brody","Dane","Finn","Garrett","Heath",
+  "Adrian","Alex","Angel","Anthony","Austin","Blake","Brandon","Brennan","Bryce","Cameron","Carson","Cedric","Cesar","Clayton","Connor","Cooper","Dallas","Damon","Darius","Davis","Dennis","Derek","Devin","Dominic","Dustin","Elias","Enrique","Ezra","Fernando","Gabriel","Gerald","Gideon","Graham","Hayden","Hector","Ian","Ivan","Jace","Jared","Jasper","Javier","Jaxon","Jensen","Joaquin","Jordan","Jose","Josiah","Julian","Keaton","Kendrick","Kenji","Kieran","Leo","Levi","Lincoln","Lorenzo","Malik","Manuel","Marco","Mario","Martin","Maverick","Maximo","Micah","Nathan","Nelson","Nico","Nolan","Orion","Pablo","Pedro","Phoenix","Rafael","Ramon","Raul","Remy","Rhys","Ricardo","Rocco","Roman","Ronan","Rowan","Ryder","Samuel","Santiago","Sebastian","Silas","Simon","Soren","Spencer","Sterling","Talon","Theo","Tobias","Tomas","Travis","Tristan","Ty","Ulises","Walker","Weston","Zander","Zion","Cody","Colt","Dawson","Easton","Emilio","Gage","Kobe","Lucas","Marco","Preston","Quincy","Rashad","Tanner"];
+const LAST = ["Reyes","Walker","Brooks","Cruz","Hayes","Bennett","Foster","Russo","Carter","Diaz","Ellison","Frost","Garza","Holt","Ibarra","Jennings","Knox","Lopez","Mercer","Nakai","Ortega","Pruitt","Quintero","Ramos","Santos","Tran","Underwood","Vargas","Whitlock","York","Zimmer","Abbott","Boyd","Calderon","Dixon","Estrada","Flores","Gibson","Hannigan","Iverson","Jacobs","Keller","Lambert","Marsh","Novak","Ocampo","Patel","Riggs","Salazar","Tucker","Valdez","Webb","Yancey","Ainsworth","Barlow","Cardenas","Delgado","Easton","Fitch","Galloway",
+  "Acosta","Aguilar","Alvarez","Anderson","Archer","Ayala","Baldwin","Barnes","Barrett","Becker","Blackwood","Blanchard","Bowman","Bradshaw","Brennan","Bryant","Buchanan","Burgess","Cabrera","Cameron","Campos","Cano","Castillo","Castro","Chambers","Chavez","Cobb","Coleman","Conway","Cortez","Crawford","Dalton","Dawson","Decker","Dominguez","Donovan","Doyle","Duffy","Duran","Eaton","Engel","Espinoza","Farrell","Fernandez","Finch","Fleming","Fowler","Franklin","Gallagher","Garrett","Gentry","Gilbert","Glover","Gomez","Gonzalez","Graves","Grayson","Greer","Griffin","Guerrero","Gutierrez","Hale","Hamilton","Hansen","Harper","Harrington","Hendricks","Herrera","Hoffman","Hollis","Hudson","Huerta","Hughes","Jimenez","Kane","Kendrick","Kingston","Lawson","Leon","Lindgren","Locke","Lyons","Madsen","Maldonado","Marquez","Mathews","Maxwell","McAllister","McKenzie","Medina","Mendez","Meyer","Montoya","Moreno","Morrow","Mullins","Munoz","Navarro","Nguyen","Nilsson","Norton","Okafor","Oliveira","Osborne","Pacheco","Padilla","Pena","Perez","Phelps","Pierce","Porter","Prescott","Quigley","Ramsey","Rangel","Reeves","Rhodes","Rios","Rivera","Roche","Rojas","Rosario","Rowe","Sanchez","Sandoval","Schaefer","Serrano","Sharpe","Shelton","Sloan","Solano","Soto","Stafford","Sterling","Stokes","Suarez","Sullivan","Sutton","Tapia","Thornton","Torres","Vaughn","Vega","Villanueva","Wagner","Wallace","Watkins","Weaver","Wheeler","Whitaker","Winters","Zamora","Zavala"];
 const genName = () => pick(FIRST) + " " + pick(LAST);
 
 /* ----------------------------- teams ----------------------------------- */
@@ -983,6 +985,7 @@ function assignRivals(teams){
 function App(){
   const [G, setG] = useState(()=>loadGame());
   const [tab, setTab] = useState("hub");
+  const [tradeFocus, setTradeFocus] = useState(null);   // player id to pre-load into the Trades tab
   const [toast, setToast] = useState("");
   const commit = g => { saveGame(g); setG({...g}); };
   const tShow = msg => { setToast(msg); setTimeout(()=>setToast(""),2500); };
@@ -1035,14 +1038,14 @@ function App(){
         {tab==="roster" && <Roster G={G} team={user} commit={commit} />}
         {tab==="lineup" && <LineupEditor G={G} commit={commit} tShow={tShow} />}
         {tab==="standings" && <Standings G={G} />}
-        {tab==="players" && <PlayersBrowser G={G} commit={commit} tShow={tShow} setTab={setTab} />}
+        {tab==="players" && <PlayersBrowser G={G} commit={commit} tShow={tShow} setTab={setTab} setTradeFocus={setTradeFocus} />}
         {tab==="aaa" && <AAALeague G={G} />}
         {tab==="stats" && <Leaders G={G} />}
         {tab==="awards" && <Awards G={G} />}
         {tab==="hof" && <HallOfFame G={G} />}
         {tab==="news" && <NewsFeed G={G} />}
         {tab==="schedule" && <Schedule G={G} />}
-        {tab==="trades" && <Trades G={G} commit={commit} tShow={tShow} />}
+        {tab==="trades" && <Trades G={G} commit={commit} tShow={tShow} tradeFocus={tradeFocus} setTradeFocus={setTradeFocus} />}
         {tab==="fa" && <FreeAgency G={G} commit={commit} tShow={tShow} />}
         {tab==="finances" && <Finances G={G} commit={commit} tShow={tShow} />}
         {tab==="draft" && <Draft G={G} commit={commit} tShow={tShow} />}
@@ -2295,15 +2298,28 @@ function Finances({G, commit, tShow}){
 }
 
 /* ----------------------------- Trades ---------------------------------- */
-function Trades({G, commit, tShow}){
+function Trades({G, commit, tShow, tradeFocus, setTradeFocus}){
   const me = G.teams[G.userTeamId];
   const [otherId, setOtherId] = useState(G.teams.find(t=>t.id!==me.id).id);
   const [give, setGive] = useState([]);      // player ids
   const [get, setGet] = useState([]);
   const [givePk, setGivePk] = useState([]);  // pick ids
   const [getPk, setGetPk] = useState([]);
+  const [modal, setModal] = useState(null);  // player whose stats we're viewing
   const other = G.teams[otherId];
   const reset = ()=>{ setGive([]); setGet([]); setGivePk([]); setGetPk([]); };
+
+  // Arrive here from the Players tab's "Trade" button: pre-select that player's
+  // club and drop him straight into the "acquire" list — no re-searching.
+  useEffect(()=>{
+    if(tradeFocus==null) return;
+    const p = G.players[tradeFocus];
+    if(p && p.teamId!=null){
+      const orgId = isAAAId(p.teamId) ? parentIdOf(p.teamId) : p.teamId;
+      if(orgId!==me.id){ setOtherId(orgId); setGive([]); setGivePk([]); setGetPk([]); setGet([p.id]); }
+    }
+    if(setTradeFocus) setTradeFocus(null);
+  }, [tradeFocus]);
 
   // players: MLB roster + AAA affiliate, AAA tagged
   const orgPlayers = mlbId => rosterOf(G,mlbId).concat(rosterOf(G,aaaIdOf(mlbId))).sort((a,b)=>b.ovr-a.ovr);
@@ -2337,17 +2353,23 @@ function Trades({G, commit, tShow}){
     }
   };
 
+  // a compact one-line stat summary so you can judge a player without leaving the trade
+  const statLine = p => p.isP
+    ? (p.stats.OUT ? `${f1(ip(p.stats))} IP · ${f2(era(p.stats))} ERA · ${p.stats.W||0}-${p.stats.L||0} · ${p.stats.SO||0}K` : "no stats yet")
+    : (p.stats.AB ? `${f3(avg(p.stats))}/${f3(obp(p.stats))}/${f3(slg(p.stats))} · ${p.stats.HR||0} HR · ${p.stats.RBI||0} RBI` : "no stats yet");
   const playerBox = (title, ros, sel, set) => (
     <Card>
       <div className="font-bold mb-2 text-sm">{title}</div>
       <div className="max-h-72 overflow-y-auto space-y-0.5">
         {ros.map(p=>(
-          <label key={p.id} className={"flex items-center gap-2 px-2 py-1 rounded cursor-pointer text-sm "+(sel.includes(p.id)?"bg-emerald-900/40":"hover:bg-[#13203a]")}>
-            <input type="checkbox" checked={sel.includes(p.id)} onChange={()=>toggle(sel,set,p.id)} />
+          <div key={p.id} className={"flex items-center gap-2 px-2 py-1 rounded text-sm "+(sel.includes(p.id)?"bg-emerald-900/40":"hover:bg-[#13203a]")}>
+            <input type="checkbox" className="shrink-0" checked={sel.includes(p.id)} onChange={()=>toggle(sel,set,p.id)} />
             <OvrPot p={p}/>
-            <span className="flex-1">{p.pos} {p.name} {isAAAId(p.teamId)&&<span className="text-amber-400 text-[10px] font-bold">AAA</span>}</span>
-            <span className="text-slate-500 text-xs">{money(p.salary)}</span>
-          </label>
+            <button onClick={()=>setModal(p)} className="flex-1 text-left min-w-0">
+              <div className="truncate">{p.pos} {p.name} {isAAAId(p.teamId)&&<span className="text-amber-400 text-[10px] font-bold">AAA</span>} <span className="text-slate-500">ⓘ</span></div>
+              <div className="text-[11px] text-slate-500 truncate">age {p.age} · {money(p.salary)} · val {playerValue(p).toFixed(0)} · {statLine(p)}</div>
+            </button>
+          </div>
         ))}
       </div>
     </Card>
@@ -2390,6 +2412,7 @@ function Trades({G, commit, tShow}){
         {pickBox(`${other.nick} picks to acquire`, otPicks, getPk, setGetPk)}
       </div>
       <button onClick={propose} disabled={deadlinePassed} className="px-6 py-2 bg-emerald-500 text-slate-900 rounded-lg font-bold disabled:opacity-40 disabled:cursor-not-allowed">{deadlinePassed?"Deadline Passed":"Propose Trade"}</button>
+      {modal && <PlayerModal p={modal} team={teamById(G, modal.teamId)} onClose={()=>setModal(null)} />}
     </div>
   );
 }
@@ -3382,7 +3405,7 @@ function Awards({G}){
 
 /* ----------------------------- All Players browser --------------------- */
 // view toggle for Players tab: "ratings" shows attributes, "stats" shows season stats
-function PlayersBrowser({G, commit, tShow, setTab}){
+function PlayersBrowser({G, commit, tShow, setTab, setTradeFocus}){
   const [q,setQ]=useState(""); const [teamF,setTeamF]=useState("ALL"); const [levelF,setLevelF]=useState("ALL");
   const [posF,setPosF]=useState("ALL"); const [ageMin,setAgeMin]=useState(""); const [ageMax,setAgeMax]=useState("");
   const [sortK,setSortK]=useState("ovr"); const [view,setView]=useState("ratings");
@@ -3546,7 +3569,7 @@ function PlayersBrowser({G, commit, tShow, setTab}){
                 {other ? `Owned by ${other.name}. Jump to the Trades tab with them pre-selected.` : `This is your player. Go to Trades to offer him out.`}
               </div>
               <div className="flex gap-2">
-                <button onClick={()=>{ if(setTab) setTab("trades"); setTradeTarget(null); }} className="flex-1 py-2 bg-emerald-500 text-slate-900 rounded-lg font-bold">Open Trades →</button>
+                <button onClick={()=>{ if(setTradeFocus) setTradeFocus(tradeTarget.id); if(setTab) setTab("trades"); setTradeTarget(null); }} className="flex-1 py-2 bg-emerald-500 text-slate-900 rounded-lg font-bold">Open Trades →</button>
                 <button onClick={()=>setTradeTarget(null)} className="px-4 py-2 bg-[#16213a] rounded-lg">Cancel</button>
               </div>
             </div>
