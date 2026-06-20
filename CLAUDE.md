@@ -111,10 +111,12 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
     formula in `startNewSeason` builds on the reduced figure. Each offseason a rostered contract
     `shift()`s a year and expires to FA when empty; **free agents are skipped** (their contract is an
     ask, not a deal in progress).
-- **Postseason:** 6 seeds/league, Wild Card Bo3 → Division Bo5 → LCS Bo7 → World Series Bo7. Played
-  **game by game** — each series is a `mkSeries` object (`hw/lw/games[]`); `playoffSeriesGame` plays one
-  game (2-2-1 home pattern), `activeSeriesList` is the round's live series, `buildNextRound` builds the
-  next round once they're all decided. The `Playoffs` UI offers **Sim Next Game** (one game per active
+- **Postseason:** 5 seeds/league (3 division winners + 2 wild cards). Wild Card is a **single play-in
+  game** (`SERIES_LEN.wc=1`) between seeds 4 & 5 (higher hosts); the winner becomes the 4th team. Then
+  Division Bo5 (**#1 vs play-in winner, #2 vs #3**) → LCS Bo7 → World Series Bo7. Played **game by game** —
+  each series is a `mkSeries` object (`hw/lw/games[]`); `playoffSeriesGame` plays one game (2-2-1 home
+  pattern), `activeSeriesList` is the round's live series, `buildNextRound` builds the next round once
+  they're all decided. The `Playoffs` UI offers **Sim Next Game** (one game per active
   series, with line scores) / **Sim Whole Round** / **Advance**, then crowns the champion → offseason.
 - **Economy:** **revenue/budget evolves** at season rollover (`startNewSeason`) — `t.budget` shifts with
   win% (`(wp-.5)*0.45`) plus playoff/championship bonuses, then regresses 6%/yr toward a ~160 market mean

@@ -768,8 +768,8 @@ function playoffSeeds(teams, league){
   Object.values(byDiv).forEach(arr=>{arr.sort((a,b)=>pct(b)-pct(a)); winners.push(arr[0]);});
   winners.sort((a,b)=>pct(b)-pct(a));
   const rest = lt.filter(t=>!winners.includes(t)).sort((a,b)=>pct(b)-pct(a));
-  const wc = rest.slice(0,3);
-  return [...winners, ...wc]; // 6 seeds: 0,1,2 div winners; 3,4,5 wildcards
+  const wc = rest.slice(0,2);
+  return [...winners, ...wc]; // 5 seeds: 0,1,2 div winners; 3,4 wild cards (play-in)
 }
 
 /* ----------------------------- derived stat display -------------------- */
@@ -923,7 +923,7 @@ function migrate(G){
         if(typeof s.hw!=='number') s.hw = (s.done&&s.winner===s.hi)?need:0;
         if(typeof s.lw!=='number') s.lw = (s.done&&s.winner===s.lo)?need:0;
       };
-      ["Empire","Pioneer"].forEach(lg=>{ const b=po[lg]; if(b){ (b.wc||[]).forEach(s=>norm(s,2)); (b.ds||[]).forEach(s=>norm(s,3)); norm(b.cs,4); } });
+      ["Empire","Pioneer"].forEach(lg=>{ const b=po[lg]; if(b){ (b.wc||[]).forEach(s=>norm(s,1)); (b.ds||[]).forEach(s=>norm(s,3)); norm(b.cs,4); } });
       norm(po.ws,4);
     }
     G.version = SAVE_VERSION;
@@ -1972,7 +1972,7 @@ function Standings({G}){
     Object.values(byD).forEach(arr=>{ arr.sort((a,b)=>pct(b)-pct(a)); winners.add(arr[0].id); });
     return lt.filter(t=>!winners.has(t.id)).sort((a,b)=>pct(b)-pct(a));
   };
-  const WILD = 3;   // wild-card spots per league
+  const WILD = 2;   // wild-card spots per league (the two play-in teams)
   return (
     <div className="space-y-5">
       <div className="grid md:grid-cols-2 gap-4">
@@ -2008,7 +2008,7 @@ function Standings({G}){
           return (
             <Card key={league}>
               <h3 className="font-bold mb-1">Wild Card — <span className="text-sky-300">{league} League</span></h3>
-              <p className="text-[11px] text-slate-500 mb-2">Top {WILD} non-division-leaders make the playoffs. GB is games behind the final wild-card spot.</p>
+              <p className="text-[11px] text-slate-500 mb-2">Top {WILD} non-division-leaders grab the wild cards and meet in a 1-game play-in. GB is games behind the final wild-card spot.</p>
               <table className="w-full text-sm tnum">
                 <thead><tr className="text-slate-400 text-xs"><th className="text-left">Team</th><th>W</th><th>L</th><th>PCT</th><th>GB</th></tr></thead>
                 <tbody>
@@ -2670,7 +2670,7 @@ function FreeAgency({G, commit, tShow}){
 }
 
 /* ----------------------------- Playoffs -------------------------------- */
-const SERIES_LEN = { wc:3, ds:5, cs:7, ws:7 };
+const SERIES_LEN = { wc:1, ds:5, cs:7, ws:7 };   // wild card is a single play-in game
 function mkSeries(hi, lo){ return { hi, lo, hw:0, lw:0, games:[], done:false, winner:null }; }
 
 /* ----------------------------- awards ---------------------------------- */
@@ -2740,8 +2740,9 @@ function enterPlayoffs(G){
   G.phase="playoffs";
   const mk = league => {
     const seeds = playoffSeeds(G.teams, league).map(t=>t.id);
-    // round 1: wildcard (best-of-3): seed2v5, seed3v4 ; 0,1 bye
-    return { seeds, wc:[ mkSeries(seeds[2],seeds[5]), mkSeries(seeds[3],seeds[4]) ], ds:null, cs:null };
+    // wild-card play-in (single game): the two wild cards (seeds 4 & 5) play once,
+    // higher seed hosts; winner becomes the 4th team. Seeds 1-3 (div winners) wait.
+    return { seeds, wc:[ mkSeries(seeds[3], seeds[4]) ], ds:null, cs:null };
   };
   G.playoffs = { Empire: mk("Empire"), Pioneer: mk("Pioneer"), round:"wc", wsWinner:null, ws:null };
 }
@@ -2781,7 +2782,8 @@ function buildNextRound(G){
   const po=G.playoffs;
   if(po.round==="wc"){
     ["Empire","Pioneer"].forEach(lg=>{ const b=po[lg];
-      b.ds=[ mkSeries(b.seeds[0], b.wc[1].winner), mkSeries(b.seeds[1], b.wc[0].winner) ];
+      // #1 seed draws the wild-card play-in winner; #2 and #3 meet in the other series
+      b.ds=[ mkSeries(b.seeds[0], b.wc[0].winner), mkSeries(b.seeds[1], b.seeds[2]) ];
     });
     po.round="ds";
   } else if(po.round==="ds"){
@@ -2874,8 +2876,8 @@ function Playoffs({G, commit, tShow}){
             <Card key={lg}>
               <div className="font-bold text-emerald-300 mb-2">{lg} League</div>
               <div className="space-y-1">
-                <div className="text-xs text-slate-500">Wild Card (Bo3)</div>
-                {b.wc.map((m,i)=><SeriesView key={i} title={"WC"+(i+1)} s={m} len={3}/>)}
+                <div className="text-xs text-slate-500">Wild Card (1-game play-in)</div>
+                {b.wc.map((m,i)=><SeriesView key={i} title="WC" s={m} len={1}/>)}
                 {b.ds && <><div className="text-xs text-slate-500 mt-2">Division Series (Bo5)</div>
                   {b.ds.map((m,i)=><SeriesView key={i} title={"DS"+(i+1)} s={m} len={5}/>)}</>}
                 {b.cs && <><div className="text-xs text-slate-500 mt-2">League Championship (Bo7)</div>
