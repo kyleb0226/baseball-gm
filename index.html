@@ -905,6 +905,9 @@ function migrate(G){
           // an MLB stint (AAA labels end " AAA") with that year's champion = a ring
           if((e.teams||[]).some(tl=>!/ AAA$/.test(tl) && tl===champ)) got.add(e.season);
         });
+        // the latest title may be crowned but not yet archived in history (offseason not
+        // processed) — credit the current champion's current MLB roster for that season.
+        if(G.champion && p.teamId===G.champion.id) got.add(G.champion.season);
         if(got.size) p.rings=[...got].sort((a,b)=>a-b);
       });
       const lr=G.leagueRecords=G.leagueRecords||{};
@@ -2609,12 +2612,20 @@ function executeOffer(G, o){
 }
 
 /* ----------------------------- Free Agency ----------------------------- */
+const FA_SORTS = {
+  ovr: (a,b)=>b.ovr-a.ovr,
+  pot: (a,b)=>b.pot-a.pot,
+  age: (a,b)=>a.age-b.age || b.ovr-a.ovr,
+  ask: (a,b)=>salaryFor(b)-salaryFor(a),
+  val: (a,b)=>playerValue(b)-playerValue(a),
+};
 function FreeAgency({G, commit, tShow}){
   const me=G.teams[G.userTeamId];
   const [pos,setPos]=useState("ALL");
+  const [sort,setSort]=useState("ovr");
   const fas = G.freeAgents.map(id=>G.players[id]).filter(Boolean)
     .filter(p=>pos==="ALL" || (pos==="P"?p.isP:(!p.isP && p.pos===pos)))
-    .sort((a,b)=>b.ovr-a.ovr);
+    .sort(FA_SORTS[sort]||FA_SORTS.ovr);
   const space = me.budget - payroll(G,me.id);
   const [negotiate, setNegotiate] = useState(null);   // FA being signed via ContractModal
   const doSign=(p, aav, years, incentives)=>{
@@ -2670,10 +2681,20 @@ function FreeAgency({G, commit, tShow}){
           </table>
         </div>
       </Card>}
-      {G.freeAgents.length>0 && <Card>
+      {G.freeAgents.length>0 && (()=>{
+        const arrow = k => sort===k ? " ▾" : "";
+        const SortTh = ({k, label, cls=""}) => (
+          <th className={cls}><button onClick={()=>setSort(k)} className={"hover:text-slate-200 "+(sort===k?"text-emerald-400 font-semibold":"")}>{label}{arrow(k)}</button></th>
+        );
+        return <Card>
+        <div className="text-xs text-slate-500 mb-1">{fas.length} free agent{fas.length!==1?"s":""} · tap a column to sort</div>
         <div className="overflow-x-auto max-h-[70vh] overflow-y-auto">
           <table className="w-full text-sm tnum">
-            <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Pos</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th><th className="text-right">Ask</th><th></th></tr></thead>
+            <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]">
+              <th className="text-left">Pos</th><th className="text-left">Name</th>
+              <SortTh k="age" label="Age"/><SortTh k="ovr" label="OVR"/><SortTh k="pot" label="POT"/>
+              <SortTh k="val" label="Val"/><SortTh k="ask" label="Ask" cls="text-right"/><th></th>
+            </tr></thead>
             <tbody>
               {fas.map(p=>(
                 <tr key={p.id} className="border-b border-[#15203a]">
@@ -2681,7 +2702,8 @@ function FreeAgency({G, commit, tShow}){
                   <td className="text-left">{p.name}</td>
                   <td className="text-center">{p.age}</td>
                   <td className="text-center"><OvrPill v={p.ovr}/></td>
-                  <td className="text-center text-slate-400">{p.pot}</td>
+                  <td className="text-center text-amber-300/90 font-semibold">{p.pot}</td>
+                  <td className="text-center text-slate-400">{playerValue(p).toFixed(0)}</td>
                   <td className="text-right text-slate-400">~{money(salaryFor(p))}/yr</td>
                   <td className="text-right pl-2 whitespace-nowrap">
                     <button onClick={()=>setNegotiate(p)} className="px-2 py-0.5 bg-emerald-600 rounded text-xs hover:bg-emerald-500">Negotiate</button>
@@ -2691,7 +2713,8 @@ function FreeAgency({G, commit, tShow}){
             </tbody>
           </table>
         </div>
-      </Card>}
+      </Card>;
+      })()}
       {negotiate && <ContractModal G={G} p={negotiate} mode="sign" capSpace={space} factor={1} refuses={false}
         onClose={()=>setNegotiate(null)} onSign={(a,y,inc)=>doSign(negotiate,a,y,inc)} tShow={tShow} />}
     </div>
