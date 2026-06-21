@@ -75,6 +75,16 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   (bench bat dropped on a fielder takes his batting-order slot). It flags missing/duplicates;
   `teamDefRating` applies an out-of-position penalty and ignores the DH. The Hub shows an end-of-season
   reminder linking to Finances → Contracts when players are in a contract year (`years<=1`).
+- **AI draft & team situations:** `teamSituation(G,teamId)` classifies a club's **mode** (Win-now /
+  Contender / Retool / Rebuild, from top-13 MLB OVR strength + last-season win%) and its **positional
+  needs** (lineup slots / SP / RP under an OVR threshold). AI picks use `aiDraftSelect`/`aiDraftScore`:
+  among the top ~15 prospects by `prospectGrade` (so a blue-chipper never slides far), it favors a club's
+  need positions and weights by mode (win-now → ready bats/arms by OVR; rebuilders → ceiling/POT).
+  `aiDraftPickTrades` (run in `buildDraft` before ordering) does a few value-fair AI-to-AI pick swaps —
+  win-now/contender clubs send packages of later picks to **trade up** for an early pick a rebuilder would
+  rather flip for volume (logged to the news wire). The **Draft** tab shows the on-the-clock club's
+  mode + needs, a mode tag on each pick in the order sidebar, and a collapsible **Team Situations** panel
+  (all 30 clubs, mode + needs + strength). `MODE_STYLE` maps modes to colors.
 - **Draft picks:** `G.picks` is a flat list of owned, **tradeable** picks (5 per team). `pickValue`
   scales with the original team's projected finish (worse team → earlier slot → more value). The draft
   builds its selection order from owned picks (`G.draftPicks`, by round then orig-team reverse

@@ -3469,6 +3469,81 @@ function payIncentives(G){
   });
 }
 
+// Assess a club's competitive situation: how strong it is, whether it's in win-now mode
+// or rebuilding, and which positions it's thin at. Drives AI draft picks + pick trades and
+// is shown to the user on the Draft tab.
+function teamSituation(G, teamId){
+  const t=G.teams[teamId];
+  const mlb=rosterOf(G,teamId);
+  const org=mlb.concat(rosterOf(G,aaaIdOf(teamId)));
+  const top=mlb.slice().sort((a,b)=>b.ovr-a.ovr).slice(0,13);
+  const strength=top.length? top.reduce((s,p)=>s+p.ovr,0)/top.length : 50;
+  const age=top.length? top.reduce((s,p)=>s+p.age,0)/top.length : 27;
+  const hist=t.history||[]; const last=hist[hist.length-1];
+  const wp = last ? last.w/Math.max(1,last.w+last.l) : ((t.w+t.l)? t.w/(t.w+t.l) : 0.5);
+  let mode;
+  if(strength>=72 && wp>=0.5) mode="Win-now";
+  else if(strength>=70) mode="Contender";
+  else if((strength<66 && age<=27) || wp<0.43) mode="Rebuild";
+  else mode="Retool";
+  // positional needs: best org OVR at each lineup slot, plus rotation/bullpen depth
+  const needs=[];
+  ["C","1B","2B","3B","SS","LF","CF","RF"].forEach(pos=>{
+    const best=org.filter(p=>!p.isP&&p.pos===pos).reduce((a,c)=>(!a||c.ovr>a.ovr)?c:a,null);
+    const ovr=best?best.ovr:0; if(ovr<68) needs.push({pos, ovr, gap:68-ovr});
+  });
+  const sp=org.filter(p=>p.isP&&p.role==="SP").sort((a,b)=>b.ovr-a.ovr);
+  const rp=org.filter(p=>p.isP&&p.role==="RP").sort((a,b)=>b.ovr-a.ovr);
+  if(!sp[2]||sp[2].ovr<70) needs.push({pos:"SP", ovr:sp[2]?sp[2].ovr:0, gap:70-(sp[2]?sp[2].ovr:0)});
+  if(!rp[2]||rp[2].ovr<68) needs.push({pos:"RP", ovr:rp[2]?rp[2].ovr:0, gap:68-(rp[2]?rp[2].ovr:0)});
+  needs.sort((a,b)=>b.gap-a.gap);
+  const needPos=needs.map(n=>n.pos);
+  return { mode, strength:Math.round(strength), wp, age:Math.round(age), needs:needPos, topNeeds:needs.slice(0,3) };
+}
+// Score a prospect for a specific club: base talent, weighted by positional need and the
+// club's mode (win-now favors ready bats/arms; rebuilders chase ceiling).
+function aiDraftScore(G, p, sit){
+  let s=prospectGrade(p);
+  const posKey=p.isP?p.role:p.pos;
+  if(sit.needs.includes(posKey)) s+=12; else if(!p.isP && sit.needs.includes(p.pos)) s+=8;
+  if(sit.mode==="Win-now"||sit.mode==="Contender") s+=(p.ovr-55)*0.7;   // value readiness
+  else s+=Math.max(0,p.pot-70)*0.6;                                     // value ceiling
+  return s;
+}
+// AI pick for a club: among the top prospects by raw grade (so a blue-chipper never slides
+// far), choose the best fit for this club's needs/mode.
+function aiDraftSelect(G, ownerId){
+  const avail=G.draftClass.map(id=>G.players[id]).filter(Boolean);
+  if(!avail.length) return null;
+  const sit=teamSituation(G, ownerId);
+  const pool=avail.slice().sort((a,b)=>prospectGrade(b)-prospectGrade(a)).slice(0,15);
+  let best=null,bs=-Infinity;
+  pool.forEach(p=>{ const v=aiDraftScore(G,p,sit); if(v>bs){bs=v;best=p;} });
+  return best?best.id:avail[0].id;
+}
+// Pre-draft AI-to-AI pick trades: win-now/contender clubs move UP (sending a package of
+// later picks) for an early pick a rebuilder would rather flip for volume. Value-fair, bounded.
+function aiDraftPickTrades(G){
+  const aiTeams=G.teams.filter(t=>t.id!==G.userTeamId);
+  const sit={}; aiTeams.forEach(t=>sit[t.id]=teamSituation(G,t.id));
+  let trades=0;
+  for(let n=0;n<24 && trades<6;n++){
+    const C=pick(aiTeams);
+    if(!(sit[C.id].mode==="Win-now"||sit[C.id].mode==="Contender")) continue;
+    if(!sit[C.id].needs.length) continue;                          // no glaring need → no reason to move up
+    const early=(G.picks||[]).filter(pk=>pk.round<=2 && pk.owner!==C.id && sit[pk.owner] && sit[pk.owner].mode==="Rebuild");
+    if(!early.length) continue;
+    const target=pick(early); const tv=pickValue(G,target); const R=G.teams[target.owner];
+    const mine=(G.picks||[]).filter(pk=>pk.owner===C.id && pk.id!==target.id).sort((a,b)=>pickValue(G,b)-pickValue(G,a));
+    let give=[],acc=0;
+    for(const pk of mine){ if(acc>=tv || give.length>=2) break; give.push(pk); acc+=pickValue(G,pk); }
+    if(give.length<1 || acc < tv*0.9) continue;                   // couldn't put together a fair offer
+    target.owner=C.id; give.forEach(pk=>pk.owner=R.id);
+    logNews(G,"trade",`${C.abbr} (${sit[C.id].mode.toLowerCase()}) traded up to a Rd ${target.round} pick, sending ${R.abbr} ${give.length} later pick${give.length>1?"s":""}`, C.id);
+    trades++;
+  }
+}
+
 function buildDraft(G){
   // generate draft class: 5 rounds * 30 picks = 150 young prospects
   const cls=[];
@@ -3480,6 +3555,7 @@ function buildDraft(G){
     p.teamId=null; setContract(p, 0.7, 4, []);
     cls.push(p.id); G.players[p.id]=p;
   }
+  aiDraftPickTrades(G);   // AI clubs swap picks (move up / accumulate) based on their situations
   // selection order from owned picks: by round, then the ORIGINAL team's
   // reverse-standings slot (so traded picks keep their original draft value)
   const worstFirst=[...G.teams].sort((a,b)=>pct(a)-pct(b)).map(t=>t.id);
@@ -3489,7 +3565,10 @@ function buildDraft(G){
   G.draftClass=cls.sort((a,b)=>G.players[b].pot-G.players[a].pot);
 }
 
+const MODE_STYLE = { "Win-now":"text-emerald-300 bg-emerald-900/30", "Contender":"text-sky-300 bg-sky-900/30", "Retool":"text-amber-300 bg-amber-900/30", "Rebuild":"text-rose-300 bg-rose-900/30" };
 function Draft({G, commit, tShow, setTab}){
+  const [showSits,setShowSits]=useState(false);
+  const situations = useMemo(()=>{ const m={}; G.teams.forEach(t=>{ m[t.id]=teamSituation(G,t.id); }); return m; }, [G.season]);
   const picksArr = G.draftPicks||[];
   if(!picksArr.length)
     return <Card>The draft isn't ready yet — process the offseason from the Hub first.</Card>;
@@ -3521,11 +3600,11 @@ function Draft({G, commit, tShow, setTab}){
     G.draftClass=G.draftClass.filter(x=>x!==pid);
     G.draftPick++; commit(G);
   };
-  const aiPick=()=>{ const best=G.draftClass[0]; if(best!=null) draftPlayer(best); };
+  const aiPick=()=>{ const best=aiDraftSelect(G, onClock); if(best!=null) draftPlayer(best); };
   const simToMe=()=>{
     const g=G; let guard=0;
     while(g.draftPick<totalPicks && picksArr[g.draftPick].owner!==g.userTeamId && guard<totalPicks){
-      const best=g.draftClass[0]; if(best==null) break;
+      const best=aiDraftSelect(g, picksArr[g.draftPick].owner); if(best==null) break;
       assign(g,best,picksArr[g.draftPick].owner);
       g.draftClass=g.draftClass.filter(x=>x!==best); g.draftPick++; guard++;
     }
@@ -3534,7 +3613,7 @@ function Draft({G, commit, tShow, setTab}){
   const simAll=()=>{
     const g=G; let guard=0;
     while(g.draftPick<totalPicks && guard<totalPicks+5){
-      const best=g.draftClass[0]; if(best==null) break;
+      const best=aiDraftSelect(g, picksArr[g.draftPick].owner); if(best==null) break;
       assign(g,best,picksArr[g.draftPick].owner);
       g.draftClass=g.draftClass.filter(x=>x!==best); g.draftPick++; guard++;
     }
@@ -3553,6 +3632,11 @@ function Draft({G, commit, tShow, setTab}){
           <div className={"px-2 py-0.5 rounded text-sm font-semibold "+(isUser?"bg-emerald-500 text-slate-900":"bg-[#16213a]")}>
             On the clock: {G.teams[onClock].name}{isUser?" (YOU)":""}{traded?` (via ${G.teams[curPick.orig].abbr})`:""}
           </div>
+          {(()=>{ const s=situations[onClock]; if(!s) return null;
+            return <div className="text-xs flex items-center gap-1.5">
+              <span className={"px-1.5 py-0.5 rounded font-semibold "+(MODE_STYLE[s.mode]||"")}>{s.mode}</span>
+              <span className="text-slate-400">{s.needs.length?`needs ${s.needs.slice(0,3).join("/")}`:"well-rounded"}</span>
+            </div>; })()}
           <div className="ml-auto flex gap-2">
             {setTab && <button onClick={()=>setTab("trades")} className="px-3 py-1 bg-amber-700 hover:bg-amber-600 rounded text-sm font-semibold">⇄ Trade Picks</button>}
             {!isUser && <button onClick={aiPick} className="px-3 py-1 bg-[#16213a] rounded text-sm">Next Pick</button>}
@@ -3603,6 +3687,7 @@ function Draft({G, commit, tShow, setTab}){
                     {cur&&<span className="text-emerald-400">▸ </span>}{t?t.abbr:"?"} {t?t.nick:""}
                     {pk.owner!==pk.orig && <span className="text-slate-500 text-[10px]"> (via {G.teams[pk.orig]?G.teams[pk.orig].abbr:"?"})</span>}
                   </span>
+                  {situations[pk.owner] && !done && <span className={"text-[9px] font-bold px-1 rounded shrink-0 "+(MODE_STYLE[situations[pk.owner].mode]||"")} title={situations[pk.owner].needs.length?("needs "+situations[pk.owner].needs.slice(0,3).join("/")):"well-rounded"}>{situations[pk.owner].mode==="Win-now"?"WIN":situations[pk.owner].mode==="Contender"?"CTND":situations[pk.owner].mode==="Rebuild"?"RBLD":"RTL"}</span>}
                   {mine&&!done&&<span className="text-emerald-400 text-[10px] font-bold shrink-0">YOU</span>}
                 </div>
               );
@@ -3610,6 +3695,25 @@ function Draft({G, commit, tShow, setTab}){
           </div>
         </Card>
       </div>
+
+      <Card>
+        <button onClick={()=>setShowSits(s=>!s)} className="w-full flex items-center justify-between text-left">
+          <span className="font-semibold text-sm">📋 Team Situations <span className="text-slate-500 font-normal">— win-now vs rebuild, and needs</span></span>
+          <span className="text-slate-400 text-xs">{showSits?"hide ▲":"show ▼"}</span>
+        </button>
+        {showSits && <div className="grid sm:grid-cols-2 gap-1 mt-2">
+          {G.teams.map(t=>{ const s=situations[t.id]; if(!s) return null;
+            return (
+              <div key={t.id} className={"flex items-center gap-2 px-2 py-1 rounded text-sm "+(t.id===G.userTeamId?"bg-emerald-900/25":"bg-[#13203a]")}>
+                <span className="font-semibold w-10 shrink-0">{t.abbr}</span>
+                <span className={"text-[10px] font-bold px-1.5 py-0.5 rounded shrink-0 "+(MODE_STYLE[s.mode]||"")}>{s.mode}</span>
+                <span className="text-slate-400 text-xs flex-1 truncate">{s.needs.length?`needs ${s.needs.slice(0,3).join("/")}`:"deep roster"}</span>
+                <span className="text-slate-600 text-[10px] shrink-0">OVR {s.strength}</span>
+              </div>
+            );
+          })}
+        </div>}
+      </Card>
     </div>
   );
 }
