@@ -3105,12 +3105,14 @@ function advanceBACup(G){
   c.matches=next; c.roundIdx++;
 }
 
+const BACUP_SHORT = {"Round of 64":"R64","Round of 32":"R32","Round of 16":"R16","Quarterfinals":"QF","Semifinals":"SF","Final":"Final"};
 function BACup({G, commit, tShow}){
   const c=G.baCup;
   const tn=id=>id==null?null:teamById(G,id);
   const userTeams=[G.userTeamId, aaaIdOf(G.userTeamId)];
   const isMine=id=>userTeams.includes(id);
   const champs=(G.baCupChampions||[]).slice().reverse();
+  const [roundView,setRoundView]=useState(null);
 
   // The Cup runs automatically through the season; auto-start this year's bracket if missing.
   useEffect(()=>{
@@ -3143,6 +3145,31 @@ function BACup({G, commit, tShow}){
     </Card>
   ) : null;
 
+  // every round (completed + the live one) so all fixtures are browsable
+  const roundName=c?(BACUP_ROUND_NAMES[c.roundIdx]||`Round ${c.roundIdx+1}`):"";
+  const liveUnplayed=c&&c.champion==null&&c.matches?c.matches.some(m=>!m.done):false;
+  const allRounds = c ? [
+    ...(c.past||[]),
+    ...(c.champion==null && c.matches && c.matches.length ? [{name:roundName, matches:c.matches, live:true}] : []),
+  ] : [];
+  const viewIdx = (roundView!=null && roundView<allRounds.length) ? roundView : allRounds.length-1;
+  const FixturesCard = allRounds.length>0 ? (
+    <Card>
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <h3 className="font-bold text-sm">Fixtures <span className="text-slate-500 font-normal">— all rounds</span></h3>
+        <div className="flex gap-1 flex-wrap">
+          {allRounds.map((rd,i)=>(
+            <button key={i} onClick={()=>setRoundView(i)} className={"px-2 py-0.5 rounded text-xs "+(i===viewIdx?"bg-emerald-500 text-slate-900 font-semibold":"bg-[#16213a] text-slate-300 hover:bg-[#1c2c4a]")}>{BACUP_SHORT[rd.name]||rd.name}</button>
+          ))}
+        </div>
+      </div>
+      <div className="text-[11px] text-slate-500 mb-1">{allRounds[viewIdx].name} · {allRounds[viewIdx].matches.length} {allRounds[viewIdx].matches.length===1?"match":"matches"}{allRounds[viewIdx].live && liveUnplayed?" · upcoming":""}</div>
+      <div className="space-y-1 max-h-[62vh] overflow-y-auto">
+        {allRounds[viewIdx].matches.map((m,i)=><MatchRow key={i} m={m}/>)}
+      </div>
+    </Card>
+  ) : null;
+
   // no live cup (offseason/playoffs) or this season's Cup already crowned
   if(!c || c.champion!=null){
     const t = (c&&c.champion!=null) ? tn(c.champion) : null;
@@ -3159,17 +3186,15 @@ function BACup({G, commit, tShow}){
           </div>}
           {!t && <div className="text-sm text-slate-500">The next BA Cup kicks off when the new season begins.</div>}
         </Card>
+        {FixturesCard}
         {PastWinners}
       </div>
     );
   }
 
   // live cup
-  const roundName=BACUP_ROUND_NAMES[c.roundIdx]||`Round ${c.roundIdx+1}`;
   const nextDay=c.roundDays[c.roundIdx];
-  const unplayed=c.matches.some(m=>!m.done);
-  const pending=G.day<nextDay && unplayed;
-  const fireMsg=unplayed ? `${roundName} fires ${G.day<nextDay?`around Day ${nextDay+1}`:"on your next sim day"}.` : `${roundName} is complete.`;
+  const fireMsg=liveUnplayed ? `${roundName} fires ${G.day<nextDay?`around Day ${nextDay+1}`:"on your next sim day"}.` : `${roundName} is complete.`;
   const alive=new Set(c.matches.flatMap(m=>[m.a,m.b]).filter(x=>x!=null));
   const userAlive=userTeams.some(id=>alive.has(id));
   const myMatch=c.matches.find(m=>isMine(m.a)||isMine(m.b));
@@ -3186,24 +3211,7 @@ function BACup({G, commit, tShow}){
             : <span className="text-slate-400">❌ Knocked out{koRound?` in the ${koRound}`:""} — the Cup plays on to a champion.</span>}
         </div>
       </Card>
-      <Card>
-        <div className="text-xs text-slate-400 mb-1 font-semibold">{roundName} {pending?<span className="text-slate-600 font-normal">· upcoming</span>:null}</div>
-        <div className="space-y-1 max-h-[55vh] overflow-y-auto">
-          {c.matches.map((m,i)=><MatchRow key={i} m={m}/>)}
-        </div>
-      </Card>
-      {c.past.length>0 && <Card>
-        <div className="text-xs text-slate-400 mb-1 font-semibold">Earlier rounds</div>
-        {c.past.slice().reverse().map((rd,i)=>(
-          <div key={i} className="mb-2">
-            <div className="text-[11px] text-slate-500 mb-0.5">{rd.name}</div>
-            <div className="space-y-0.5 text-xs">
-              {rd.matches.filter(m=>m.b!=null && (isMine(m.a)||isMine(m.b))).map((m,j)=><MatchRow key={j} m={m}/>)}
-              {!rd.matches.some(m=>m.b!=null && (isMine(m.a)||isMine(m.b))) && <div className="text-slate-600 text-[11px] px-2">— {rd.matches.length} matches —</div>}
-            </div>
-          </div>
-        ))}
-      </Card>}
+      {FixturesCard}
       {PastWinners}
     </div>
   );
