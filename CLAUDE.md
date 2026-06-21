@@ -130,6 +130,13 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   free agency, `buildDraft()` (5-round amateur draft), then `startNewSeason()` rolls everything over
   (resets MLB + AAA records/schedules, regenerates next year's `G.picks`). Before resetting records,
   `startNewSeason` pushes the finished season into each `team.history` (`{season,w,l,made,champ}`).
+- **BA Cup:** a standalone single-game knockout (FA-Cup style) open to **all 60 clubs** — every MLB team
+  AND its AAA affiliate. Run from the **BA Cup** tab anytime, independent of the league. `startBACup`
+  shuffles the 60 ids into a 64-bracket (4 random byes), `simBACupRound` plays a round, `advanceBACup`
+  builds the next (6 rounds: R64→R32→R16→QF→SF→Final). Games are scored by a lightweight strength model
+  (`cupGame`/`cupPower`, ace-weighted) so **cup play never touches league stats/records**. State on
+  `G.baCup = {season, roundIdx, matches, past[], champion}`; winners roll into `G.baCupChampions`. NOTE:
+  champion is a team id (0..59) — all "has a champion" checks use `!= null` (team id 0 is falsy).
 - **Rivalries:** `assignRivals` pairs teams up (two pairs per division + the odd team gets a cross-league
   mirror-division rival), stored as `team.rivalId`. Shown on the Hub (season series + next meeting) and
   highlighted in the Schedule. Migrate backfills rivals for old saves.
