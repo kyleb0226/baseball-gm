@@ -566,6 +566,12 @@ function simGame(home, away, players, idx){
                       [away.id]:{out:cur[away.id].p.stats.OUT, er:cur[away.id].p.stats.ER} };
   const usedPen = { [home.id]:[], [away.id]:[] };
   const gOuts = {};   // outs each pitcher has recorded THIS game (for workload balancing)
+  // snapshot season counters at game start so we can diff out each player's single-GAME
+  // line afterward (for single-game records). Hitters in the lineup + both starters now;
+  // relievers are snapshotted when they enter (in bringIn).
+  const gSnap = {};
+  [home.id,away.id].forEach(tid=>{ lineups[tid].forEach(h=>{ gSnap[h.id]={HR:h.stats.HR,H:h.stats.H,RBI:h.stats.RBI}; });
+    const sp=cur[tid].p; gSnap[sp.id]={SO:sp.stats.SO,OUT:sp.stats.OUT}; });
 
   // bring an arm into the game (counts an appearance the first time only this game)
   function bringIn(pitId, p){
@@ -573,7 +579,7 @@ function simGame(home, away, players, idx){
     const c = cur[pitId];
     if(c.p && c.p.id===p.id) return;
     c.p = p; c.gs = false; c.segOuts = 0;
-    if(!usedPen[pitId].includes(p.id)){ usedPen[pitId].push(p.id); p.stats.G++; }
+    if(!usedPen[pitId].includes(p.id)){ usedPen[pitId].push(p.id); p.stats.G++; if(!gSnap[p.id]) gSnap[p.id]={SO:p.stats.SO,OUT:p.stats.OUT}; }
   }
   // workload key: spread by what an arm has thrown THIS game, then THIS season
   const loadKey = p => (gOuts[p.id]||0)*100000 + (p.stats.OUT||0);
@@ -696,6 +702,14 @@ function simGame(home, away, players, idx){
     const lbl=teamLabel(t);
     if(arms[t.id].starter) tagTeam(arms[t.id].starter,lbl);
     (usedPen[t.id]||[]).forEach(id=>tagTeam(players[id],lbl));
+  });
+  // per-game stat lines (diff vs the start-of-game snapshot) for single-game records
+  out.gameLines = [];
+  [home.id,away.id].forEach(tid=>{
+    lineups[tid].forEach(h=>{ const sn=gSnap[h.id]; if(!sn||sn.HR==null) return;
+      out.gameLines.push({ name:h.name, team:tid, isP:false, hr:h.stats.HR-sn.HR, h:h.stats.H-sn.H, rbi:h.stats.RBI-sn.RBI }); });
+    [arms[tid].starter.id, ...usedPen[tid]].forEach(pid=>{ const p=players[pid], sn=gSnap[pid]; if(!p||!sn||sn.SO==null) return;
+      out.gameLines.push({ name:p.name, team:tid, isP:true, so:p.stats.SO-sn.SO, out:p.stats.OUT-sn.OUT }); });
   });
   return out;
 }
@@ -922,6 +936,12 @@ function migrate(G){
         if(best && !lr[k]) lr[k]={ value:best.value, holder:best.holder, team:bteam, season:best.season };
       });
       G._honorsBackfilled=true; G._honorsBackfilled2=true;
+    }
+    // Records v2: three tiers (game/season/career). Carry the old flat leagueRecords into
+    // .season, seed .career from current players' running totals; .game fills in going forward.
+    if(!G.records){
+      G.records = { game:{}, season:(G.leagueRecords||{}), career:{} };
+      recordCareerRecords(G);
     }
     Object.values(G.players||{}).forEach(p=>{ if(p.peakOvr==null) p.peakOvr=p.ovr; ensureContract(p); });
     const fixTeam = t=>{
@@ -1190,7 +1210,7 @@ function simDay(G){
   for(const t of G.teams){ const r=idx[t.id]||[]; if(r.filter(p=>!p.isP).length<9 || r.filter(p=>p.isP).length<1){ refillRoster(G,t.id,14,12,[23,33],0); ensureLineup(t,G.players); repaired=true; } }
   for(const t of G.aaaTeams){ const r=idx[t.id]||[]; if(r.filter(p=>!p.isP).length<9 || r.filter(p=>p.isP).length<1){ refillRoster(G,t.id,12,9,[19,26],-6); autoSetLineups(t,G.players); repaired=true; } }
   if(repaired) idx = rosterIndex(G.players);     // rebuild after adding players
-  const playDay = (sched) => {
+  const playDay = (sched, isMLB) => {
     const day = sched[G.day];
     if(!day) return;
     day.forEach(g=>{
@@ -1198,13 +1218,14 @@ function simDay(G){
       const home=teamById(G,g.home), away=teamById(G,g.away);
       const res = simGame(home, away, G.players, idx);
       markGamesPlayed(home, away, G.players, idx);
+      if(isMLB) updateGameRecords(G, res.gameLines, G.season);   // single-game records (MLB only)
       g.played=true; g.hs=res.hs; g.as=res.as;
       if(res.hs>res.as){ home.w++; away.l++; } else { away.w++; home.l++; }
       home.rs+=res.hs; home.ra+=res.as; away.rs+=res.as; away.ra+=res.hs;
     });
   };
-  playDay(G.schedule);                          // MLB
-  if(G.aaaSchedule) playDay(G.aaaSchedule);      // AAA affiliates
+  playDay(G.schedule, true);                     // MLB
+  if(G.aaaSchedule) playDay(G.aaaSchedule, false); // AAA affiliates
   G.day++;
   // trade market: drop offers once they're stale or the deadline passes; before the
   // deadline an AI club occasionally pitches the user a deal.
@@ -2787,29 +2808,58 @@ function recordFranchiseRecords(G){
   });
 }
 
-// All-time, league-wide single-season records (the best mark by ANYONE, ever).
-// Run at season end (in enterPlayoffs, before stats reset), same qualifiers as franchise records.
-function recordLeagueRecords(G){
-  const lr = G.leagueRecords = G.leagueRecords || {};
-  const up = (key,value,holder,team)=>{ if(value==null||value<=0) return; if(!lr[key]||value>lr[key].value) lr[key]={value,holder,team,season:G.season}; };
-  const lo = (key,value,holder,team)=>{ if(value==null) return; if(!lr[key]||value<lr[key].value) lr[key]={value,holder,team,season:G.season}; };
+// All-time, league-wide records in three tiers: single-GAME, single-SEASON, and CAREER
+// bests (best mark by ANYONE, ever). Kept on G.records = {game,season,career}. Each entry
+// is {value, holder, team, season}. Game records are fed live from the sim (see
+// updateGameRecords) so they only fill in going forward; season/career run at season end.
+function ensureRecords(G){ if(!G.records) G.records={ game:{}, season:{}, career:{} }; return G.records; }
+const teamAbbrOf = (G,p)=>{ const t=teamById(G,p.teamId); return t?(t.aaa?t.abbr+" AAA":t.abbr):""; };
+
+function recordSeasonRecords(G){
+  const R=ensureRecords(G).season;
+  const up=(k,v,holder,team)=>{ if(v==null||v<=0) return; if(!R[k]||v>R[k].value) R[k]={value:v,holder,team,season:G.season}; };
+  const lo=(k,v,holder,team)=>{ if(v==null) return; if(!R[k]||v<R[k].value) R[k]={value:v,holder,team,season:G.season}; };
   G.teams.forEach(t=>up("teamWins", t.w, t.name, t.abbr));
-  const teamAbbr = p=>{ const t=teamById(G,p.teamId); return t?t.abbr:""; };
-  const mlb = Object.values(G.players).filter(p=>{ const t=teamById(G,p.teamId); return t && !t.aaa; });
-  const hitters = mlb.filter(p=>!p.isP && p.stats.PA>=300);
-  const pitchers = mlb.filter(p=>p.isP && p.stats.OUT>=120);
-  const bestH=(fn,key)=>{ const b=hitters.reduce((a,c)=>(!a||fn(c)>fn(a))?c:a,null); if(b) up(key,fn(b),b.name,teamAbbr(b)); };
-  bestH(p=>p.stats.HR,"HR"); bestH(p=>p.stats.RBI,"RBI"); bestH(p=>p.stats.H,"H");
-  bestH(p=>p.stats.R,"R"); bestH(p=>p.stats.SB,"SB"); bestH(p=>+avg(p.stats).toFixed(3),"AVG");
-  const bestP=(fn,key)=>{ const b=pitchers.reduce((a,c)=>(!a||fn(c)>fn(a))?c:a,null); if(b) up(key,fn(b),b.name,teamAbbr(b)); };
-  bestP(p=>p.stats.W,"pW"); bestP(p=>p.stats.SO,"pK"); bestP(p=>p.stats.SV,"pSV");
-  const bERA=pitchers.reduce((a,c)=>(!a||era(c.stats)<era(a.stats))?c:a,null); if(bERA) lo("ERA",+era(bERA.stats).toFixed(2),bERA.name,teamAbbr(bERA));
+  const mlb=Object.values(G.players).filter(p=>{ const t=teamById(G,p.teamId); return t && !t.aaa; });
+  const hitters=mlb.filter(p=>!p.isP && p.stats.PA>=300);
+  const pitchers=mlb.filter(p=>p.isP && p.stats.OUT>=120);
+  const bH=(fn,k)=>{ const b=hitters.reduce((a,c)=>(!a||fn(c)>fn(a))?c:a,null); if(b) up(k,fn(b),b.name,teamAbbrOf(G,b)); };
+  bH(p=>p.stats.HR,"HR"); bH(p=>p.stats.RBI,"RBI"); bH(p=>p.stats.H,"H"); bH(p=>p.stats.R,"R"); bH(p=>p.stats.SB,"SB"); bH(p=>+avg(p.stats).toFixed(3),"AVG");
+  const bP=(fn,k)=>{ const b=pitchers.reduce((a,c)=>(!a||fn(c)>fn(a))?c:a,null); if(b) up(k,fn(b),b.name,teamAbbrOf(G,b)); };
+  bP(p=>p.stats.W,"pW"); bP(p=>p.stats.SO,"pK"); bP(p=>p.stats.SV,"pSV");
+  const bERA=pitchers.reduce((a,c)=>(!a||era(c.stats)<era(a.stats))?c:a,null); if(bERA) lo("ERA",+era(bERA.stats).toFixed(2),bERA.name,teamAbbrOf(G,bERA));
+}
+
+// Best CAREER totals by anyone. Running career = career-to-date + the live season (which
+// hasn't been merged yet at season end). Stored as a persistent high-water mark so it
+// survives the player later being pruned from the pool.
+function recordCareerRecords(G){
+  const R=ensureRecords(G).career;
+  const up=(k,v,holder,team)=>{ if(v==null||v<=0) return; if(!R[k]||v>R[k].value) R[k]={value:v,holder,team,season:G.season}; };
+  Object.values(G.players).forEach(p=>{
+    const c=p.career||{}, s=p.stats||{}, tot=k=>(c[k]||0)+(s[k]||0), team=teamAbbrOf(G,p);
+    if(p.isP){ up("cW",tot("W"),p.name,team); up("cSV",tot("SV"),p.name,team); up("cK",tot("SO"),p.name,team); up("cIP",Math.floor(tot("OUT")/3),p.name,team); }
+    else { up("cHR",tot("HR"),p.name,team); up("cH",tot("H"),p.name,team); up("cRBI",tot("RBI"),p.name,team); up("cR",tot("R"),p.name,team); up("cSB",tot("SB"),p.name,team); }
+  });
+}
+
+// Single-GAME bests, fed from simGame's per-game lines. MLB games only, going forward.
+function updateGameRecords(G, lines, season){
+  if(!lines||!lines.length) return;
+  const R=ensureRecords(G).game;
+  const up=(k,v,name,team)=>{ if(v==null||v<=0) return; if(!R[k]||v>R[k].value) R[k]={value:v,holder:name,team,season}; };
+  lines.forEach(l=>{
+    const team=G.teams[l.team]?G.teams[l.team].abbr:"";
+    if(l.isP){ up("gK",l.so,l.name,team); }
+    else { up("gHR",l.hr,l.name,team); up("gH",l.h,l.name,team); up("gRBI",l.rbi,l.name,team); }
+  });
 }
 
 function enterPlayoffs(G){
   computeAwards(G);   // hand out hardware while season stats are still live
-  recordFranchiseRecords(G);   // update the all-time record book before stats reset
-  recordLeagueRecords(G);      // and the league-wide single-season records
+  recordFranchiseRecords(G);   // update each club's all-time record book before stats reset
+  recordSeasonRecords(G);      // league-wide single-season records
+  recordCareerRecords(G);      // league-wide career records (high-water mark)
   payIncentives(G);   // settle stat-based contract bonuses (off-cap)
   G.phase="playoffs";
   const mk = league => {
@@ -2826,6 +2876,7 @@ function seriesGame(G, hiId, loId, hiHome){
   const away = hiHome? G.teams[loId]:G.teams[hiId];
   const r = simGame(home, away, G.players);
   markGamesPlayed(home, away, G.players);
+  updateGameRecords(G, r.gameLines, G.season);   // playoff games count toward single-game records
   const winnerId = r.hs>r.as?home.id:away.id;
   return { winnerId, hs:r.hs, as:r.as, homeId:home.id, awayId:away.id };
 }
@@ -3466,8 +3517,11 @@ function HallOfFame({G}){
   const hof = (G.hof||[]).slice().sort((a,b)=>(b.inducted-a.inducted)||(b.score-a.score));
   const teamName = id => G.teams[id] ? G.teams[id].name : "—";
   const [recTeam,setRecTeam]=useState(G.userTeamId);
+  const [recTier,setRecTier]=useState("season");
   const rec=(G.teams[recTeam]||{}).records||{};
   const RECDEFS=[["teamWins","Most Wins (season)"],["HR","Home Runs"],["RBI","RBI"],["H","Hits"],["R","Runs"],["SB","Stolen Bases"],["AVG","Batting Avg"],["pW","Pitcher Wins"],["pK","Strikeouts"],["pSV","Saves"],["ERA","Lowest ERA"]];
+  const CAREER_DEFS=[["cHR","Home Runs"],["cH","Hits"],["cRBI","RBI"],["cR","Runs"],["cSB","Stolen Bases"],["cW","Pitcher Wins"],["cK","Strikeouts"],["cSV","Saves"],["cIP","Innings Pitched"]];
+  const GAME_DEFS=[["gHR","HR (game)"],["gH","Hits (game)"],["gRBI","RBI (game)"],["gK","Strikeouts (game)"]];
   const titlesByTeam = {}; (G.champions||[]).forEach(c=>{ titlesByTeam[c.id]=(titlesByTeam[c.id]||0)+1; });
   const mostTitles = Object.entries(titlesByTeam).sort((a,b)=>b[1]-a[1]).slice(0,5);
   return (
@@ -3512,21 +3566,35 @@ function HallOfFame({G}){
       </Card>
 
       <Card>
-        <h3 className="font-bold mb-2">🌐 League Records <span className="text-slate-500 text-sm font-normal">— all-time single-season bests</span></h3>
-        {(()=>{ const lr=G.leagueRecords||{}; return RECDEFS.some(([k])=>lr[k]) ? (
-          <div className="grid sm:grid-cols-2 gap-1">
-            {RECDEFS.filter(([k])=>lr[k]).map(([k,label])=>{ const r=lr[k];
-              const val = k==="AVG"?f3(r.value):k==="ERA"?f2(r.value):r.value;
-              return (
-                <div key={k} className="flex items-center gap-2 px-2 py-1 rounded bg-[#13203a] text-sm">
-                  <span className="text-slate-400 text-xs flex-1">{label}</span>
-                  <span className="font-bold tnum text-amber-300">{val}</span>
-                  <span className="text-slate-500 text-xs truncate max-w-[140px]">{k==="teamWins"?`${r.holder} '${String(r.season).slice(-2)}`:`${r.holder}${r.team?" ("+r.team+")":""} '${String(r.season).slice(-2)}`}</span>
-                </div>
-              );
-            })}
+        <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+          <h3 className="font-bold">🌐 League Records <span className="text-slate-500 text-sm font-normal">— all-time, anyone</span></h3>
+          <div className="flex gap-1">
+            {[["game","Game"],["season","Season"],["career","Career"]].map(([k,lbl])=>(
+              <button key={k} onClick={()=>setRecTier(k)} className={"px-2 py-0.5 rounded text-xs "+(recTier===k?"bg-emerald-500 text-slate-900":"bg-[#16213a]")}>{lbl}</button>
+            ))}
           </div>
-        ) : <div className="text-sm text-slate-500">No league records yet — finish a season to set the all-time marks.</div>; })()}
+        </div>
+        {(()=>{
+          const recs=(G.records||{})[recTier]||{};
+          const defs = recTier==="career"?CAREER_DEFS : recTier==="game"?GAME_DEFS : RECDEFS;
+          const fmt = (k,v)=> k==="AVG"?f3(v) : k==="ERA"?f2(v) : v;
+          const empty = recTier==="game"
+            ? "Single-game records start tracking from now — play some games to set them."
+            : "No records yet — finish a season to set the all-time marks.";
+          return defs.some(([k])=>recs[k]) ? (
+            <div className="grid sm:grid-cols-2 gap-1">
+              {defs.filter(([k])=>recs[k]).map(([k,label])=>{ const r=recs[k];
+                return (
+                  <div key={k} className="flex items-center gap-2 px-2 py-1 rounded bg-[#13203a] text-sm">
+                    <span className="text-slate-400 text-xs flex-1">{label}</span>
+                    <span className="font-bold tnum text-amber-300">{fmt(k,r.value)}</span>
+                    <span className="text-slate-500 text-xs truncate max-w-[140px]">{k==="teamWins"?`${r.holder} '${String(r.season).slice(-2)}`:`${r.holder}${r.team?" ("+r.team+")":""} '${String(r.season).slice(-2)}`}</span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : <div className="text-sm text-slate-500">{empty}</div>;
+        })()}
       </Card>
 
       <Card>

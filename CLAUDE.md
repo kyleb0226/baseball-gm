@@ -141,10 +141,15 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   `accCount(p,award)` (MVP ×28, Cy Young ×24, All-Star ×7) and `ringCount(p)` (×9) — so a decorated,
   ring-laden career clears the bar that a mere compiler wouldn't. The hof entry stores `mvp/cy/allStar/rings`
   counts for display. `PlayerModal` shows a 💍 ring badge next to MVP/All-Star honors.
-- **Records:** `recordFranchiseRecords` (per-club, `team.records`) and **`recordLeagueRecords`**
-  (`G.leagueRecords`, all-time single-season league-wide bests with holder name + team + season) both run in
-  `enterPlayoffs` before stats reset (PA≥300 / OUT≥120 qualifiers). The **Hall of Fame** tab renders
-  champions roll, per-team Franchise Records, league-wide League Records, and inductees (with an Honors column).
+- **Records:** `recordFranchiseRecords` (per-club, `team.records`, single-season) runs in `enterPlayoffs`.
+  League-wide records live on **`G.records = {game, season, career}`** (each entry `{value, holder, team,
+  season}`): `recordSeasonRecords` (single-season bests, PA≥300/OUT≥120 qualifiers) + `recordCareerRecords`
+  (best career totals = `career`+live-season, persistent high-water mark so it survives pruning) run in
+  `enterPlayoffs`; **game records** are fed live by `updateGameRecords` from `simGame`'s `out.gameLines`
+  (a per-player diff vs a start-of-game snapshot `gSnap`) — MLB regular-season (`simDay`) + playoff
+  (`seriesGame`) games only, so they fill in **going forward** (no retro). `migrate` carries the old flat
+  `G.leagueRecords` into `G.records.season` and seeds `.career` from current players (once, when `G.records`
+  is first created). The **Hall of Fame** tab's League Records card has Game/Season/Career toggle tabs.
 - **League news / transaction wire (`logNews`, `G.news`):** a persistent, newest-first, capped-250 log of
   notable moves — FA **signings** + extensions, **trades**, **roster** moves (call-up/option/release),
   the user's **draft** picks, end-of-season **awards** (MVP/Cy Young), and World Series **titles**. Each
