@@ -65,6 +65,13 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   batting/pitching tables, W/L/S tags) opens by **clicking a played game** in the **Schedule** tab (▦) or a
   **line-score chip in Playoffs**. Storage stays bounded: the schedule is rebuilt each `startNewSeason`, so
   only the **current** season's + current postseason's box scores persist (~1.3MB compressed/season, well
+  - **AAA & college postseasons (`runAutoPlayoffs`/`simSeriesAuto`):** at `enterPlayoffs` (after the MLB
+    bracket is set up) both secondary leagues run a **full MLB-style bracket** (WC play-in → DS → CS →
+    cross-conference final), **auto-simmed to completion** — AAA uses MLB lengths (Bo5/Bo7), college is
+    best-of-3. Results live on `G.aaaPlayoffs`/`G.collegePlayoffs` (slim series records, **no box** to keep
+    the save small), champions roll into `G.aaaChampions`/`G.collegeChampions`. `seriesGame` was generalized
+    to `teamById` (works for any league) and only feeds MLB game-records. The **AAA** and **College** tabs
+    render the finished bracket via `MinorBracket` (seeds, per-round series scores, champion, past winners).
   under quota). Final scores/records/history are unaffected and persist forever.
 - **Rotation & bullpen:** every team carries a **5-man rotation** (`autoSetLineups` promotes the best
   arms if short of true SPs) and each starter goes every 5th game (≈32–33 GS). The bullpen has a

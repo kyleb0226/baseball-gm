@@ -2627,6 +2627,7 @@ function AAALeague({G}){
         <h3 className="font-bold text-amber-300 mb-1">AAA — Minor Leagues</h3>
         <p className="text-xs text-slate-400">Every club runs a AAA affiliate that plays its own season. Develop prospects here and call them up from the Roster tab.</p>
       </Card>
+      <MinorBracket G={G} br={G.aaaPlayoffs} champions={G.aaaChampions} title="AAA"/>
       <div className="grid md:grid-cols-2 gap-4">
         {order.map(k=>(
           <Card key={k}>
@@ -2676,6 +2677,44 @@ function AAALeague({G}){
   );
 }
 
+/* ---- minor-league (AAA / college) finished-bracket display ---- */
+function MinorBracket({G, br, champions, title}){
+  if(!br || !br.leagues) return null;
+  const tn = id => { const t=teamById(G,id); return t?t.abbr:"?"; };
+  const tfull = id => { const t=teamById(G,id); return t?t.name.replace(" (AAA)",""):"?"; };
+  const Series = ({s, label})=>{
+    if(!s) return null;
+    const hiW=s.winner===s.hi;
+    return <div className="flex items-center gap-2 text-sm py-0.5">
+      <span className="text-slate-500 text-[10px] w-10 shrink-0">{label||""}</span>
+      <span className={"w-12 text-right "+(hiW?"font-bold text-emerald-300":"text-slate-300")}>{tn(s.hi)}</span>
+      <span className="tnum text-slate-400 w-8 text-center">{s.hw}–{s.lw}</span>
+      <span className={"w-12 "+(!hiW?"font-bold text-emerald-300":"text-slate-300")}>{tn(s.lo)}</span>
+    </div>;
+  };
+  const champ = teamById(G, br.champion);
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-1">
+        <h3 className="font-bold">🏆 {title||""} {br.season} Playoffs</h3>
+        {champ && <span className="text-sm font-semibold text-amber-300">Champion: {tfull(br.champion)}</span>}
+      </div>
+      <div className="grid sm:grid-cols-2 gap-4">
+        {br.leagues.map(lg=>(
+          <div key={lg}>
+            <div className="text-xs font-semibold text-slate-400 mb-1">{lg}</div>
+            <Series s={br.wc[lg]} label="WC"/>
+            {(br.ds[lg]||[]).map((s,i)=><Series key={i} s={s} label={i===0?"DS":""}/>)}
+            <Series s={br.cs[lg]} label="CS"/>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 pt-2 border-t border-[#1d2940]"><Series s={br.final} label="FINAL"/></div>
+      {champions && champions.length>1 && <div className="text-xs text-slate-500 mt-2">Past champions: {champions.slice(-6).reverse().map(c=>`${c.season} ${tn(c.id)}`).join(" · ")}</div>}
+    </Card>
+  );
+}
+
 /* ----------------------------- College league -------------------------- */
 function CollegeLeague({G}){
   const teams = G.collegeTeams||[];
@@ -2709,6 +2748,7 @@ function CollegeLeague({G}){
        <h3 className="font-bold text-violet-300 mb-1">🎓 College Baseball — the draft pipeline</h3>
        <p className="text-xs text-slate-400">24 amateur clubs in two conferences play their own season. The best players declare for the MLB Draft each offseason — drafted players carry their college stats into the pros. Click any name for full stats.</p>
      </Card>
+     <MinorBracket G={G} br={G.collegePlayoffs} champions={G.collegeChampions} title="College"/>
      <div className="grid md:grid-cols-2 gap-4">
        {order.map(k=>(
          <Card key={k}>
@@ -3594,16 +3634,57 @@ function enterPlayoffs(G){
     return { seeds, wc:[ mkSeries(seeds[3], seeds[4]) ], ds:null, cs:null };
   };
   G.playoffs = { Empire: mk("Empire"), Pioneer: mk("Pioneer"), round:"wc", wsWinner:null, ws:null };
+  // AAA + college postseasons auto-sim instantly and are shown as finished brackets.
+  // AAA mirrors MLB (Bo5/Bo7); college is the same shape but best-of-3.
+  try{
+    G.aaaPlayoffs = runAutoPlayoffs(G, G.aaaTeams, ["Empire","Pioneer"], {wc:1,ds:5,cs:7,final:7});
+    (G.aaaChampions=G.aaaChampions||[]).push({season:G.season, id:G.aaaPlayoffs.champion});
+    if(G.collegeTeams && G.collegeTeams.length){
+      G.collegePlayoffs = runAutoPlayoffs(G, G.collegeTeams, ["Coastal","Heartland"], {wc:1,ds:3,cs:3,final:3});
+      (G.collegeChampions=G.collegeChampions||[]).push({season:G.season, id:G.collegePlayoffs.champion});
+      const cc=teamById(G,G.collegePlayoffs.champion);
+      if(cc) logNews(G,"champ",`🎓 ${cc.name} won the ${G.season} College Championship!`, null);
+    }
+    const ac=teamById(G,G.aaaPlayoffs.champion);
+    if(ac) logNews(G,"champ",`🏆 ${ac.abbr} AAA won the ${G.season} AAA title`, parentIdOf(ac.id));
+  }catch(e){ /* never let a minor-league bracket block the MLB postseason */ }
 }
 
 function seriesGame(G, hiId, loId, hiHome){
-  const home = hiHome? G.teams[hiId]:G.teams[loId];
-  const away = hiHome? G.teams[loId]:G.teams[hiId];
+  const home = hiHome? teamById(G,hiId):teamById(G,loId);   // teamById → works for MLB/AAA/college
+  const away = hiHome? teamById(G,loId):teamById(G,hiId);
   const r = simGame(home, away, G.players);
   markGamesPlayed(home, away, G.players);
-  updateGameRecords(G, r.gameLines, G.season);   // playoff games count toward single-game records
+  if(isMlbId(hiId)) updateGameRecords(G, r.gameLines, G.season);   // MLB playoff games only
   const winnerId = r.hs>r.as?home.id:away.id;
   return { winnerId, hs:r.hs, as:r.as, homeId:home.id, awayId:away.id, box:r.box };
+}
+// Auto-sim an entire best-of series (2-2-1 home pattern) to completion — used for the
+// AAA & college postseasons, which run instantly and are shown as a finished bracket.
+function simSeriesAuto(G, hiId, loId, bestOf){
+  const need=Math.ceil(bestOf/2); const s={ hi:hiId, lo:loId, hw:0, lw:0, games:[], winner:null };
+  let gp=0;
+  while(s.hw<need && s.lw<need && gp++<bestOf+2){
+    const hiHome = s.games.length<2 || s.games.length>=4;
+    const res=seriesGame(G, hiId, loId, hiHome);
+    if(res.winnerId===hiId) s.hw++; else s.lw++;
+    s.games.push({ winnerId:res.winnerId, hs:res.hs, as:res.as });   // slim (no box) — keeps the save small
+  }
+  s.winner = s.hw>s.lw? hiId : loId;
+  return s;
+}
+// Run a full MLB-style bracket (WC play-in → DS → CS → final) for a secondary league,
+// fully auto-simmed. `leagues` = the two league names; `lens` = series lengths per round.
+function runAutoPlayoffs(G, teams, leagues, lens){
+  // make sure every contender can field a game
+  teams.forEach(t=>autoSetLineups(t, G.players));
+  const seeded={}; leagues.forEach(lg=> seeded[lg]=playoffSeeds(teams,lg).map(t=>t.id));
+  const wc={}, ds={}, cs={};
+  leagues.forEach(lg=>{ const s=seeded[lg]; wc[lg]=simSeriesAuto(G,s[3],s[4],lens.wc); });
+  leagues.forEach(lg=>{ const s=seeded[lg]; ds[lg]=[ simSeriesAuto(G,s[0],wc[lg].winner,lens.ds), simSeriesAuto(G,s[1],s[2],lens.ds) ]; });
+  leagues.forEach(lg=>{ const d=ds[lg]; cs[lg]=simSeriesAuto(G,d[0].winner,d[1].winner,lens.cs); });
+  const final=simSeriesAuto(G, cs[leagues[0]].winner, cs[leagues[1]].winner, lens.final);
+  return { leagues, seeded, wc, ds, cs, final, champion:final.winner, season:G.season };
 }
 
 // play a single game in one series (2-2-1 home pattern), updating its W tally
