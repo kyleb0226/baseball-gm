@@ -751,6 +751,20 @@ function simGame(home, away, players, idx){
     if(next && next.id!==c.p.id) bringIn(pitId, next);
   }
 
+  // Pitcher of record: each time a team TAKES the lead, remember its pitcher (the win
+  // candidate) and the opponent's pitcher who surrendered the go-ahead run (the loss).
+  // The last such change sticks → relievers can earn the W or the L, not just starters.
+  let decisionRec = null;
+  const bumpScore = (batId, pitId, r) => {
+    if(!r) return;
+    const wasAhead = score[batId] > score[pitId];
+    score[batId] += r;
+    if(!wasAhead && score[batId] > score[pitId]){
+      decisionRec = { winner:batId, loser:pitId,
+        winPit: cur[batId].p?cur[batId].p.id:null,
+        losePit: cur[pitId].p?cur[pitId].p.id:null };
+    }
+  };
   function halfInning(batId, pitId, inning, isBottom){
     let outs=0; const bases=[null,null,null];
     const hitters = lineups[batId];
@@ -762,8 +776,8 @@ function simGame(home, away, players, idx){
       // wild pitch / balk (only with a runner aboard) — credited to the pitcher
       if(bases[0]||bases[1]||bases[2]){
         const pit=cur[pitId].p;
-        if(chance(0.018)){ pit.stats.WP=(pit.stats.WP||0)+1; const r=wpAdvance(); score[batId]+=r; cur[pitId].er+=r; pit.stats.ER+=r; }
-        else if(chance(0.004)){ pit.stats.BK=(pit.stats.BK||0)+1; const r=wpAdvance(); score[batId]+=r; cur[pitId].er+=r; pit.stats.ER+=r; }
+        if(chance(0.018)){ pit.stats.WP=(pit.stats.WP||0)+1; const r=wpAdvance(); bumpScore(batId,pitId,r); cur[pitId].er+=r; pit.stats.ER+=r; }
+        else if(chance(0.004)){ pit.stats.BK=(pit.stats.BK||0)+1; const r=wpAdvance(); bumpScore(batId,pitId,r); cur[pitId].er+=r; pit.stats.ER+=r; }
       }
       // stolen-base attempt: runner on first with second base open
       if(bases[0] && !bases[1]){
@@ -786,12 +800,12 @@ function simGame(home, away, players, idx){
       if(res.o==="BB"){
         bat.stats.BB++; pitcher.stats.BB++;
         const r = advance(bases,"BB",bat);
-        score[batId]+=r; bat.stats.RBI+=r;
+        bumpScore(batId,pitId,r); bat.stats.RBI+=r;
         cur[pitId].er+=r; pitcher.stats.ER+=r;
       } else if(res.o==="HBP"){
         bat.stats.HBP=(bat.stats.HBP||0)+1; pitcher.stats.HBP=(pitcher.stats.HBP||0)+1;
         const r = advance(bases,"BB",bat);   // hit-by-pitch advances like a walk
-        score[batId]+=r; bat.stats.RBI+=r;
+        bumpScore(batId,pitId,r); bat.stats.RBI+=r;
         cur[pitId].er+=r; pitcher.stats.ER+=r;
       } else if(res.o==="K"){
         bat.stats.AB++; bat.stats.SO++; pitcher.stats.SO++;
@@ -806,7 +820,7 @@ function simGame(home, away, players, idx){
         } else if(!ground && bases[2] && outs<2 && chance(0.42)){
           // sacrifice fly — runner on third scores, batter charged no AB
           bat.stats.SF=(bat.stats.SF||0)+1; pitcher.stats.AO=(pitcher.stats.AO||0)+1;
-          bases[2]=null; score[batId]+=1; bat.stats.RBI+=1; cur[pitId].er+=1; pitcher.stats.ER+=1;
+          bases[2]=null; bumpScore(batId,pitId,1); bat.stats.RBI+=1; cur[pitId].er+=1; pitcher.stats.ER+=1;
           recOut(pitcher); fieldChance(pitId, pitcher, true);
         } else {
           bat.stats.AB++;
@@ -821,7 +835,7 @@ function simGame(home, away, players, idx){
         if(res.o==="HR"){ bat.stats.HR++; pitcher.stats.HRA++; }
         else fieldChance(pitId, pitcher, false);   // a fielder handled it cleanly (no error)
         const r = advance(bases, res.o, bat);
-        score[batId]+=r; bat.stats.RBI+=r;
+        bumpScore(batId,pitId,r); bat.stats.RBI+=r;
         cur[pitId].er+=r; pitcher.stats.ER+=r;
       }
     }
@@ -850,7 +864,7 @@ function simGame(home, away, players, idx){
   // decisions
   const winnerId = out.hs>out.as ? home.id : away.id;
   const loserId  = winnerId===home.id ? away.id : home.id;
-  const dec = awardDecision(winnerId, loserId, arms, usedPen, players, {home,away,score});
+  const dec = awardDecision(winnerId, loserId, arms, usedPen, players, {home,away,score,decisionRec});
   // credit Quality Starts: the starter went 6+ IP (18+ outs) allowing <=3 ER this game
   [home,away].forEach(t=>{
     const sp=arms[t.id].starter; if(!sp) return;
@@ -904,20 +918,27 @@ function distributeRuns(team, players, runs, idx){
 
 function awardDecision(winnerId, loserId, arms, usedPen, players, ctx){
   const wStarter = arms[winnerId].starter;
-  let winPitId;
-  if(wStarter.stats.OUT>=15){ wStarter.stats.W++; winPitId=wStarter.id; }
-  else {
-    // give W to a used reliever, else starter
-    const rp = (usedPen[winnerId]||[]).map(id=>players[id])[0];
-    (rp||wStarter).stats.W++; winPitId=(rp||wStarter).id;
+  const rec = ctx.decisionRec || {};
+  // WIN — the winning team's pitcher of record when they took the lead for good. Exception:
+  // a starter who left before 5 IP (OUT<15) cedes the win to a used reliever.
+  let winPitId = rec.winPit;
+  let winPit = winPitId!=null ? players[winPitId] : null;
+  if(!winPit || winPit.teamId==null){ winPit=wStarter; winPitId=wStarter.id; }   // fallback
+  if(winPit.id===wStarter.id && wStarter.stats.OUT<15){
+    const rp = (usedPen[winnerId]||[]).map(id=>players[id]).filter(Boolean)[0];
+    if(rp){ winPit=rp; winPitId=rp.id; }
   }
-  arms[loserId].starter.stats.L++;
-  const loserPitId = arms[loserId].starter.id;
+  winPit.stats.W++;
+  // LOSS — the losing team's pitcher who surrendered the go-ahead run (often a reliever).
+  let loserPitId = rec.losePit;
+  let losePit = loserPitId!=null ? players[loserPitId] : null;
+  if(!losePit){ losePit=arms[loserId].starter; loserPitId=losePit.id; }
+  losePit.stats.L++;
   // save: closer = pen[0] (best/priority arm), if he finished a win of <=3
   const margin = Math.abs(ctx.score[winnerId]-ctx.score[loserId]);
   const pen = arms[winnerId].pen; const closer = pen[0];
   let saverId=null;
-  if(closer && (usedPen[winnerId]||[]).includes(closer.id) && margin<=3 && closer.id!==wStarter.id){
+  if(closer && (usedPen[winnerId]||[]).includes(closer.id) && margin<=3 && closer.id!==wStarter.id && closer.id!==winPitId){
     closer.stats.SV++; saverId=closer.id;
   }
   // holds: setup relievers who bridged a close win (not the winner, not the saver)
