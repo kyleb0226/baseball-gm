@@ -4263,8 +4263,8 @@ function Draft({G, commit, tShow, setTab}){
                           <span className="text-slate-500 text-xs w-9 shrink-0">#{p.draftInfo.overall}</span>
                           <span className="text-slate-600 text-[10px] w-7 shrink-0">R{p.draftInfo.round}</span>
                           <span className={"font-semibold w-10 shrink-0 "+(mine?"text-emerald-300":"text-slate-300")}>{p.draftInfo.by}</span>
-                          <span className="flex-1 truncate"><span className="text-slate-400">{p.pos}</span> <PlayerLink p={p}/></span>
-                          <span className="text-slate-500 text-[10px] shrink-0">{p.ovr}→<span className="text-amber-300">{p.pot}</span></span>
+                          <span className="flex-1 truncate"><PlayerLink p={p}/></span>
+                          <span className="text-slate-500 text-[10px] shrink-0"><span className="text-slate-400 font-semibold">{p.pos}</span> · {p.ovr}→<span className="text-amber-300">{p.pot}</span></span>
                         </div>
                       );
                     })}
