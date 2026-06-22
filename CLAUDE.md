@@ -183,6 +183,16 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   via `recordSeasonHistory`. **WAR is graded per league:** `leagueWarCtx(G, level)` builds the avg wOBA/FIP
   baseline from that level's stats; **MLB, AAA, and College Leaders each have WAR — Position / WAR — Pitcher**
   boards (`warOf(p, ctx, S(p))`). `PlayerModal`'s season-WAR pill uses the player's current level's ctx+line.
+- **Postseason & BA Cup stats are separate from the regular season:** playoff and cup games run **real
+  `simGame`**, but `bankSeparate(roster, snap, target)` moves the per-game delta OUT of `p.stats` (which stays
+  regular-season only) into a career bucket — so they never pollute the regular-season line/leaderboards/
+  year-by-year. `seriesGame` banks into **`p.postStats[level]`** (MLB/AAA/COL, via `postBucket(lvl)`), so each
+  level's postseason is its own collective career row. The **BA Cup** (`cupGameSim` replaced the old
+  strength-only `cupGame`) banks into **`p.cupStats`** — one combined total since the cup crosses MLB↔AAA.
+  `YearByYear` renders up to four collective rows under the yearly lines: **MLB Playoffs / AAA Playoffs /
+  College Playoffs / BA Cup** (each shown only if the player has games there). `inductIfWorthy` snapshots
+  `postStats`/`cupStats` onto HoF entries. NOTE: cup games now use the full sim (~63/season) — slightly
+  heavier than the old model but fine; rosters are guaranteed playable by `simDay`'s refill before cup ticks.
 - **Per-season history:** every game tags the team a player suited up for into `p._yrTeams`
   (`tagTeam` in `markGamesPlayed` for hitters and at the end of `simGame` for the pitchers who threw —
   so mid-season trades record *both* teams). At the offseason rollover `recordSeasonHistory(p, season)`
