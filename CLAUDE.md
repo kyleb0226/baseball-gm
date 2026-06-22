@@ -236,6 +236,15 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
     **calibrated** so league FIP centers on this league's ERA (~3.9 env) — re-check if the run environment
     shifts. Shown in the `PlayerModal` rate line (per season + career) and as `Leaders` boards (ISO/wOBA/BABIP,
     FIP/K9/BB9/K-BB, plus Doubles/Triples).
+  - **WAR (`warOf(p, ctx, st?)`, `leagueWarCtx(G)`):** simplified but calibrated. Position WAR = wOBA-based
+    batting runs above average (`wRAA`) + positional adjustment (`POS_ADJ`, scaled by G/162) + a light DEF
+    term + replacement runs, all ÷ `RUNS_PER_WIN` (11.5). Pitcher WAR = FIP runs saved vs a replacement arm
+    (`PIT_REP_CUSHION` 0.85 R/9) over IP ÷ `PIT_RPW` (9.5). `ctx` carries league-avg wOBA/FIP. **Calibrated so
+    league WAR sums ~57% position / 43% pitching, total ~1000** (re-tune RUNS_PER_WIN if the run env shifts).
+    Shown as a `PlayerModal` pill (live season WAR + career WAR) and `Leaders` WAR — Position/Pitcher boards.
+    Per-season WAR is **stamped into history** at the offseason rollover (`doProgression` computes one
+    `warCtx` for the finished season, writes `h.war` on each MLB history row) → year-by-year WAR column and a
+    summed career WAR. Old saves' pre-WAR history rows show "—" (fills in going forward, like game records).
 - **Franchise records (`recordFranchiseRecords`, `team.records`):** each club's all-time single-season
   bests (team wins; HR/RBI/H/R/SB/AVG by a hitter; W/K/SV/ERA by a pitcher), each `{value, holder, season}`.
   Updated in `enterPlayoffs` (after `computeAwards`, before stats reset) with PA≥300 / OUT≥120 qualifiers.
