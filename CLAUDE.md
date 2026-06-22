@@ -21,6 +21,14 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   `migrate(G)` (runs in `loadGame` and on import) so existing franchises keep loading across updates.
   Header has **Save File** / **Load File** (`exportSave`/`importSave`) for manual JSON backups; bump
   `SAVE_VERSION` when you add migration steps.
+  - **Multiple save slots + Main Menu:** each franchise lives under its own key `pocketgm_slot_<id>`; a
+    `SLOTS_KEY` index lists them (`listSlots`). `saveGame(G)` writes to `slotKey(G.slotId)` (minting a `slotId`
+    if absent) and refreshes the index meta (team/season/day/phase/ts). `loadSlot`/`deleteSlot`/`writeKey`/
+    `readKey` are the slot primitives; `migrateLegacySave` folds the old single `SAVE_KEY` autosave into a slot
+    once (run synchronously in `App` before the menu reads slots). App has a `screen` state
+    (`menu`/`splash`/`play`): **`MainMenu`** lists franchises (newest = Continue) with Load/Delete + New
+    Franchise; the header **☰ Menu** button (`toMenu`) autosaves then returns to the menu; Load File imports
+    as a NEW slot (`g.slotId=null`). `Splash` takes an optional `onBack`.
   - **Save compression (the real quota fix):** the autosave is written **compressed** via a vendored,
     inlined `LZString.compressToUTF16` (MIT, no CDN → works offline / in the iOS wrapper), with a `LZ16:`
     marker prefix. JSON packs ~6–10× (a ~70KB game → ~10KB; a deep franchise that *didn't* fit now lands
