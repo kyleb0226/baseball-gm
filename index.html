@@ -109,17 +109,54 @@ const TEAM_DEFS = [
   ["Austin","Outlaws","AUS","Pioneer","West"],
 ];
 
+// 24 amateur college clubs: 2 conferences (Coastal/Heartland) × 3 divisions × 4 teams.
+// Same league/division shape as MLB so standings + the MLB-style playoff bracket reuse cleanly.
+const COLLEGE_DEFS = [
+  ["Tidewater","Ospreys","TDW","Coastal","East"],
+  ["Camden","Quakers","CAM","Coastal","East"],
+  ["Savannah","Pelicans","SAV","Coastal","East"],
+  ["Newport","Surf","NWP","Coastal","East"],
+  ["Lakeland","Loons","LKL","Coastal","Central"],
+  ["Cedar Falls","Hawks","CDF","Coastal","Central"],
+  ["Springfield","Pioneers","SPR","Coastal","Central"],
+  ["Carbondale","Miners","CRB","Coastal","Central"],
+  ["Fresno","Foxes","FRS","Coastal","West"],
+  ["Boulder","Bison","BLD","Coastal","West"],
+  ["Tucson","Roadrunners","TUC","Coastal","West"],
+  ["Eugene","Ducks","EUG","Coastal","West"],
+  ["Athens","Owls","ATH","Heartland","East"],
+  ["Durham","Bulls","DUR","Heartland","East"],
+  ["Lexington","Colonels","LEX","Heartland","East"],
+  ["Ithaca","Big Red","ITH","Heartland","East"],
+  ["Madison","Badgers","MAD","Heartland","Central"],
+  ["Lincoln","Huskers","LNC","Heartland","Central"],
+  ["Norman","Sooners","NOR","Heartland","Central"],
+  ["Lawrence","Jayhawks","LAW","Heartland","Central"],
+  ["Provo","Cougars","PRV","Heartland","West"],
+  ["Missoula","Grizzlies","MSL","Heartland","West"],
+  ["Spokane","Zags","SPO","Heartland","West"],
+  ["Reno","Wolfpack","RNO","Heartland","West"],
+];
+
 const HIT_POS = ["C","1B","2B","3B","SS","LF","CF","RF","DH"];
 const INF_OF = ["C","1B","2B","3B","SS","LF","CF","RF"];
 const FIELD_POS = ["C","1B","2B","3B","SS","LF","CF","RF"]; // 8 defensive slots (+ DH = 9th batter)
 
-/* MLB teams use ids 0..29; each has a AAA affiliate at id 30+i. A player's teamId
-   tells you which roster (and level) he's on. */
+/* Team-id namespace (a player's teamId tells you which roster AND level he's on):
+   MLB  0..29   · AAA 30..59 (id = 30 + parentId) · College 60..83 (24 amateur clubs).
+   College is a standalone amateur league that feeds the draft — NOT an MLB affiliate. */
 const AAA_OFFSET = 30;
-const isAAAId = id => id!=null && id>=AAA_OFFSET;
+const COLLEGE_OFFSET = 60;
+const isAAAId = id => id!=null && id>=AAA_OFFSET && id<COLLEGE_OFFSET;
+const isCollegeId = id => id!=null && id>=COLLEGE_OFFSET;
+const isMlbId = id => id!=null && id<AAA_OFFSET;
 const aaaIdOf = mlbId => mlbId + AAA_OFFSET;
 const parentIdOf = aaaId => aaaId - AAA_OFFSET;
-function teamById(G, id){ return id==null?null : (id>=AAA_OFFSET ? G.aaaTeams[id-AAA_OFFSET] : G.teams[id]); }
+const collegeIdOf = i => COLLEGE_OFFSET + i;
+const levelOf = id => id==null?"FA":(id>=COLLEGE_OFFSET?"COL":(id>=AAA_OFFSET?"AAA":"MLB"));
+function teamById(G, id){ return id==null?null
+  : (id>=COLLEGE_OFFSET ? (G.collegeTeams||[])[id-COLLEGE_OFFSET]
+  : (id>=AAA_OFFSET ? G.aaaTeams[id-AAA_OFFSET] : G.teams[id])); }
 
 /* ----------------------------- player gen ------------------------------ */
 function emptyHitStats(){return{G:0,PA:0,AB:0,H:0,_2B:0,_3B:0,HR:0,R:0,RBI:0,BB:0,SO:0,SB:0,CS:0,SF:0,HBP:0,GIDP:0,TC:0,E:0};}
@@ -130,7 +167,7 @@ function emptyPitStats(){return{G:0,GS:0,OUT:0,H:0,ER:0,BB:0,SO:0,W:0,L:0,SV:0,H
 // player was just at. So a season split between the bigs and AAA yields two history rows.
 function flushLevel(p){
   if(!p || !p.stats) return;
-  const lvl = isAAAId(p.teamId) ? "AAA" : "MLB";
+  const lvl = levelOf(p.teamId)==="FA" ? "MLB" : levelOf(p.teamId);
   if(!p._levelStats) p._levelStats = {};
   if(!p._levelStats[lvl]) p._levelStats[lvl] = p.isP?emptyPitStats():emptyHitStats();
   const snap = p._levelSnap || {}, bucket = p._levelStats[lvl];
@@ -276,6 +313,26 @@ function buildAAARoster(aaaId){
   players.forEach(p=>{ p.teamId=aaaId; setContract(p, Math.min(p.salary,0.7), p.years, []); });
   return players;
 }
+/* ----------------------------- college (amateur) ---------------------- */
+function makeCollegeTeam(def, i){
+  const [city,nick,abbr,league,division] = def;
+  return { id: collegeIdOf(i), city, nick, abbr, league, division,
+    name: city+" "+nick, college:true, w:0, l:0, rs:0, ra:0,
+    lineup:[], rotation:[], pos:{}, userControlled:false };
+}
+// Amateur talent: 17–21yo, raw (low current OVR) but high ceiling — these players are the
+// draft pipeline. No pro contract (amateurs); marked p.amateur so the offseason/economy skip them.
+function buildCollegeRoster(collegeId){
+  const players=[];
+  FIELD_POS.forEach(pos => players.push(makeHitter(pos,[17,21],-12)));
+  for(let i=0;i<6;i++) players.push(makeHitter(pick(INF_OF),[17,21],-12));   // 14 hitters
+  for(let i=0;i<5;i++) players.push(makePitcher("SP",[17,21],-12));
+  for(let i=0;i<6;i++) players.push(makePitcher("RP",[17,21],-12));          // 11 arms
+  players.forEach(p=>{ p.teamId=collegeId; p.amateur=true; p.salary=0; p.contract=[]; p.years=0;
+    p.classYr = 21-p.age; });   // 0=senior .. up to ~4 (freshman); used for draft eligibility
+  return players;
+}
+
 // Repair a depleted roster up to a fieldable minimum. Over many seasons, call-ups,
 // trades, and lopsided draft classes can drain a roster (esp. AAA) below what a game
 // needs — a team with no pitcher or no hitters used to CRASH the sim mid-day, hanging
@@ -398,8 +455,12 @@ function generateLeague(userTeamId, opts={}){
   teams.forEach(t=>aiAlignOrg(Gtmp, t.id));
   teams.forEach(t=>autoSetLineups(t, players));
   aaaTeams.forEach(at=>autoSetLineups(at, players));
+  // amateur college league (the draft pipeline)
+  const collegeTeams = COLLEGE_DEFS.map((d,i)=>makeCollegeTeam(d,i));
+  collegeTeams.forEach(ct=>buildCollegeRoster(ct.id).forEach(p=>players[p.id]=p));
+  collegeTeams.forEach(ct=>autoSetLineups(ct, players));
   setRng(null);
-  return { teams, aaaTeams, players };
+  return { teams, aaaTeams, collegeTeams, players };
 }
 
 /* ----------------------------- schedule -------------------------------- */
@@ -408,6 +469,11 @@ function generateLeague(userTeamId, opts={}){
 function gamesBetween(a, b){
   if(a.league===b.league) return a.division===b.division ? 18 : 8;
   return a.division===b.division ? 2 : 0;          // interleague only vs the mirror division
+}
+// lighter amateur slate (~50 games): college seasons are short
+function collegeGamesBetween(a, b){
+  if(a.league===b.league) return a.division===b.division ? 6 : 3;
+  return a.division===b.division ? 2 : 0;
 }
 // How to split a pair's N games into real back-to-back series (whole series at one venue).
 // gamesBetween only yields 18 / 8 / 2, each mapped to a plan that keeps home/away balanced:
@@ -420,11 +486,11 @@ function seriesPlan(n){
 // Build a 162-game schedule as a slate of 2–4 game SERIES (the whole set played at one park),
 // spread over the calendar WITH off days. Returns an array of days, each an array of
 // {home,away,played,hs,as}. A series occupies consecutive days; home stays the host all series.
-function buildSchedule(teams){
+function buildSchedule(teams, gb=gamesBetween){
   // 1) turn every matchup into a list of series {host, visitor, length}
   const allSeries=[];
   for(let i=0;i<teams.length;i++) for(let j=i+1;j<teams.length;j++){
-    const a=teams[i], b=teams[j], n=gamesBetween(a,b); if(!n) continue;
+    const a=teams[i], b=teams[j], n=gb(a,b); if(!n) continue;
     const plan=seriesPlan(n);
     plan.forEach((len,k)=>{
       // alternate the host across a pair's series (balanced); a lone series picks by parity
@@ -457,11 +523,11 @@ function buildSchedule(teams){
   while(days.length && days[days.length-1].length===0) days.pop();
   return days;
 }
-// keep the MLB and AAA calendars the same length (pad the shorter with off days)
-function padSchedules(a, b){
-  const len=Math.max(a.length,b.length);
-  while(a.length<len) a.push([]);
-  while(b.length<len) b.push([]);
+// keep all calendars (MLB / AAA / college) the same length so simDay can index by G.day
+function padSchedules(...scheds){
+  scheds=scheds.filter(Boolean);
+  const len=Math.max(0,...scheds.map(s=>s.length));
+  scheds.forEach(s=>{ while(s.length<len) s.push([]); });
 }
 
 /* ----------------------------- game sim -------------------------------- */
@@ -854,7 +920,7 @@ function awardDecision(winnerId, loserId, arms, usedPen, players, ctx){
 /* mark games-played for hitters in lineup */
 // record (deduped) a team label a player actually suited up for this season
 function tagTeam(p, lbl){ if(!p) return; if(!p._yrTeams) p._yrTeams=[]; if(!p._yrTeams.includes(lbl)) p._yrTeams.push(lbl); }
-const teamLabel = t => t.abbr + (t.aaa?" AAA":"");
+const teamLabel = t => t.abbr + (t.aaa?" AAA":(t.college?" (C)":""));
 function markGamesPlayed(home, away, players, idx){
   [home,away].forEach(t=>{
     const lbl=teamLabel(t);
@@ -914,7 +980,7 @@ const WOBA_SCALE = 1.20, RUNS_PER_WIN = 11.5;   // tuned so league position WAR 
 const POS_ADJ = {C:12.5, SS:7.5, "2B":2.5, "3B":2.5, CF:2.5, LF:-7.5, RF:-7.5, "1B":-12.5, DH:-17.5};
 const PIT_RPW = 9.5, PIT_REP_CUSHION = 0.85;   // replacement arm ≈ 0.85 R/9 worse than league avg
 function leagueWarCtx(G){
-  const mlb = Object.values(G.players).filter(p=>!isAAAId(p.teamId));
+  const mlb = Object.values(G.players).filter(p=>isMlbId(p.teamId));
   let wn=0,wd=0; mlb.filter(p=>!p.isP&&p.stats.PA>0).forEach(p=>{ const s=p.stats;
     const pa=s.AB+s.BB+(s.SF||0)+(s.HBP||0), b1=s.H-s._2B-s._3B-s.HR;
     wn += 0.69*s.BB+0.72*(s.HBP||0)+0.89*b1+1.27*s._2B+1.62*s._3B+2.10*s.HR; wd += pa; });
@@ -1264,6 +1330,15 @@ function migrate(G){
     uid.atLeast(maxId);
     if(!G.aaaTeams){ G.aaaTeams = G.teams.map(t=>makeAAATeam(t)); }
     if(!G.aaaSchedule) G.aaaSchedule = buildSchedule(G.aaaTeams);
+    // college league (amateur draft pipeline) — build it for saves created before this feature
+    if(!Array.isArray(G.collegeTeams) || !G.collegeTeams.length){
+      G.collegeTeams = COLLEGE_DEFS.map((d,i)=>makeCollegeTeam(d,i));
+      G.collegeTeams.forEach(ct=>buildCollegeRoster(ct.id).forEach(p=>{ G.players[p.id]=p; }));
+      G.collegeTeams.forEach(ct=>autoSetLineups(ct, G.players));
+      G.collegeSchedule = buildSchedule(G.collegeTeams, collegeGamesBetween);
+      padSchedules(G.schedule, G.aaaSchedule, G.collegeSchedule);
+    }
+    if(!G.collegeSchedule){ G.collegeSchedule = buildSchedule(G.collegeTeams, collegeGamesBetween); padSchedules(G.schedule, G.aaaSchedule, G.collegeSchedule); }
     if(!G.picks) G.picks = buildPicks((G.season||2026)+1, G.teams);
     if(!Array.isArray(G.draftPicks)) G.draftPicks = [];
     if(!Array.isArray(G.awardHistory)) G.awardHistory = [];
@@ -1388,15 +1463,16 @@ function importSave(file, onLoad){
 
 /* ----------------------------- new game -------------------------------- */
 function newGame(userTeamId, opts={}){
-  const { teams, aaaTeams, players } = generateLeague(userTeamId, opts);
+  const { teams, aaaTeams, collegeTeams, players } = generateLeague(userTeamId, opts);
   assignRivals(teams);
   const schedule = buildSchedule(teams);
   const aaaSchedule = buildSchedule(aaaTeams);
-  padSchedules(schedule, aaaSchedule);
+  const collegeSchedule = buildSchedule(collegeTeams, collegeGamesBetween);
+  padSchedules(schedule, aaaSchedule, collegeSchedule);
   return {
     season: 2026, day: 0, phase: "regular", version: SAVE_VERSION,
     seed: (opts && opts.seed!=null && !Number.isNaN(opts.seed)) ? (opts.seed>>>0) : null,
-    userTeamId, teams, aaaTeams, players, schedule, aaaSchedule,
+    userTeamId, teams, aaaTeams, collegeTeams, players, schedule, aaaSchedule, collegeSchedule,
     picks: buildPicks(2027, teams),
     freeAgents: [], draftClass: [], draftPicks: [], draftPick: 0,
     playoffs: null, champion: null, champions: [], hof: [], log: [], news: [],
@@ -1441,7 +1517,7 @@ function App(){
 
   const TABS = [
     ["hub","Hub"],["roster","Roster"],["lineup","Lineup"],["players","Players"],
-    ["standings","Standings"],["aaa","AAA"],["stats","Leaders"],["awards","Awards"],
+    ["standings","Standings"],["aaa","AAA"],["college","College"],["stats","Leaders"],["awards","Awards"],
     ["hof","Hall of Fame"],["bacup","BA Cup"],["news","News"],["schedule","Schedule"],["trades","Trades"],["fa","Free Agency"],["finances","Finances"],
   ];
   if(G.phase==="offseason") TABS.push(["draft","Draft"]);
@@ -1485,6 +1561,7 @@ function App(){
         {tab==="standings" && <Standings G={G} />}
         {tab==="players" && <PlayersBrowser G={G} commit={commit} tShow={tShow} setTab={setTab} setTradeFocus={setTradeFocus} />}
         {tab==="aaa" && <AAALeague G={G} />}
+        {tab==="college" && <CollegeLeague G={G} />}
         {tab==="stats" && <Leaders G={G} />}
         {tab==="awards" && <Awards G={G} />}
         {tab==="hof" && <HallOfFame G={G} />}
@@ -1592,6 +1669,7 @@ function simDay(G){
   let repaired=false;
   for(const t of G.teams){ const r=idx[t.id]||[]; if(r.filter(p=>!p.isP).length<9 || r.filter(p=>p.isP).length<1){ refillRoster(G,t.id,14,12,[23,33],0); ensureLineup(t,G.players); repaired=true; } }
   for(const t of G.aaaTeams){ const r=idx[t.id]||[]; if(r.filter(p=>!p.isP).length<9 || r.filter(p=>p.isP).length<1){ refillRoster(G,t.id,12,9,[19,26],-6); autoSetLineups(t,G.players); repaired=true; } }
+  for(const t of (G.collegeTeams||[])){ const r=idx[t.id]||[]; if(r.filter(p=>!p.isP).length<9 || r.filter(p=>p.isP).length<1){ refillRoster(G,t.id,12,9,[17,21],-12); autoSetLineups(t,G.players); repaired=true; } }
   if(repaired) idx = rosterIndex(G.players);     // rebuild after adding players
   const playDay = (sched, isMLB) => {
     const day = sched[G.day];
@@ -1610,6 +1688,7 @@ function simDay(G){
   };
   playDay(G.schedule, true);                     // MLB
   if(G.aaaSchedule) playDay(G.aaaSchedule, false); // AAA affiliates
+  if(G.collegeSchedule) playDay(G.collegeSchedule, false); // amateur college league
   G.day++;
   // BA Cup: a side knockout whose rounds are sprinkled through the season (no stat impact)
   ensureSeasonCup(G); tickBACup(G);
@@ -1988,13 +2067,13 @@ function YearByYear({history, isP, accolades, ringSeasons}){
           <tbody>
             {[...history].reverse().map((h,i)=>{ const st=h.stats;
               const lvl = h.level || ((h.teams||[]).length && (h.teams||[]).every(t=>/ AAA$/.test(t)) ? "AAA" : "MLB");
-              const teamTxt = (h.teams&&h.teams.length) ? h.teams.map(t=>t.replace(/ AAA$/,"")).join("/") : "—";
+              const teamTxt = (h.teams&&h.teams.length) ? h.teams.map(t=>t.replace(/ AAA$/,"").replace(/ \(C\)$/,"")).join("/") : "—";
               const badges = lvl==="MLB" ? honorBadges(h.season, accolades, ringSeasons) : [];
               return (
               <tr key={i} className="border-b border-[#15203a]">
                 <td className="text-left py-1">{h.season}</td>
                 <td className="whitespace-nowrap pr-1">{badges.map((b,j)=><span key={j} className={"text-[9px] border rounded px-1 mr-0.5 "+b[1]} title={b[0]==="MVP"?"MVP":b[0]==="CY"?"Cy Young":b[0]==="AS"?"All-Star":"Championship"}>{b[0]}</span>)}</td>
-                <td className="text-center"><span className={lvl==="AAA"?"text-amber-400 font-semibold":"text-sky-300"}>{lvl}</span></td>
+                <td className="text-center"><span className={lvl==="AAA"?"text-amber-400 font-semibold":lvl==="COL"?"text-violet-300 font-semibold":"text-sky-300"}>{lvl}</span></td>
                 <td className="text-left text-slate-400">{teamTxt}</td>
                 <td className="text-center">{h.age}</td>
                 <td className="text-center text-slate-400">{h.ovr}</td>
@@ -2597,10 +2676,98 @@ function AAALeague({G}){
   );
 }
 
+/* ----------------------------- College league -------------------------- */
+function CollegeLeague({G}){
+  const teams = G.collegeTeams||[];
+  if(!teams.length) return <Card>College league not initialized — reload, or start a new franchise.</Card>;
+  const byDiv = standings(teams);
+  const order = ["Coastal East","Coastal Central","Coastal West","Heartland East","Heartland Central","Heartland West"];
+  const players = Object.values(G.players).filter(p=>isCollegeId(p.teamId));
+  const gpMax = Math.max(1, ...teams.map(t=>t.w+t.l));
+  const paQual = Math.max(10, round(gpMax*2.2));
+  const outQual = Math.max(15, round(gpMax*1.2));
+  const hitters = players.filter(p=>!p.isP && p.stats.PA>=paQual);
+  const pitchers = players.filter(p=>p.isP && p.stats.OUT>=outQual);
+  const tn = id => teamById(G,id)?teamById(G,id).abbr:"—";
+  const top = (list,key,n=5)=>[...list].sort((a,b)=>key(b)-key(a)).slice(0,n);
+  const bot = (list,key,n=5)=>[...list].sort((a,b)=>key(a)-key(b)).slice(0,n);
+  const board = (title,list,fmt)=>(
+    <Card><h4 className="font-bold mb-2 text-sm">{title}</h4>
+      <table className="w-full text-sm tnum"><tbody>
+        {list.map((p,i)=>(<tr key={p.id} className="border-b border-[#15203a]">
+          <td className="text-slate-500 w-5">{i+1}</td>
+          <td className="text-left"><PlayerLink p={p} className="font-medium"/> <span className="text-slate-600 text-xs">{tn(p.teamId)}</span></td>
+          <td className="text-right font-semibold">{fmt(p)}</td></tr>))}
+        {!list.length && <tr><td className="text-slate-500 text-sm py-1">—</td></tr>}
+      </tbody></table></Card>
+  );
+  const prospects = [...players].sort((a,b)=>prospectGrade(b)-prospectGrade(a)).slice(0,30);
+  const userCollege = null;
+  return (
+   <div className="space-y-4">
+     <Card>
+       <h3 className="font-bold text-violet-300 mb-1">🎓 College Baseball — the draft pipeline</h3>
+       <p className="text-xs text-slate-400">24 amateur clubs in two conferences play their own season. The best players declare for the MLB Draft each offseason — drafted players carry their college stats into the pros. Click any name for full stats.</p>
+     </Card>
+     <div className="grid md:grid-cols-2 gap-4">
+       {order.map(k=>(
+         <Card key={k}>
+           <h3 className="font-bold mb-2">{k} <span className="text-violet-400/70 text-xs">NCAA</span></h3>
+           <table className="w-full text-sm tnum">
+             <thead><tr className="text-slate-400 text-xs"><th className="text-left">Team</th><th>W</th><th>L</th><th>PCT</th><th>DIFF</th></tr></thead>
+             <tbody>{(byDiv[k]||[]).map(t=>(
+               <tr key={t.id} className="border-t border-[#15203a]">
+                 <td className="text-left py-1">{t.city} {t.nick}</td>
+                 <td className="text-center">{t.w}</td><td className="text-center">{t.l}</td>
+                 <td className="text-center">{f3(pct(t))}</td>
+                 <td className={"text-center "+((t.rs-t.ra)>=0?"text-emerald-400":"text-red-400")}>{t.rs-t.ra>=0?"+":""}{t.rs-t.ra}</td>
+               </tr>))}</tbody>
+           </table>
+         </Card>
+       ))}
+     </div>
+     <div>
+       <h3 className="font-bold mb-2">📊 College Leaders</h3>
+       <div className="grid md:grid-cols-3 gap-3">
+         {board("AVG", top(hitters,p=>avg(p.stats)), p=>f3(avg(p.stats)))}
+         {board("Home Runs", top(hitters,p=>p.stats.HR), p=>p.stats.HR)}
+         {board("RBI", top(hitters,p=>p.stats.RBI), p=>p.stats.RBI)}
+         {board("OPS", top(hitters,p=>ops(p.stats)), p=>f3(ops(p.stats)))}
+         {board("Stolen Bases", top(hitters.filter(p=>p.stats.SB>0),p=>p.stats.SB), p=>p.stats.SB)}
+         {board("Hits", top(hitters,p=>p.stats.H), p=>p.stats.H)}
+         {board("ERA", bot(pitchers,p=>era(p.stats)), p=>f2(era(p.stats)))}
+         {board("Strikeouts", top(pitchers,p=>p.stats.SO), p=>p.stats.SO)}
+         {board("Wins", top(pitchers,p=>p.stats.W), p=>p.stats.W)}
+       </div>
+     </div>
+     <Card>
+       <h3 className="font-bold mb-1">🔭 Top 30 Draft Prospects</h3>
+       <p className="text-xs text-slate-400 mb-2">Ranked by scouting grade — these headline the upcoming MLB Draft.</p>
+       <div className="overflow-x-auto">
+       <table className="w-full text-sm tnum">
+         <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="w-5">#</th><th className="text-left">Pos</th><th className="text-left">Name</th><th>School</th><th>Age</th><th>OVR</th><th>POT</th><th>Grade</th></tr></thead>
+         <tbody>{prospects.map((p,i)=>(
+           <tr key={p.id} className="border-b border-[#15203a] hover:bg-[#13203a]">
+             <td className="text-center text-slate-500">{i+1}</td>
+             <td className="text-slate-400">{p.pos}</td>
+             <td className="text-left"><PlayerLink p={p} className="font-medium"/></td>
+             <td className="text-center text-slate-400">{tn(p.teamId)}</td>
+             <td className="text-center">{p.age}</td>
+             <td className="text-center"><OvrPill v={p.ovr}/></td>
+             <td className="text-center text-amber-300 font-semibold">{p.pot}</td>
+             <td className="text-center text-slate-300">{Math.round(prospectGrade(p))}</td>
+           </tr>))}</tbody>
+       </table>
+       </div>
+     </Card>
+   </div>
+  );
+}
+
 /* ----------------------------- Leaders --------------------------------- */
 function Leaders({G}){
-  // MLB leaderboards only — exclude AAA players
-  const all = Object.values(G.players).filter(p=>!isAAAId(p.teamId));
+  // MLB leaderboards only — exclude AAA and college players
+  const all = Object.values(G.players).filter(p=>isMlbId(p.teamId));
   // scale qualifier thresholds with games played so boards read right all season
   const gpMax = Math.max(1, ...G.teams.map(t=>t.w+t.l));
   const paQual = Math.max(20, round(gpMax*2.5));
@@ -3376,7 +3543,7 @@ function recordSeasonRecords(G){
   const up=(k,v,holder,team)=>{ if(v==null||v<=0) return; if(!R[k]||v>R[k].value) R[k]={value:v,holder,team,season:G.season}; };
   const lo=(k,v,holder,team)=>{ if(v==null) return; if(!R[k]||v<R[k].value) R[k]={value:v,holder,team,season:G.season}; };
   G.teams.forEach(t=>up("teamWins", t.w, t.name, t.abbr));
-  const mlb=Object.values(G.players).filter(p=>{ const t=teamById(G,p.teamId); return t && !t.aaa; });
+  const mlb=Object.values(G.players).filter(p=>isMlbId(p.teamId));
   const hitters=mlb.filter(p=>!p.isP && p.stats.PA>=300);
   const pitchers=mlb.filter(p=>p.isP && p.stats.OUT>=120);
   const bH=(fn,k)=>{ const b=hitters.reduce((a,c)=>(!a||fn(c)>fn(a))?c:a,null); if(b) up(k,fn(b),b.name,teamAbbrOf(G,b)); };
@@ -3393,6 +3560,7 @@ function recordCareerRecords(G){
   const R=ensureRecords(G).career;
   const up=(k,v,holder,team)=>{ if(v==null||v<=0) return; if(!R[k]||v>R[k].value) R[k]={value:v,holder,team,season:G.season}; };
   Object.values(G.players).forEach(p=>{
+    if(isCollegeId(p.teamId)) return;             // amateur stats don't set pro career records
     const c=p.career||{}, s=p.stats||{}, tot=k=>(c[k]||0)+(s[k]||0), team=teamAbbrOf(G,p);
     if(p.isP){ up("cW",tot("W"),p.name,team); up("cSV",tot("SV"),p.name,team); up("cK",tot("SO"),p.name,team); up("cIP",Math.floor(tot("OUT")/3),p.name,team); }
     else { up("cHR",tot("HR"),p.name,team); up("cH",tot("H"),p.name,team); up("cRBI",tot("RBI"),p.name,team); up("cR",tot("R"),p.name,team); up("cSB",tot("SB"),p.name,team); }
@@ -3804,7 +3972,7 @@ function OffseasonHub({G, commit, tShow, setTab}){
       else if(p.age<=30) center = -0.5;                      // gentle decline begins
       else if(p.age<=33) center = -1.1 - (p.age-30)*0.25;
       else               center = -2.2 - (p.age-33)*0.4;     // age cliff
-      if(isAAAId(p.teamId) && p.age<=25) center += 1.2;      // minors development boost
+      if((isAAAId(p.teamId)||isCollegeId(p.teamId)) && p.age<=25) center += 1.2;   // minors/college development boost
       // performance: young producers develop faster, vets who rake age gracefully, busts stall
       if(p.age<=27) center += perf.score * perf.weight * 1.6;
       else          center += perf.score * perf.weight * 0.7;
@@ -3854,6 +4022,7 @@ function OffseasonHub({G, commit, tShow, setTab}){
     // advance each rostered contract one year (drop the season just played), then expire to FA.
     // Free agents keep their ask intact — their "contract" is a demand, not a deal in progress.
     Object.values(G.players).forEach(p=>{
+      if(isCollegeId(p.teamId)) return;             // amateurs: no pro contract to advance
       if(p.teamId==null){ ensureContract(p); return; }
       if(Array.isArray(p.contract) && p.contract.length) p.contract.shift();
       p.years = Array.isArray(p.contract) ? p.contract.length : Math.max(0, (p.years||1)-1);
@@ -3861,6 +4030,7 @@ function OffseasonHub({G, commit, tShow, setTab}){
     });
     const expiredLog=[];
     Object.values(G.players).forEach(p=>{
+      if(isCollegeId(p.teamId)) return;             // amateurs don't expire to FA
       if(p.years<=0 && p.teamId!=null){
         // AAA prospects stay under org control until 28 (they're cheap, haven't hit arb yet)
         if(isAAAId(p.teamId) && p.age<28){ setContract(p, p.salary||0.7, rint(2,4), []); return; }
@@ -3999,11 +4169,12 @@ function recordSeasonHistory(p, season){
   flushLevel(p);                                  // bank the final stint to its level
   const ls = p._levelStats || {};
   const yt = p._yrTeams || [];
-  // team labels carry a " AAA" suffix for minor-league stints; split them by level
-  const teamsFor = lvl => yt.filter(t => / AAA$/.test(t) === (lvl==="AAA"));
+  // team labels carry a " AAA" / " (C)" suffix; split a multi-level season by its labels
+  const lvlOfLabel = lbl => / \(C\)$/.test(lbl)?"COL":(/ AAA$/.test(lbl)?"AAA":"MLB");
+  const teamsFor = lvl => yt.filter(t => lvlOfLabel(t)===lvl);
   p.history = p.history||[];
   // one row per level actually played — so a season split MLB/AAA produces two rows
-  ["MLB","AAA"].forEach(lvl=>{
+  ["MLB","AAA","COL"].forEach(lvl=>{
     const st = ls[lvl]; if(!st) return;
     const played = p.isP ? (st.OUT>0) : (st.PA>0);
     if(!played) return;
@@ -4415,12 +4586,15 @@ function startNewSeason(G){
     if(t.id===G.userTeamId && t.budgetDelta!==0)
       logNews(G,"signing",`${t.abbr} ${t.budgetDelta>0?"revenue up":"budget tightens"} — payroll budget ${t.budgetDelta>0?"+":""}${t.budgetDelta} to ${money(t.budget)}`, t.id);
   });
-  // reset records & stats (MLB + AAA)
+  // reset records & stats (MLB + AAA + college)
   G.teams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
   G.aaaTeams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0; });
+  (G.collegeTeams||[]).forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
   G.schedule = buildSchedule(G.teams);
   G.aaaSchedule = buildSchedule(G.aaaTeams);
-  padSchedules(G.schedule, G.aaaSchedule);
+  G.collegeSchedule = G.collegeTeams ? buildSchedule(G.collegeTeams, collegeGamesBetween) : null;
+  (G.collegeTeams||[]).forEach(t=>autoSetLineups(t, G.players));
+  padSchedules(G.schedule, G.aaaSchedule, G.collegeSchedule);
   G.day=0; G.season++; G.phase="regular";
   startBACup(G);                                // fresh BA Cup bracket for the new season
   G.playoffs=null; G.draftClass=[]; G.draftPicks=[]; G.draftPick=0; G.offStep=null;
@@ -4708,8 +4882,8 @@ function PlayersBrowser({G, commit, tShow, setTab, setTradeFocus}){
   const [extendTarget,setExtendTarget]=useState(null); // extension modal
   const me=G.teams[G.userTeamId];
   const space=me.budget-payroll(G,me.id);
-  const lvlOf=p=>p.teamId==null?"FA":(isAAAId(p.teamId)?"AAA":"MLB");
-  const orgOf=p=>p.teamId==null?null:(isAAAId(p.teamId)?parentIdOf(p.teamId):p.teamId);
+  const lvlOf=p=>levelOf(p.teamId);
+  const orgOf=p=>p.teamId==null?null:(isCollegeId(p.teamId)?p.teamId:(isAAAId(p.teamId)?parentIdOf(p.teamId):p.teamId));
   const all=Object.values(G.players);
   let rows=all.filter(p=>{
     if(q && !p.name.toLowerCase().includes(q.toLowerCase())) return false;

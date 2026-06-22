@@ -96,6 +96,20 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   rosters are younger/weaker (`buildAAARoster`, `meanAdj=-6`; **14 hitters + 5 SP + 8 RP**) and prospects
   develop faster in the offseason. Roster screen has a **AAA Affiliate** section with `↑ up` / `↓ AAA`
   (`callUp`/`sendDown`); the **AAA** tab shows affiliate standings + top prospects. Draftees report to AAA.
+- **College league (amateur draft pipeline):** a standalone league of **24 amateur clubs**
+  (`COLLEGE_DEFS`, 2 conferences Coastal/Heartland × 3 divisions × 4) at **ids 60–83** (`COLLEGE_OFFSET=60`).
+  Team-id namespace is now 3-tier: `isMlbId` (<30), `isAAAId` (30–59), `isCollegeId` (≥60); `levelOf(id)`
+  returns MLB/AAA/COL/FA; `teamById` resolves all three. Rosters (`buildCollegeRoster`) are 17–21yo, raw
+  (`meanAdj=-12`) but high-ceiling — **amateurs** (`p.amateur`, no pro contract, `p.classYr` = 21−age for
+  draft eligibility). A lighter ~50-game slate (`collegeGamesBetween`, `buildSchedule(teams, gb)`) sims in
+  `simDay` alongside MLB/AAA; `padSchedules` (now variadic) keeps all three calendars aligned. `flushLevel` /
+  `recordSeasonHistory` understand a **COL** level (team labels suffix " (C)"; `teamLabel`), so college stats
+  land as COL history rows. **MLB-only filters were tightened from `!isAAAId` to `isMlbId`** (Leaders,
+  `leagueWarCtx`, season/career records, payIncentives) so college players never leak into MLB boards. The
+  offseason contract loops skip `isCollegeId` players (amateurs don't expire/age contracts); college players
+  get the same young-player development boost. The **College** tab (`CollegeLeague`) shows standings, full
+  leader boards, and the top-30 draft prospects — clickable names everywhere. **Draft integration (college
+  feeds the draft) + college/AAA playoffs are built in later phases.**
 - **AI roster management (`aiAlignOrg`):** keeps each org's BEST talent on the big-league club instead of
   buried in AAA. Promotes by OVR while guaranteeing a natural fielder at every position and a 5-man-capable
   staff (≤16 hitters + ≤14 pitchers up, the rest to the affiliate). Called at league gen (all clubs) and in
