@@ -72,6 +72,15 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
     the save small), champions roll into `G.aaaChampions`/`G.collegeChampions`. `seriesGame` was generalized
     to `teamById` (works for any league) and only feeds MLB game-records. The **AAA** and **College** tabs
     render the finished bracket via `MinorBracket` (seeds, per-round series scores, champion, past winners).
+    `simSeriesAuto` keeps each game's **box score** (`g.box`), so `MinorBracket` shows clickable per-game
+    chips (G1/G2…) that open the shared `BoxScore` modal — same player-by-player sheet as MLB games.
+  - **AAA/college records & sub-tabbed pages:** `recordMinorRecords(G, "AAA"|"COL")` (run in `enterPlayoffs`
+    before playoff stats) tracks single-season bests + **career bests** (`levelCareerTotal` sums a player's
+    history rows at that level + live season; persistent high-water mark) into `G.aaaRecords`/`G.collegeRecords`
+    `{season,career}`. The **AAA** and **College** tabs are now organized with in-page `SubTabs`
+    (Standings / Leaders / Prospects / Playoffs / Records); the **Records** sub-tab is each league's own
+    "Hall of Fame" via `MinorRecords` (champions roll + season bests + career bests). Standings team names open
+    the shared `TeamRosterModal` (works for any league; subtitle handles AAA/college — no payroll for amateurs).
   under quota). Final scores/records/history are unaffected and persist forever.
 - **Rotation & bullpen:** every team carries a **5-man rotation** (`autoSetLineups` promotes the best
   arms if short of true SPs) and each starter goes every 5th game (≈32–33 GS). The bullpen has a

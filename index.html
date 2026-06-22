@@ -2621,14 +2621,35 @@ function AAALeague({G}){
     .filter(p=>p.teamId!=null && (isAAAId(p.teamId) || p.age<=22))
     .sort((a,b)=>prospectGrade(b)-prospectGrade(a)).slice(0,30);
   const orgAbbr = p => { const id=isAAAId(p.teamId)?parentIdOf(p.teamId):p.teamId; return G.teams[id]?G.teams[id].abbr:"—"; };
+  const [selTeam,setSelTeam]=useState(null);
+  const [view,setView]=useState("Standings");
+  // AAA leader pools
+  const aaaPlayers=Object.values(G.players).filter(p=>isAAAId(p.teamId));
+  const gpMax=Math.max(1,...G.aaaTeams.map(t=>t.w+t.l));
+  const hitters=aaaPlayers.filter(p=>!p.isP && p.stats.PA>=Math.max(10,round(gpMax*2.2)));
+  const pitchers=aaaPlayers.filter(p=>p.isP && p.stats.OUT>=Math.max(15,round(gpMax*1.2)));
+  const tn=id=>teamById(G,id)?teamById(G,id).abbr:"—";
+  const topN=(list,key,n=5)=>[...list].sort((a,b)=>key(b)-key(a)).slice(0,n);
+  const botN=(list,key,n=5)=>[...list].sort((a,b)=>key(a)-key(b)).slice(0,n);
+  const board=(title,list,fmt)=>(
+    <Card><h4 className="font-bold mb-2 text-sm">{title}</h4>
+      <table className="w-full text-sm tnum"><tbody>
+        {list.map((p,i)=>(<tr key={p.id} className="border-b border-[#15203a]">
+          <td className="text-slate-500 w-5">{i+1}</td>
+          <td className="text-left"><PlayerLink p={p} className="font-medium"/> <span className="text-slate-600 text-xs">{tn(p.teamId)}</span></td>
+          <td className="text-right font-semibold">{fmt(p)}</td></tr>))}
+        {!list.length && <tr><td className="text-slate-500 text-sm py-1">—</td></tr>}
+      </tbody></table></Card>
+  );
   return (
     <div className="space-y-4">
       <Card>
         <h3 className="font-bold text-amber-300 mb-1">AAA — Minor Leagues</h3>
-        <p className="text-xs text-slate-400">Every club runs a AAA affiliate that plays its own season. Develop prospects here and call them up from the Roster tab.</p>
+        <p className="text-xs text-slate-400 mb-2">Every club runs a AAA affiliate that plays its own season. Click a team for its roster, or a name for full stats.</p>
+        <SubTabs tabs={["Standings","Leaders","Prospects","Playoffs","Records"]} view={view} setView={setView}/>
       </Card>
-      <MinorBracket G={G} br={G.aaaPlayoffs} champions={G.aaaChampions} title="AAA"/>
-      <div className="grid md:grid-cols-2 gap-4">
+
+      {view==="Standings" && <div className="grid md:grid-cols-2 gap-4">
         {order.map(k=>(
           <Card key={k}>
             <h3 className="font-bold mb-2">{k} <span className="text-amber-400/70 text-xs">AAA</span></h3>
@@ -2636,8 +2657,8 @@ function AAALeague({G}){
               <thead><tr className="text-slate-400 text-xs"><th className="text-left">Affiliate</th><th>W</th><th>L</th><th>PCT</th><th>DIFF</th></tr></thead>
               <tbody>
                 {byDiv[k].map(t=>(
-                  <tr key={t.id} className={"border-t border-[#15203a] "+(t.id===aaaUserId?"bg-amber-900/20 font-semibold":"")}>
-                    <td className="text-left py-1">{t.city} {t.nick}</td>
+                  <tr key={t.id} className={"border-t border-[#15203a] hover:bg-[#13203a] "+(t.id===aaaUserId?"bg-amber-900/20 font-semibold":"")}>
+                    <td className="text-left py-1"><button onClick={()=>setSelTeam(t)} className="hover:text-emerald-300 font-medium text-left">{t.city} {t.nick}</button></td>
                     <td className="text-center">{t.w}</td><td className="text-center">{t.l}</td>
                     <td className="text-center">{f3(pct(t))}</td>
                     <td className={"text-center "+((t.rs-t.ra)>=0?"text-emerald-400":"text-red-400")}>{t.rs-t.ra>=0?"+":""}{t.rs-t.ra}</td>
@@ -2647,8 +2668,21 @@ function AAALeague({G}){
             </table>
           </Card>
         ))}
-      </div>
-      <Card>
+      </div>}
+
+      {view==="Leaders" && <div className="grid md:grid-cols-3 gap-3">
+        {board("AVG", topN(hitters,p=>avg(p.stats)), p=>f3(avg(p.stats)))}
+        {board("Home Runs", topN(hitters,p=>p.stats.HR), p=>p.stats.HR)}
+        {board("RBI", topN(hitters,p=>p.stats.RBI), p=>p.stats.RBI)}
+        {board("OPS", topN(hitters,p=>ops(p.stats)), p=>f3(ops(p.stats)))}
+        {board("Stolen Bases", topN(hitters.filter(p=>p.stats.SB>0),p=>p.stats.SB), p=>p.stats.SB)}
+        {board("Hits", topN(hitters,p=>p.stats.H), p=>p.stats.H)}
+        {board("ERA", botN(pitchers,p=>era(p.stats)), p=>f2(era(p.stats)))}
+        {board("Strikeouts", topN(pitchers,p=>p.stats.SO), p=>p.stats.SO)}
+        {board("Wins", topN(pitchers,p=>p.stats.W), p=>p.stats.W)}
+      </div>}
+
+      {view==="Prospects" && <Card>
         <h3 className="font-bold mb-1">🔭 Top 30 Prospects (league-wide)</h3>
         <p className="text-xs text-slate-400 mb-2">Ranked by scouting grade — ceiling (POT), current ability, and how much time they have to develop. ETA estimates how soon they'll be MLB-ready.</p>
         <div className="overflow-x-auto">
@@ -2672,24 +2706,42 @@ function AAALeague({G}){
           </tbody>
         </table>
         </div>
-      </Card>
+      </Card>}
+
+      {view==="Playoffs" && (G.aaaPlayoffs
+        ? <MinorBracket G={G} br={G.aaaPlayoffs} champions={G.aaaChampions} title="AAA"/>
+        : <Card><div className="text-sm text-slate-500">The AAA postseason plays out at the end of each season — finish this one to see the bracket and box scores.</div></Card>)}
+
+      {view==="Records" && <MinorRecords G={G} store={G.aaaRecords} champions={G.aaaChampions} label="AAA"/>}
+
+      {selTeam && <TeamRosterModal G={G} team={selTeam} onClose={()=>setSelTeam(null)} />}
     </div>
   );
 }
 
 /* ---- minor-league (AAA / college) finished-bracket display ---- */
 function MinorBracket({G, br, champions, title}){
+  const [boxGame,setBoxGame]=useState(null);
   if(!br || !br.leagues) return null;
   const tn = id => { const t=teamById(G,id); return t?t.abbr:"?"; };
   const tfull = id => { const t=teamById(G,id); return t?t.name.replace(" (AAA)",""):"?"; };
   const Series = ({s, label})=>{
     if(!s) return null;
     const hiW=s.winner===s.hi;
-    return <div className="flex items-center gap-2 text-sm py-0.5">
-      <span className="text-slate-500 text-[10px] w-10 shrink-0">{label||""}</span>
-      <span className={"w-12 text-right "+(hiW?"font-bold text-emerald-300":"text-slate-300")}>{tn(s.hi)}</span>
-      <span className="tnum text-slate-400 w-8 text-center">{s.hw}–{s.lw}</span>
-      <span className={"w-12 "+(!hiW?"font-bold text-emerald-300":"text-slate-300")}>{tn(s.lo)}</span>
+    return <div className="py-0.5">
+      <div className="flex items-center gap-2 text-sm">
+        <span className="text-slate-500 text-[10px] w-10 shrink-0">{label||""}</span>
+        <span className={"w-12 text-right "+(hiW?"font-bold text-emerald-300":"text-slate-300")}>{tn(s.hi)}</span>
+        <span className="tnum text-slate-400 w-8 text-center">{s.hw}–{s.lw}</span>
+        <span className={"w-12 "+(!hiW?"font-bold text-emerald-300":"text-slate-300")}>{tn(s.lo)}</span>
+      </div>
+      {/* clickable per-game box scores */}
+      <div className="flex flex-wrap gap-1 ml-12 mt-0.5">
+        {(s.games||[]).map((g,i)=> g.box
+          ? <button key={i} onClick={()=>setBoxGame(g.box)} title="View box score"
+              className="text-[10px] tnum px-1 rounded bg-[#13203a] text-slate-400 hover:bg-[#1c3050] hover:text-emerald-300">G{i+1} {g.hs}-{g.as}</button>
+          : <span key={i} className="text-[10px] tnum px-1 text-slate-600">G{i+1} {g.hs}-{g.as}</span>)}
+      </div>
     </div>;
   };
   const champ = teamById(G, br.champion);
@@ -2710,9 +2762,58 @@ function MinorBracket({G, br, champions, title}){
         ))}
       </div>
       <div className="mt-3 pt-2 border-t border-[#1d2940]"><Series s={br.final} label="FINAL"/></div>
-      {champions && champions.length>1 && <div className="text-xs text-slate-500 mt-2">Past champions: {champions.slice(-6).reverse().map(c=>`${c.season} ${tn(c.id)}`).join(" · ")}</div>}
+      <div className="text-[11px] text-slate-500 mt-1">Tap a game (G1, G2…) to open its box score.</div>
+      {champions && champions.length>1 && <div className="text-xs text-slate-500 mt-2">Past champions: {champions.slice(-8).reverse().map(c=>`${c.season} ${tn(c.id)}`).join(" · ")}</div>}
+      {boxGame && <BoxScore G={G} box={boxGame} onClose={()=>setBoxGame(null)} />}
     </Card>
   );
+}
+
+// Champions + single-season + career bests for a secondary league (its own "Hall of Fame").
+function MinorRecords({G, store, champions, label}){
+  const tfull=id=>{const t=teamById(G,id);return t?t.name.replace(" (AAA)",""):"?";};
+  const S=store||{}, season=S.season||{}, career=S.career||{};
+  const HIT=[["HR","Home Runs"],["RBI","RBI"],["H","Hits"],["R","Runs"],["SB","Stolen Bases"],["AVG","Batting Avg"]];
+  const PIT=[["pW","Wins"],["pK","Strikeouts"],["pSV","Saves"],["ERA","Lowest ERA"]];
+  const CAREER=[["cHR","Home Runs"],["cH","Hits"],["cRBI","RBI"],["cSB","Stolen Bases"],["cK","Strikeouts"],["cW","Wins"],["cSV","Saves"]];
+  const fmt=(k,v)=>k==="AVG"?f3(v):k==="ERA"?f2(v):v;
+  const rows=(defs,recs)=>defs.filter(([k])=>recs[k]).map(([k,lbl])=>{const r=recs[k];return (
+    <div key={k} className="flex items-center gap-2 px-2 py-1 rounded bg-[#13203a] text-sm">
+      <span className="text-slate-400 text-xs flex-1">{lbl}</span>
+      <span className="font-bold tnum text-amber-300">{fmt(k,r.value)}</span>
+      <span className="text-slate-500 text-xs truncate max-w-[140px]">{r.holder}{r.team?` (${r.team})`:""} '{String(r.season).slice(-2)}</span>
+    </div>);});
+  return (
+   <div className="space-y-4">
+     <Card>
+       <h3 className="font-bold mb-2">🏆 {label} Champions</h3>
+       {(champions&&champions.length)
+         ? <div className="grid sm:grid-cols-2 gap-1">{champions.slice().reverse().map(c=>(
+             <div key={c.season} className="flex items-center gap-2 px-2 py-1 rounded bg-[#13203a] text-sm">
+               <span className="text-slate-500 tnum w-12">{c.season}</span><span className="text-amber-300">🏆</span>
+               <span className="flex-1 font-semibold">{tfull(c.id)}</span></div>))}</div>
+         : <div className="text-sm text-slate-500">No champions yet — finish a season to crown one.</div>}
+     </Card>
+     <Card>
+       <h3 className="font-bold mb-2">📊 Single-Season Bests</h3>
+       {(HIT.some(([k])=>season[k])||PIT.some(([k])=>season[k]))
+         ? <div className="grid sm:grid-cols-2 gap-1">{rows(HIT,season)}{rows(PIT,season)}</div>
+         : <div className="text-sm text-slate-500">Set after the first completed season.</div>}
+     </Card>
+     <Card>
+       <h3 className="font-bold mb-2">🎖️ Career Bests <span className="text-slate-500 text-sm font-normal">— all-time {label}</span></h3>
+       {CAREER.some(([k])=>career[k])
+         ? <div className="grid sm:grid-cols-2 gap-1">{rows(CAREER,career)}</div>
+         : <div className="text-sm text-slate-500">Accrues over multiple seasons.</div>}
+     </Card>
+   </div>
+  );
+}
+// small in-page sub-tab bar
+function SubTabs({tabs, view, setView}){
+  return <div className="flex gap-1 flex-wrap">
+    {tabs.map(t=><button key={t} onClick={()=>setView(t)} className={"px-3 py-1 rounded-md text-sm "+(view===t?"bg-emerald-500 text-slate-900 font-semibold":"bg-[#16213a] text-slate-300 hover:bg-[#1c2c4a]")}>{t}</button>)}
+  </div>;
 }
 
 /* ----------------------------- College league -------------------------- */
@@ -2742,14 +2843,16 @@ function CollegeLeague({G}){
   );
   const prospects = [...players].sort((a,b)=>prospectGrade(b)-prospectGrade(a)).slice(0,30);
   const [selTeam,setSelTeam]=useState(null);
+  const [view,setView]=useState("Standings");
   return (
    <div className="space-y-4">
      <Card>
        <h3 className="font-bold text-violet-300 mb-1">🎓 College Baseball — the draft pipeline</h3>
-       <p className="text-xs text-slate-400">24 amateur clubs in two conferences play their own season. The best players declare for the MLB Draft each offseason — drafted players carry their college stats into the pros. Click any name for full stats.</p>
+       <p className="text-xs text-slate-400 mb-2">24 amateur clubs in two conferences. The best players declare for the MLB Draft each offseason, carrying their college stats into the pros. Click any team or name for details.</p>
+       <SubTabs tabs={["Standings","Leaders","Prospects","Playoffs","Records"]} view={view} setView={setView}/>
      </Card>
-     <MinorBracket G={G} br={G.collegePlayoffs} champions={G.collegeChampions} title="College"/>
-     <div className="grid md:grid-cols-2 gap-4">
+
+     {view==="Standings" && <div className="grid md:grid-cols-2 gap-4">
        {order.map(k=>(
          <Card key={k}>
            <h3 className="font-bold mb-2">{k} <span className="text-violet-400/70 text-xs">NCAA</span></h3>
@@ -2765,22 +2868,21 @@ function CollegeLeague({G}){
            </table>
          </Card>
        ))}
-     </div>
-     <div>
-       <h3 className="font-bold mb-2">📊 College Leaders</h3>
-       <div className="grid md:grid-cols-3 gap-3">
-         {board("AVG", top(hitters,p=>avg(p.stats)), p=>f3(avg(p.stats)))}
-         {board("Home Runs", top(hitters,p=>p.stats.HR), p=>p.stats.HR)}
-         {board("RBI", top(hitters,p=>p.stats.RBI), p=>p.stats.RBI)}
-         {board("OPS", top(hitters,p=>ops(p.stats)), p=>f3(ops(p.stats)))}
-         {board("Stolen Bases", top(hitters.filter(p=>p.stats.SB>0),p=>p.stats.SB), p=>p.stats.SB)}
-         {board("Hits", top(hitters,p=>p.stats.H), p=>p.stats.H)}
-         {board("ERA", bot(pitchers,p=>era(p.stats)), p=>f2(era(p.stats)))}
-         {board("Strikeouts", top(pitchers,p=>p.stats.SO), p=>p.stats.SO)}
-         {board("Wins", top(pitchers,p=>p.stats.W), p=>p.stats.W)}
-       </div>
-     </div>
-     <Card>
+     </div>}
+
+     {view==="Leaders" && <div className="grid md:grid-cols-3 gap-3">
+       {board("AVG", top(hitters,p=>avg(p.stats)), p=>f3(avg(p.stats)))}
+       {board("Home Runs", top(hitters,p=>p.stats.HR), p=>p.stats.HR)}
+       {board("RBI", top(hitters,p=>p.stats.RBI), p=>p.stats.RBI)}
+       {board("OPS", top(hitters,p=>ops(p.stats)), p=>f3(ops(p.stats)))}
+       {board("Stolen Bases", top(hitters.filter(p=>p.stats.SB>0),p=>p.stats.SB), p=>p.stats.SB)}
+       {board("Hits", top(hitters,p=>p.stats.H), p=>p.stats.H)}
+       {board("ERA", bot(pitchers,p=>era(p.stats)), p=>f2(era(p.stats)))}
+       {board("Strikeouts", top(pitchers,p=>p.stats.SO), p=>p.stats.SO)}
+       {board("Wins", top(pitchers,p=>p.stats.W), p=>p.stats.W)}
+     </div>}
+
+     {view==="Prospects" && <Card>
        <h3 className="font-bold mb-1">🔭 Top 30 Draft Prospects</h3>
        <p className="text-xs text-slate-400 mb-2">Ranked by scouting grade — these headline the upcoming MLB Draft.</p>
        <div className="overflow-x-auto">
@@ -2799,7 +2901,14 @@ function CollegeLeague({G}){
            </tr>))}</tbody>
        </table>
        </div>
-     </Card>
+     </Card>}
+
+     {view==="Playoffs" && (G.collegePlayoffs
+       ? <MinorBracket G={G} br={G.collegePlayoffs} champions={G.collegeChampions} title="College"/>
+       : <Card><div className="text-sm text-slate-500">The college postseason plays out at the end of each season — finish this one to see the bracket and box scores.</div></Card>)}
+
+     {view==="Records" && <MinorRecords G={G} store={G.collegeRecords} champions={G.collegeChampions} label="College"/>}
+
      {selTeam && <TeamRosterModal G={G} team={selTeam} onClose={()=>setSelTeam(null)} />}
    </div>
   );
@@ -3647,12 +3756,48 @@ function updateGameRecords(G, lines, season){
   });
 }
 
+// a player's CAREER total at one level (sum of that level's history rows + the live season,
+// since season stats haven't been folded into history yet at season end)
+function levelCareerTotal(p, level, key){
+  let t=0;
+  (p.history||[]).forEach(h=>{ if(h.level===level && h.stats) t += (h.stats[key]||0); });
+  if(levelOf(p.teamId)===level) t += (p.stats[key]||0);
+  return t;
+}
+// Single-season + career bests for a secondary league (College/AAA), kept on its own page.
+// `level` = "COL" or "AAA"; stores into G.collegeRecords / G.aaaRecords {season,career}.
+function recordMinorRecords(G, level){
+  const store = level==="COL" ? (G.collegeRecords=G.collegeRecords||{season:{},career:{}})
+                              : (G.aaaRecords=G.aaaRecords||{season:{},career:{}});
+  store.season=store.season||{}; store.career=store.career||{};
+  const players = Object.values(G.players).filter(p=>levelOf(p.teamId)===level);
+  const teams = level==="COL"?(G.collegeTeams||[]):G.aaaTeams;
+  const gp = Math.max(1, ...teams.map(t=>t.w+t.l));
+  const qPA=Math.max(40, round(gp*2.0)), qOUT=Math.max(40, round(gp*1.0));
+  const hitters=players.filter(p=>!p.isP && p.stats.PA>=qPA);
+  const pitchers=players.filter(p=>p.isP && p.stats.OUT>=qOUT);
+  const upS=(k,v,h,t)=>{ if(v==null||v<=0) return; if(!store.season[k]||v>store.season[k].value) store.season[k]={value:v,holder:h,team:t,season:G.season}; };
+  const loS=(k,v,h,t)=>{ if(v==null) return; if(!store.season[k]||v<store.season[k].value) store.season[k]={value:v,holder:h,team:t,season:G.season}; };
+  const bH=(fn,k)=>{ const b=hitters.reduce((a,c)=>(!a||fn(c)>fn(a))?c:a,null); if(b) upS(k,fn(b),b.name,teamAbbrOf(G,b)); };
+  bH(p=>p.stats.HR,"HR"); bH(p=>p.stats.RBI,"RBI"); bH(p=>p.stats.H,"H"); bH(p=>p.stats.R,"R"); bH(p=>p.stats.SB,"SB"); bH(p=>+avg(p.stats).toFixed(3),"AVG");
+  const bP=(fn,k)=>{ const b=pitchers.reduce((a,c)=>(!a||fn(c)>fn(a))?c:a,null); if(b) upS(k,fn(b),b.name,teamAbbrOf(G,b)); };
+  bP(p=>p.stats.W,"pW"); bP(p=>p.stats.SO,"pK"); bP(p=>p.stats.SV,"pSV");
+  const bERA=pitchers.reduce((a,c)=>(!a||era(c.stats)<era(a.stats))?c:a,null); if(bERA) loS("ERA",+era(bERA.stats).toFixed(2),bERA.name,teamAbbrOf(G,bERA));
+  // career high-water marks (persist even after the player is drafted/gone)
+  const upC=(k,v,h,t)=>{ if(v==null||v<=0) return; if(!store.career[k]||v>store.career[k].value) store.career[k]={value:v,holder:h,team:t,season:G.season}; };
+  players.forEach(p=>{ const tm=teamAbbrOf(G,p);
+    if(p.isP){ upC("cK",levelCareerTotal(p,level,"SO"),p.name,tm); upC("cW",levelCareerTotal(p,level,"W"),p.name,tm); upC("cSV",levelCareerTotal(p,level,"SV"),p.name,tm); }
+    else { upC("cHR",levelCareerTotal(p,level,"HR"),p.name,tm); upC("cH",levelCareerTotal(p,level,"H"),p.name,tm); upC("cRBI",levelCareerTotal(p,level,"RBI"),p.name,tm); upC("cSB",levelCareerTotal(p,level,"SB"),p.name,tm); }
+  });
+}
+
 function enterPlayoffs(G){
   finishBACup(G);     // make sure the season's BA Cup has a winner before the season closes
   computeAwards(G);   // hand out hardware while season stats are still live
   recordFranchiseRecords(G);   // update each club's all-time record book before stats reset
   recordSeasonRecords(G);      // league-wide single-season records
   recordCareerRecords(G);      // league-wide career records (high-water mark)
+  recordMinorRecords(G,"AAA"); recordMinorRecords(G,"COL");   // AAA/college season + career bests (before playoff stats)
   payIncentives(G);   // settle stat-based contract bonuses (off-cap)
   G.phase="playoffs";
   const mk = league => {
@@ -3696,7 +3841,8 @@ function simSeriesAuto(G, hiId, loId, bestOf){
     const hiHome = s.games.length<2 || s.games.length>=4;
     const res=seriesGame(G, hiId, loId, hiHome);
     if(res.winnerId===hiId) s.hw++; else s.lw++;
-    s.games.push({ winnerId:res.winnerId, hs:res.hs, as:res.as });   // slim (no box) — keeps the save small
+    // keep the box score so the user can open each playoff game's player stats (postseason only)
+    s.games.push({ winnerId:res.winnerId, hs:res.hs, as:res.as, box:res.box });
   }
   s.winner = s.hw>s.lw? hiId : loId;
   return s;
