@@ -172,6 +172,17 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   user decides). Offers live in `G.tradeOffers`; the **Hub** renders Accept/Reject cards. Accept runs
   `executeOffer` (preserves MLB/AAA level, refreshes lineups, logs to the news wire). `startNewSeason`
   recomputes the deadline and clears pending offers.
+- **Per-level season stats (`levelStats(p, level)`):** leaderboards, awards, and WAR are computed on a
+  player's **MLB-only / AAA-only / COL-only** line, not the pooled `p.stats` — so a mid-season call-up's AAA
+  numbers never count toward MLB boards/awards, and vice versa. `levelStats` combines the banked `_levelStats`
+  buckets (flushed at each call-up/send-down via `flushLevel`) with the un-flushed current stint
+  (`p.stats − _levelSnap`). The MLB `Leaders` and the AAA `Leaders` sub-tab build a per-player level line
+  (`S(p)`) over the **MLB+AAA** pool (anyone with stats at that level qualifies, regardless of where he is
+  now); `computeAwards` uses `levelStats(p,"MLB")` (and `mvpScore`/`cyScore`/`awardLine` now take a stats
+  object). A season split across levels already yields **two year-by-year rows** (e.g. 2027 MLB + 2027 AAA)
+  via `recordSeasonHistory`. **WAR is graded per league:** `leagueWarCtx(G, level)` builds the avg wOBA/FIP
+  baseline from that level's stats; **MLB, AAA, and College Leaders each have WAR — Position / WAR — Pitcher**
+  boards (`warOf(p, ctx, S(p))`). `PlayerModal`'s season-WAR pill uses the player's current level's ctx+line.
 - **Per-season history:** every game tags the team a player suited up for into `p._yrTeams`
   (`tagTeam` in `markGamesPlayed` for hitters and at the end of `simGame` for the pitchers who threw —
   so mid-season trades record *both* teams). At the offseason rollover `recordSeasonHistory(p, season)`

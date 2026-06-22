@@ -174,6 +174,19 @@ function flushLevel(p){
   for(const k in p.stats) bucket[k] = (bucket[k]||0) + (p.stats[k] - (snap[k]||0));
   p._levelSnap = Object.assign({}, p.stats);
 }
+// A player's CURRENT-season stats accrued at one level only (MLB / AAA / COL). Combines the
+// banked _levelStats buckets (flushed at each call-up/send-down) with the un-flushed current
+// stint (p.stats − _levelSnap). So a guy called up mid-year shows ONLY his MLB line on the
+// MLB board and ONLY his AAA line on the AAA board (and two separate year-by-year rows).
+function levelStats(p, level){
+  const out = (p._levelStats && p._levelStats[level]) ? Object.assign({}, p._levelStats[level])
+                                                      : (p.isP?emptyPitStats():emptyHitStats());
+  if(levelOf(p.teamId)===level){
+    const snap = p._levelSnap || {};
+    for(const k in p.stats) out[k] = (out[k]||0) + (p.stats[k] - (snap[k]||0));
+  }
+  return out;
+}
 
 function makeHitter(pos, ageRange, meanAdj=0){
   const age = rint(ageRange[0], ageRange[1]);
@@ -979,13 +992,17 @@ const fip  = s => s.OUT? (((13*(s.HRA||0) + 3*(s.BB+(s.HBP||0)) - 2*s.SO)/(s.OUT
 const WOBA_SCALE = 1.20, RUNS_PER_WIN = 11.5;   // tuned so league position WAR sums ~57% of total (vs pitching)
 const POS_ADJ = {C:12.5, SS:7.5, "2B":2.5, "3B":2.5, CF:2.5, LF:-7.5, RF:-7.5, "1B":-12.5, DH:-17.5};
 const PIT_RPW = 9.5, PIT_REP_CUSHION = 0.85;   // replacement arm ≈ 0.85 R/9 worse than league avg
-function leagueWarCtx(G){
-  const mlb = Object.values(G.players).filter(p=>isMlbId(p.teamId));
-  let wn=0,wd=0; mlb.filter(p=>!p.isP&&p.stats.PA>0).forEach(p=>{ const s=p.stats;
-    const pa=s.AB+s.BB+(s.SF||0)+(s.HBP||0), b1=s.H-s._2B-s._3B-s.HR;
-    wn += 0.69*s.BB+0.72*(s.HBP||0)+0.89*b1+1.27*s._2B+1.62*s._3B+2.10*s.HR; wd += pa; });
-  let fn=0,fd=0; mlb.filter(p=>p.isP&&p.stats.OUT>0).forEach(p=>{ const s=p.stats;
-    fn += 13*(s.HRA||0)+3*(s.BB+(s.HBP||0))-2*s.SO; fd += s.OUT/3; });
+// League-average wOBA/FIP baseline for WAR, computed from a single level's stats (MLB/AAA/COL)
+// so each league's WAR is graded against its own run environment.
+function leagueWarCtx(G, level){
+  level = level||"MLB";
+  let wn=0,wd=0,fn=0,fd=0;
+  Object.values(G.players).forEach(p=>{
+    const s=levelStats(p,level);
+    if(!p.isP){ const pa=s.AB+s.BB+(s.SF||0)+(s.HBP||0); if(pa<=0) return; const b1=s.H-s._2B-s._3B-s.HR;
+      wn += 0.69*s.BB+0.72*(s.HBP||0)+0.89*b1+1.27*s._2B+1.62*s._3B+2.10*s.HR; wd += pa; }
+    else { if(!s.OUT) return; fn += 13*(s.HRA||0)+3*(s.BB+(s.HBP||0))-2*s.SO; fd += s.OUT/3; }
+  });
   return { lgwOBA: wd?wn/wd:0.320, lgFIP: (fd?fn/fd:0)+FIP_CONST };
 }
 function warOf(p, ctx, st){
@@ -2092,8 +2109,10 @@ function YearByYear({history, isP, accolades, ringSeasons}){
 
 function PlayerModal({p, team, onClose, G}){
   const s=p.stats, c=p.career;
-  const warCtx = G ? leagueWarCtx(G) : null;
-  const seasonWar = warCtx ? warOf(p, warCtx) : null;
+  // season WAR vs the player's CURRENT level's run environment (MLB/AAA/COL), on his level-only line
+  const lvl = G ? levelOf(p.teamId) : "FA";
+  const warCtx = (G && lvl!=="FA") ? leagueWarCtx(G, lvl) : null;
+  const seasonWar = warCtx ? warOf(p, warCtx, levelStats(p, lvl)) : null;
   // career WAR = sum of per-season WAR stamped in history (older rows may predate WAR → skip)
   const careerWar = (p.history||[]).reduce((t,h)=>t+(typeof h.war==="number"?h.war:0), 0);
   const hitCols = [["G","G"],["PA","PA"],["AB","AB"],["R","R"],["H","H"],["_2B","2B"],["_3B","3B"],["HR","HR"],["RBI","RBI"],["BB","BB"],["SO","SO"],["SB","SB"],["CS","CS"],["SF","SF"],["HBP","HBP"],["GIDP","GIDP"],["E","E"]];
@@ -2623,11 +2642,14 @@ function AAALeague({G}){
   const orgAbbr = p => { const id=isAAAId(p.teamId)?parentIdOf(p.teamId):p.teamId; return G.teams[id]?G.teams[id].abbr:"—"; };
   const [selTeam,setSelTeam]=useState(null);
   const [view,setView]=useState("Standings");
-  // AAA leader pools
-  const aaaPlayers=Object.values(G.players).filter(p=>isAAAId(p.teamId));
+  // AAA leader pools — AAA-ONLY line per player (so a called-up player's MLB stats don't count here)
+  const aaaPool=Object.values(G.players).filter(p=>!isCollegeId(p.teamId));
+  const ml=new Map(); aaaPool.forEach(p=>ml.set(p.id, levelStats(p,"AAA")));
+  const S=p=>ml.get(p.id)||p.stats;
   const gpMax=Math.max(1,...G.aaaTeams.map(t=>t.w+t.l));
-  const hitters=aaaPlayers.filter(p=>!p.isP && p.stats.PA>=Math.max(10,round(gpMax*2.2)));
-  const pitchers=aaaPlayers.filter(p=>p.isP && p.stats.OUT>=Math.max(15,round(gpMax*1.2)));
+  const hitters=aaaPool.filter(p=>!p.isP && S(p).PA>=Math.max(10,round(gpMax*2.2)));
+  const pitchers=aaaPool.filter(p=>p.isP && S(p).OUT>=Math.max(15,round(gpMax*1.2)));
+  const warCtx=leagueWarCtx(G,"AAA");
   const tn=id=>teamById(G,id)?teamById(G,id).abbr:"—";
   const topN=(list,key,n=5)=>[...list].sort((a,b)=>key(b)-key(a)).slice(0,n);
   const botN=(list,key,n=5)=>[...list].sort((a,b)=>key(a)-key(b)).slice(0,n);
@@ -2671,15 +2693,17 @@ function AAALeague({G}){
       </div>}
 
       {view==="Leaders" && <div className="grid md:grid-cols-3 gap-3">
-        {board("AVG", topN(hitters,p=>avg(p.stats)), p=>f3(avg(p.stats)))}
-        {board("Home Runs", topN(hitters,p=>p.stats.HR), p=>p.stats.HR)}
-        {board("RBI", topN(hitters,p=>p.stats.RBI), p=>p.stats.RBI)}
-        {board("OPS", topN(hitters,p=>ops(p.stats)), p=>f3(ops(p.stats)))}
-        {board("Stolen Bases", topN(hitters.filter(p=>p.stats.SB>0),p=>p.stats.SB), p=>p.stats.SB)}
-        {board("Hits", topN(hitters,p=>p.stats.H), p=>p.stats.H)}
-        {board("ERA", botN(pitchers,p=>era(p.stats)), p=>f2(era(p.stats)))}
-        {board("Strikeouts", topN(pitchers,p=>p.stats.SO), p=>p.stats.SO)}
-        {board("Wins", topN(pitchers,p=>p.stats.W), p=>p.stats.W)}
+        {board("WAR — Position", topN(hitters,p=>warOf(p,warCtx,S(p))), p=>f1w(warOf(p,warCtx,S(p))))}
+        {board("WAR — Pitcher", topN(pitchers,p=>warOf(p,warCtx,S(p))), p=>f1w(warOf(p,warCtx,S(p))))}
+        {board("AVG", topN(hitters,p=>avg(S(p))), p=>f3(avg(S(p))))}
+        {board("Home Runs", topN(hitters,p=>S(p).HR), p=>S(p).HR)}
+        {board("RBI", topN(hitters,p=>S(p).RBI), p=>S(p).RBI)}
+        {board("OPS", topN(hitters,p=>ops(S(p))), p=>f3(ops(S(p))))}
+        {board("Stolen Bases", topN(hitters.filter(p=>S(p).SB>0),p=>S(p).SB), p=>S(p).SB)}
+        {board("Hits", topN(hitters,p=>S(p).H), p=>S(p).H)}
+        {board("ERA", botN(pitchers,p=>era(S(p))), p=>f2(era(S(p))))}
+        {board("Strikeouts", topN(pitchers,p=>S(p).SO), p=>S(p).SO)}
+        {board("Wins", topN(pitchers,p=>S(p).W), p=>S(p).W)}
       </div>}
 
       {view==="Prospects" && <Card>
@@ -2828,6 +2852,7 @@ function CollegeLeague({G}){
   const outQual = Math.max(15, round(gpMax*1.2));
   const hitters = players.filter(p=>!p.isP && p.stats.PA>=paQual);
   const pitchers = players.filter(p=>p.isP && p.stats.OUT>=outQual);
+  const warCtx = leagueWarCtx(G,"COL");
   const tn = id => teamById(G,id)?teamById(G,id).abbr:"—";
   const top = (list,key,n=5)=>[...list].sort((a,b)=>key(b)-key(a)).slice(0,n);
   const bot = (list,key,n=5)=>[...list].sort((a,b)=>key(a)-key(b)).slice(0,n);
@@ -2871,6 +2896,8 @@ function CollegeLeague({G}){
      </div>}
 
      {view==="Leaders" && <div className="grid md:grid-cols-3 gap-3">
+       {board("WAR — Position", top(hitters,p=>warOf(p,warCtx,p.stats)), p=>f1w(warOf(p,warCtx,p.stats)))}
+       {board("WAR — Pitcher", top(pitchers,p=>warOf(p,warCtx,p.stats)), p=>f1w(warOf(p,warCtx,p.stats)))}
        {board("AVG", top(hitters,p=>avg(p.stats)), p=>f3(avg(p.stats)))}
        {board("Home Runs", top(hitters,p=>p.stats.HR), p=>p.stats.HR)}
        {board("RBI", top(hitters,p=>p.stats.RBI), p=>p.stats.RBI)}
@@ -2916,15 +2943,19 @@ function CollegeLeague({G}){
 
 /* ----------------------------- Leaders --------------------------------- */
 function Leaders({G}){
-  // MLB leaderboards only — exclude AAA and college players
-  const all = Object.values(G.players).filter(p=>isMlbId(p.teamId));
+  // MLB leaderboards use each player's MLB-ONLY line (a mid-season call-up's AAA stats
+  // don't count here), so anyone with MLB time qualifies regardless of where he is now.
+  const pool = Object.values(G.players).filter(p=>!isCollegeId(p.teamId));
+  const ml = new Map(); pool.forEach(p=> ml.set(p.id, levelStats(p,"MLB")));
+  const S = p => ml.get(p.id) || p.stats;
   // scale qualifier thresholds with games played so boards read right all season
   const gpMax = Math.max(1, ...G.teams.map(t=>t.w+t.l));
   const paQual = Math.max(20, round(gpMax*2.5));
   const outQual = Math.max(30, round(gpMax*1.5));
-  const hitters = all.filter(p=>!p.isP && p.stats.PA>=paQual);
-  const pitchers = all.filter(p=>p.isP && p.stats.OUT>=outQual);
-  const tn = id => G.teams[id]?G.teams[id].abbr:"FA";
+  const hitters = pool.filter(p=>!p.isP && S(p).PA>=paQual);
+  const pitchers = pool.filter(p=>p.isP && S(p).OUT>=outQual);
+  const all = pool;
+  const tn = id => G.teams[id]?G.teams[id].abbr:(isAAAId(id)?(G.teams[parentIdOf(id)]?G.teams[parentIdOf(id)].abbr+" (AAA)":"AAA"):"FA");
   const board = (title, list, fmt) => (
     <Card><h3 className="font-bold mb-2">{title}</h3>
       <table className="w-full text-sm tnum"><tbody>
@@ -2940,39 +2971,39 @@ function Leaders({G}){
   );
   const top = (list, key, n=10) => [...list].sort((a,b)=>key(b)-key(a)).slice(0,n);
   const bot = (list, key, n=10) => [...list].sort((a,b)=>key(a)-key(b)).slice(0,n);
-  const warCtx = leagueWarCtx(G);
+  const warCtx = leagueWarCtx(G,"MLB");
   return (
     <div className="grid md:grid-cols-3 gap-4">
-      {board("WAR — Position", top(hitters,p=>warOf(p,warCtx)), p=>f1w(warOf(p,warCtx)))}
-      {board("WAR — Pitcher", top(pitchers,p=>warOf(p,warCtx)), p=>f1w(warOf(p,warCtx)))}
-      {board("AVG", top(hitters,p=>avg(p.stats)), p=>f3(avg(p.stats)))}
-      {board("Home Runs", top(hitters,p=>p.stats.HR), p=>p.stats.HR)}
-      {board("RBI", top(hitters,p=>p.stats.RBI), p=>p.stats.RBI)}
-      {board("OBP", top(hitters,p=>obp(p.stats)), p=>f3(obp(p.stats)))}
-      {board("SLG", top(hitters,p=>slg(p.stats)), p=>f3(slg(p.stats)))}
-      {board("OPS", top(hitters,p=>ops(p.stats)), p=>f3(ops(p.stats)))}
-      {board("Hits", top(hitters,p=>p.stats.H), p=>p.stats.H)}
-      {board("Runs", top(hitters,p=>p.stats.R), p=>p.stats.R)}
-      {board("Walks", top(hitters,p=>p.stats.BB), p=>p.stats.BB)}
-      {board("Stolen Bases", top(hitters.filter(p=>p.stats.SB>0),p=>p.stats.SB), p=>p.stats.SB)}
-      {board("ERA", bot(pitchers,p=>era(p.stats)), p=>f2(era(p.stats)))}
-      {board("Innings", top(pitchers,p=>p.stats.OUT), p=>f1(ip(p.stats)))}
-      {board("Strikeouts", top(pitchers,p=>p.stats.SO), p=>p.stats.SO)}
-      {board("K − BB", top(pitchers,p=>p.stats.SO-p.stats.BB), p=>p.stats.SO-p.stats.BB)}
-      {board("Wins", top(pitchers,p=>p.stats.W), p=>p.stats.W)}
-      {board("Quality Starts", top(pitchers.filter(p=>p.stats.QS>0),p=>p.stats.QS), p=>p.stats.QS)}
-      {board("Saves", top(pitchers.filter(p=>p.stats.SV>0),p=>p.stats.SV), p=>p.stats.SV)}
-      {board("Holds", top(all.filter(p=>p.isP&&p.stats.HLD>0),p=>p.stats.HLD), p=>p.stats.HLD)}
-      {board("WHIP", bot(pitchers,p=>whip(p.stats)), p=>f2(whip(p.stats)))}
-      {board("Doubles", top(hitters,p=>p.stats._2B||0), p=>p.stats._2B||0)}
-      {board("Triples", top(hitters.filter(p=>(p.stats._3B||0)>0),p=>p.stats._3B||0), p=>p.stats._3B||0)}
-      {board("ISO", top(hitters,p=>iso(p.stats)), p=>f3(iso(p.stats)))}
-      {board("wOBA", top(hitters,p=>woba(p.stats)), p=>f3(woba(p.stats)))}
-      {board("BABIP", top(hitters,p=>babip(p.stats)), p=>f3(babip(p.stats)))}
-      {board("FIP", bot(pitchers,p=>fip(p.stats)), p=>f2(fip(p.stats)))}
-      {board("K/9", top(pitchers,p=>kp9(p.stats)), p=>f2(kp9(p.stats)))}
-      {board("BB/9", bot(pitchers,p=>bb9(p.stats)), p=>f2(bb9(p.stats)))}
-      {board("K/BB", top(pitchers,p=>kbb(p.stats)), p=>f2(kbb(p.stats)))}
+      {board("WAR — Position", top(hitters,p=>warOf(p,warCtx,S(p))), p=>f1w(warOf(p,warCtx,S(p))))}
+      {board("WAR — Pitcher", top(pitchers,p=>warOf(p,warCtx,S(p))), p=>f1w(warOf(p,warCtx,S(p))))}
+      {board("AVG", top(hitters,p=>avg(S(p))), p=>f3(avg(S(p))))}
+      {board("Home Runs", top(hitters,p=>S(p).HR), p=>S(p).HR)}
+      {board("RBI", top(hitters,p=>S(p).RBI), p=>S(p).RBI)}
+      {board("OBP", top(hitters,p=>obp(S(p))), p=>f3(obp(S(p))))}
+      {board("SLG", top(hitters,p=>slg(S(p))), p=>f3(slg(S(p))))}
+      {board("OPS", top(hitters,p=>ops(S(p))), p=>f3(ops(S(p))))}
+      {board("Hits", top(hitters,p=>S(p).H), p=>S(p).H)}
+      {board("Runs", top(hitters,p=>S(p).R), p=>S(p).R)}
+      {board("Walks", top(hitters,p=>S(p).BB), p=>S(p).BB)}
+      {board("Stolen Bases", top(hitters.filter(p=>S(p).SB>0),p=>S(p).SB), p=>S(p).SB)}
+      {board("ERA", bot(pitchers,p=>era(S(p))), p=>f2(era(S(p))))}
+      {board("Innings", top(pitchers,p=>S(p).OUT), p=>f1(ip(S(p))))}
+      {board("Strikeouts", top(pitchers,p=>S(p).SO), p=>S(p).SO)}
+      {board("K − BB", top(pitchers,p=>S(p).SO-S(p).BB), p=>S(p).SO-S(p).BB)}
+      {board("Wins", top(pitchers,p=>S(p).W), p=>S(p).W)}
+      {board("Quality Starts", top(pitchers.filter(p=>S(p).QS>0),p=>S(p).QS), p=>S(p).QS)}
+      {board("Saves", top(pitchers.filter(p=>S(p).SV>0),p=>S(p).SV), p=>S(p).SV)}
+      {board("Holds", top(all.filter(p=>p.isP&&S(p).HLD>0),p=>S(p).HLD), p=>S(p).HLD)}
+      {board("WHIP", bot(pitchers,p=>whip(S(p))), p=>f2(whip(S(p))))}
+      {board("Doubles", top(hitters,p=>S(p)._2B||0), p=>S(p)._2B||0)}
+      {board("Triples", top(hitters.filter(p=>(S(p)._3B||0)>0),p=>S(p)._3B||0), p=>S(p)._3B||0)}
+      {board("ISO", top(hitters,p=>iso(S(p))), p=>f3(iso(S(p))))}
+      {board("wOBA", top(hitters,p=>woba(S(p))), p=>f3(woba(S(p))))}
+      {board("BABIP", top(hitters,p=>babip(S(p))), p=>f3(babip(S(p))))}
+      {board("FIP", bot(pitchers,p=>fip(S(p))), p=>f2(fip(S(p))))}
+      {board("K/9", top(pitchers,p=>kp9(S(p))), p=>f2(kp9(S(p))))}
+      {board("BB/9", bot(pitchers,p=>bb9(S(p))), p=>f2(bb9(S(p))))}
+      {board("K/BB", top(pitchers,p=>kbb(S(p))), p=>f2(kbb(S(p))))}
     </div>
   );
 }
@@ -3650,33 +3681,35 @@ function mkSeries(hi, lo){ return { hi, lo, hw:0, lw:0, games:[], done:false, wi
 
 /* ----------------------------- awards ---------------------------------- */
 // MVP / Player-of-the-Year score: rate stats × playing time + counting punch
-function mvpScore(p){ const s=p.stats; if(!s.AB) return -999;
+function mvpScore(s){ if(!s || !s.AB) return -999;
   const pt=clamp(s.PA/550,0,1.15);
   return ((ops(s)-0.300)*55)*pt + s.HR*0.6 + s.RBI*0.22 + s.R*0.14 + s.SB*0.08; }
 // Cy Young score: ERA/WHIP × innings + strikeouts/wins/saves
-function cyScore(p){ const s=p.stats; const ipv=s.OUT/3; if(ipv<10) return -999;
+function cyScore(s){ if(!s) return -999; const ipv=s.OUT/3; if(ipv<10) return -999;
   const pt=clamp(ipv/170,0,1.15);
   return ((4.40-era(s))*20 + (1.28-whip(s))*30)*pt + s.SO*0.10 + s.W*1.6 + s.SV*0.8 + ipv*0.04; }
 function bestBy(arr,fn){ return arr.reduce((b,p)=>(b==null||fn(p)>fn(b))?p:b,null); }
-function awardLine(p){ const s=p.stats; return p.isP
+function awardLine(s, isP){ return isP
   ? `${s.W}-${s.L}, ${s.OUT?f2(era(s)):"—"} ERA, ${s.SO} K${s.SV?`, ${s.SV} SV`:""}`
   : `${f3(avg(s))}/${f3(obp(s))}/${f3(slg(s))}, ${s.HR} HR, ${s.RBI} RBI`; }
 function addAccolade(p,season,award,league){ (p.accolades=p.accolades||[]).push({season,award,league}); }
 // Hand out season awards (run at end of the regular season, before stats reset).
 function computeAwards(G){
-  const recOf=p=>p?{id:p.id,name:p.name,pos:p.pos,team:(teamById(G,p.teamId)||{}).abbr||"",ovr:p.ovr,line:awardLine(p)}:null;
+  // MLB-only season line per player (a called-up player's AAA stats don't count toward MLB awards)
+  const ml=new Map(); const S=p=>{ if(!ml.has(p.id)) ml.set(p.id, levelStats(p,"MLB")); return ml.get(p.id); };
+  const recOf=p=>p?{id:p.id,name:p.name,pos:p.pos,team:(teamById(G,p.teamId)||{}).abbr||"",ovr:p.ovr,line:awardLine(S(p),p.isP)}:null;
   const out={season:G.season, leagues:{}};
   ["Empire","Pioneer"].forEach(lg=>{
-    const pool=Object.values(G.players).filter(p=>{const t=teamById(G,p.teamId);return t&&!t.aaa&&t.league===lg;});
+    const pool=Object.values(G.players).filter(p=>{const t=teamById(G,p.teamId);return t&&!t.aaa&&!t.college&&t.league===lg;});
     const hitters=pool.filter(p=>!p.isP), pitchers=pool.filter(p=>p.isP);
-    const mvp=bestBy(hitters,mvpScore), cy=bestBy(pitchers,cyScore);
+    const mvp=bestBy(hitters,p=>mvpScore(S(p))), cy=bestBy(pitchers,p=>cyScore(S(p)));
     const asHit=[];
     ["C","1B","2B","3B","SS","LF","CF","RF","DH"].forEach(pos=>{
       const poolPos = pos==="DH" ? hitters.filter(p=>!asHit.includes(p))
                                  : hitters.filter(p=>p.pos===pos && !asHit.includes(p));
-      const b=bestBy(poolPos,mvpScore); if(b) asHit.push(b);
+      const b=bestBy(poolPos,p=>mvpScore(S(p))); if(b) asHit.push(b);
     });
-    const asPit=[...pitchers].sort((a,b)=>cyScore(b)-cyScore(a)).slice(0,6);
+    const asPit=[...pitchers].sort((a,b)=>cyScore(S(b))-cyScore(S(a))).slice(0,6);
     out.leagues[lg]={ mvp:recOf(mvp), cy:recOf(cy), allStars:{hitters:asHit.map(recOf), pitchers:asPit.map(recOf)} };
     if(mvp){ addAccolade(mvp,G.season,"MVP",lg); logNews(G,"award",`🏅 ${mvp.name} won the ${lg} League MVP`, mvp.teamId); }
     if(cy){ addAccolade(cy,G.season,"Cy Young",lg); logNews(G,"award",`🏅 ${cy.name} won the ${lg} League Cy Young`, cy.teamId); }
