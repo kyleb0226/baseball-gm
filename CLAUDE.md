@@ -231,6 +231,11 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
     DH excluded). Every ball in play except a HR is a chance (`TC`); on outs the fielder can boot it (`E`,
     prob scales inverse to DEF). **Errors are pure bookkeeping — they do NOT put a runner on or change the
     score**, so the tuned run environment is untouched; only `E` and `fpct(s)` = (TC−E)/TC show on the boards.
+  - **Derived rate stats (pure math helpers near `avg`/`era`):** hitting `iso` (SLG−AVG), `babip`,
+    `woba` (wOBA-lite, standard linear weights); pitching `kp9`, `bb9`, `kbb`, `fip`. `FIP_CONST` (3.51) is
+    **calibrated** so league FIP centers on this league's ERA (~3.9 env) — re-check if the run environment
+    shifts. Shown in the `PlayerModal` rate line (per season + career) and as `Leaders` boards (ISO/wOBA/BABIP,
+    FIP/K9/BB9/K-BB, plus Doubles/Triples).
 - **Franchise records (`recordFranchiseRecords`, `team.records`):** each club's all-time single-season
   bests (team wins; HR/RBI/H/R/SB/AVG by a hitter; W/K/SV/ERA by a pitcher), each `{value, holder, season}`.
   Updated in `enterPlayoffs` (after `computeAwards`, before stats reset) with PA≥300 / OUT≥120 qualifiers.
