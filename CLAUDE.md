@@ -308,6 +308,18 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   team, level MLB/AAA/FA, position, age min/max) and sort (OVR/POT/trade value/age/salary/HR/AVG/ERA).
   Shows a `Val` column (`playerValue`) and a key stat line; names open `PlayerModal`. Capped to 400 rows.
 - **`Awards`** tab: current-season MVP/Cy Young/All-Stars per league + an award-history table.
+- **Clickable names everywhere (`PlayerCtx` + `PlayerLink`):** a React context provided at `App` root holds
+  one `openPlayer(p)` that opens a **single global `PlayerModal`** (rendered at App root, gets `G`). Drop
+  `<PlayerLink p={playerObj} text? className?/>` anywhere a name appears — it opens that player's full stats
+  (falls back to plain text if no player resolves). Wired into Leaders, Awards (resolves the live player via
+  the award record's `id`), AAA prospects, Draft (board + selections), BoxScore (resolves `G.players[pid]`),
+  Finances contracts, and the offseason dev report. The older per-tab modals (Roster/Lineup/Players/FreeAgency
+  via `onName`) still work alongside it — both coexist.
+- **`YearByYear` (shared by `PlayerModal` + `HofModal`):** renders `p.history` with a per-season **honors**
+  column (`honorBadges(season, accolades, ringSeasons)` → MVP/CY/AS chips + 💍, deduped) and a **WAR** column
+  (`h.war`, MLB rows only). Works retroactively for active players (accolades/rings/history already align by
+  season). `inductIfWorthy` now snapshots `history`/`accolades`/`ringSeasons` onto the HoF entry so a legend's
+  plaque (`HofModal`) shows full year-by-year + honors (old pre-existing inductees lack these → career only).
 
 ## Gotchas / tuning ideas
 - Win leader can reach ~25 (a touch high) — tune `awardDecision()` / rotation depth if desired.
