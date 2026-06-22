@@ -119,8 +119,8 @@ const parentIdOf = aaaId => aaaId - AAA_OFFSET;
 function teamById(G, id){ return id==null?null : (id>=AAA_OFFSET ? G.aaaTeams[id-AAA_OFFSET] : G.teams[id]); }
 
 /* ----------------------------- player gen ------------------------------ */
-function emptyHitStats(){return{G:0,PA:0,AB:0,H:0,_2B:0,_3B:0,HR:0,R:0,RBI:0,BB:0,SO:0,SB:0,CS:0};}
-function emptyPitStats(){return{G:0,GS:0,OUT:0,H:0,ER:0,BB:0,SO:0,W:0,L:0,SV:0,HRA:0,QS:0,HLD:0};}
+function emptyHitStats(){return{G:0,PA:0,AB:0,H:0,_2B:0,_3B:0,HR:0,R:0,RBI:0,BB:0,SO:0,SB:0,CS:0,SF:0,HBP:0,GIDP:0,TC:0,E:0};}
+function emptyPitStats(){return{G:0,GS:0,OUT:0,H:0,ER:0,BB:0,SO:0,W:0,L:0,SV:0,HRA:0,QS:0,HLD:0,HBP:0,WP:0,BK:0,GO:0,AO:0,TC:0,E:0};}
 // Per-level (MLB vs AAA) stat splitting for the year-by-year history. The sim
 // pools everything into p.stats; we snapshot at each level change (call-up / send-down)
 // and at season end, attributing the delta since the last snapshot to the level the
@@ -484,13 +484,15 @@ function paOutcome(bat, pit, defN){
   // HR needs power AND some contact — a one-dimensional slugger who can't make contact
   // shouldn't lead the league in homers, so a contact term gates the pure-power slope.
   let hrP = clamp(0.019 + 0.074*(bp-0.5) + 0.040*(bc-0.5) - 0.030*(ps-0.5), 0.002, 0.13);
+  const hbpP = 0.009;  // hit by pitch — small, roughly real-life ~1% of PAs
   const r = Math.random();
   if(r < kP) return {o:"K"};
   if(r < kP+bbP) return {o:"BB"};
-  if(r < kP+bbP+hrP) return {o:"HR"};
+  if(r < kP+bbP+hbpP) return {o:"HBP"};
+  if(r < kP+bbP+hbpP+hrP) return {o:"HR"};
   // ball in play
-  let babip = clamp(0.300 + 0.11*(bc-0.5) - 0.05*(pc-0.5) - 0.06*(defN-0.5), 0.19, 0.40);
-  if(!chance(babip)) return {o:"OUT"};
+  let babip = clamp(0.304 + 0.11*(bc-0.5) - 0.05*(pc-0.5) - 0.06*(defN-0.5), 0.19, 0.40);
+  if(!chance(babip)) return {o:"OUT", ground: chance(0.54)};  // ground/air flag for GIDP / SF / GO-AO
   // hit type
   const tripP = 0.018 + 0.04*bs;
   const rr = Math.random();
@@ -576,6 +578,28 @@ function simGame(home, away, players, idx){
   const order = { [home.id]:0, [away.id]:0 };
   const defN = { [home.id]: n01(teamDefRating(home,players)), [away.id]: n01(teamDefRating(away,players)) };
   const arms = { [home.id]: getPitchers(home,players,idx), [away.id]: getPitchers(away,players,idx) };
+  // position -> fielder for each club, so balls in play can be charged to a fielder
+  // (a fielding chance, and sometimes an error). Built from the assigned defense (team.pos),
+  // falling back to a player's natural position. The DH never fields.
+  const fielderMap = t => { const m={}, pm=t.pos||{};
+    lineups[t.id].forEach(h=>{ const pos=pm[h.id]||h.pos; if(pos!=="DH" && !m[pos]) m[pos]=h; }); return m; };
+  const fielders = { [home.id]: fielderMap(home), [away.id]: fielderMap(away) };
+  // realistic distribution of where balls in play are handled (sums to 1)
+  const FIELD_DIST = [["SS",.17],["CF",.16],["LF",.13],["RF",.13],["2B",.13],["3B",.12],["1B",.09],["C",.04],["P",.03]];
+  // charge a fielding chance on a ball in play; `canErr` => an out the fielder could boot.
+  function fieldChance(fieldTeamId, pitcher, canErr){
+    let r=Math.random(), pos=null;
+    for(const [ps,w] of FIELD_DIST){ if(r<w){ pos=ps; break; } r-=w; }
+    if(!pos) pos="SS";
+    const f = pos==="P" ? pitcher : fielders[fieldTeamId][pos];
+    if(!f) return;
+    f.stats.TC=(f.stats.TC||0)+1;
+    if(canErr){
+      const dv = f.isP ? 0.5 : n01(f.def);
+      const errP = clamp(0.040*(1-dv)+0.009, 0.005, 0.06);
+      if(chance(errP)) f.stats.E=(f.stats.E||0)+1;
+    }
+  }
   const cur = { [home.id]:{p:arms[home.id].starter, outs:0, er:0, idx:0, gs:true},
                 [away.id]:{p:arms[away.id].starter, outs:0, er:0, idx:0, gs:true} };
   const starterTarget = id => 12 + round(n01(arms[id].starter.stm)*9); // ~12-21 outs (4-7 ip)
@@ -648,8 +672,17 @@ function simGame(home, away, players, idx){
   function halfInning(batId, pitId, inning, isBottom){
     let outs=0; const bases=[null,null,null];
     const hitters = lineups[batId];
+    const recOut = pitcher => { outs++; cur[pitId].outs++; cur[pitId].segOuts=(cur[pitId].segOuts||0)+1; pitcher.stats.OUT++; gOuts[pitcher.id]=(gOuts[pitcher.id]||0)+1; };
+    // wild pitch / balk: bump every runner up a base, scoring from third
+    const wpAdvance = ()=>{ let r=0; if(bases[2]){r++;bases[2]=null;} if(bases[1]){bases[2]=bases[1];bases[1]=null;} if(bases[0]){bases[1]=bases[0];bases[0]=null;} return r; };
     while(outs<3){
       changePitcher(batId, pitId, inning);
+      // wild pitch / balk (only with a runner aboard) — credited to the pitcher
+      if(bases[0]||bases[1]||bases[2]){
+        const pit=cur[pitId].p;
+        if(chance(0.018)){ pit.stats.WP=(pit.stats.WP||0)+1; const r=wpAdvance(); score[batId]+=r; cur[pitId].er+=r; pit.stats.ER+=r; }
+        else if(chance(0.004)){ pit.stats.BK=(pit.stats.BK||0)+1; const r=wpAdvance(); score[batId]+=r; cur[pitId].er+=r; pit.stats.ER+=r; }
+      }
       // stolen-base attempt: runner on first with second base open
       if(bases[0] && !bases[1]){
         const sp = n01(bases[0].spd);
@@ -659,8 +692,7 @@ function simGame(home, away, players, idx){
             bases[1]=bases[0]; bases[0]=null; bases[1].stats.SB++;      // safe
           } else {
             bases[0].stats.CS=(bases[0].stats.CS||0)+1;                // caught stealing
-            bases[0]=null; outs++; cur[pitId].outs++;
-            cur[pitId].segOuts=(cur[pitId].segOuts||0)+1; pit.stats.OUT++; gOuts[pit.id]=(gOuts[pit.id]||0)+1;
+            bases[0]=null; recOut(cur[pitId].p);
             if(outs>=3) break;
           }
         }
@@ -669,25 +701,43 @@ function simGame(home, away, players, idx){
       const bat = hitters[order[batId] % hitters.length]; order[batId]++;
       const res = paOutcome(bat, pitcher, defN[pitId]);
       bat.stats.PA++;
-      pitcher.stats.OUT; // noop
       if(res.o==="BB"){
         bat.stats.BB++; pitcher.stats.BB++;
         const r = advance(bases,"BB",bat);
-        score[batId]+=r; bat.stats.RBI+=r; addRuns(bases, players, r);
+        score[batId]+=r; bat.stats.RBI+=r;
+        cur[pitId].er+=r; pitcher.stats.ER+=r;
+      } else if(res.o==="HBP"){
+        bat.stats.HBP=(bat.stats.HBP||0)+1; pitcher.stats.HBP=(pitcher.stats.HBP||0)+1;
+        const r = advance(bases,"BB",bat);   // hit-by-pitch advances like a walk
+        score[batId]+=r; bat.stats.RBI+=r;
         cur[pitId].er+=r; pitcher.stats.ER+=r;
       } else if(res.o==="K"){
         bat.stats.AB++; bat.stats.SO++; pitcher.stats.SO++;
-        outs++; cur[pitId].outs++; cur[pitId].segOuts=(cur[pitId].segOuts||0)+1; pitcher.stats.OUT++; gOuts[pitcher.id]=(gOuts[pitcher.id]||0)+1;
+        recOut(pitcher);
       } else if(res.o==="OUT"){
-        bat.stats.AB++;
-        // small chance a baserunner scores on productive out
-        outs++; cur[pitId].outs++; cur[pitId].segOuts=(cur[pitId].segOuts||0)+1; pitcher.stats.OUT++; gOuts[pitcher.id]=(gOuts[pitcher.id]||0)+1;
+        const ground = res.ground;
+        if(ground && bases[0] && outs<2 && chance(0.185)){
+          // grounded into double play — batter out + lead runner erased
+          bat.stats.AB++; bat.stats.GIDP=(bat.stats.GIDP||0)+1; pitcher.stats.GO=(pitcher.stats.GO||0)+1;
+          bases[0]=null; recOut(pitcher); recOut(pitcher);
+          fieldChance(pitId, pitcher, true);
+        } else if(!ground && bases[2] && outs<2 && chance(0.42)){
+          // sacrifice fly — runner on third scores, batter charged no AB
+          bat.stats.SF=(bat.stats.SF||0)+1; pitcher.stats.AO=(pitcher.stats.AO||0)+1;
+          bases[2]=null; score[batId]+=1; bat.stats.RBI+=1; cur[pitId].er+=1; pitcher.stats.ER+=1;
+          recOut(pitcher); fieldChance(pitId, pitcher, true);
+        } else {
+          bat.stats.AB++;
+          if(ground) pitcher.stats.GO=(pitcher.stats.GO||0)+1; else pitcher.stats.AO=(pitcher.stats.AO||0)+1;
+          recOut(pitcher); fieldChance(pitId, pitcher, true);
+        }
       } else {
         // hit
         bat.stats.AB++; bat.stats.H++; pitcher.stats.H++;
         if(res.o==="2B") bat.stats._2B++;
         if(res.o==="3B") bat.stats._3B++;
         if(res.o==="HR"){ bat.stats.HR++; pitcher.stats.HRA++; }
+        else fieldChance(pitId, pitcher, false);   // a fielder handled it cleanly (no error)
         const r = advance(bases, res.o, bat);
         score[batId]+=r; bat.stats.RBI+=r;
         cur[pitId].er+=r; pitcher.stats.ER+=r;
@@ -840,6 +890,7 @@ const ops = s => obp(s)+slg(s);
 const ip  = s => Math.floor(s.OUT/3) + (s.OUT%3)/10;
 const era = s => s.OUT? (s.ER*27/s.OUT) : 0;
 const whip= s => s.OUT? ((s.BB+s.H)/(s.OUT/3)) : 0;
+const fpct= s => s.TC? ((s.TC-(s.E||0))/s.TC) : 0;   // fielding %: (chances - errors)/chances
 const f3 = v => v.toFixed(3).replace(/^0/,"");
 const f2 = v => v.toFixed(2);
 const f1 = v => v.toFixed(1);
@@ -1863,8 +1914,8 @@ function maybeAIWaive(G){
 
 function PlayerModal({p, team, onClose}){
   const s=p.stats, c=p.career;
-  const hitCols = [["G","G"],["PA","PA"],["AB","AB"],["R","R"],["H","H"],["_2B","2B"],["_3B","3B"],["HR","HR"],["RBI","RBI"],["BB","BB"],["SO","SO"],["SB","SB"],["CS","CS"]];
-  const pitCols = [["G","G"],["GS","GS"],["QS","QS"],["W","W"],["L","L"],["SV","SV"],["HLD","HLD"],["H","H"],["BB","BB"],["SO","SO"],["ER","ER"]];
+  const hitCols = [["G","G"],["PA","PA"],["AB","AB"],["R","R"],["H","H"],["_2B","2B"],["_3B","3B"],["HR","HR"],["RBI","RBI"],["BB","BB"],["SO","SO"],["SB","SB"],["CS","CS"],["SF","SF"],["HBP","HBP"],["GIDP","GIDP"],["E","E"]];
+  const pitCols = [["G","G"],["GS","GS"],["QS","QS"],["W","W"],["L","L"],["SV","SV"],["HLD","HLD"],["H","H"],["BB","BB"],["SO","SO"],["ER","ER"],["HBP","HBP"],["WP","WP"],["BK","BK"]];
   const cols = p.isP?pitCols:hitCols;
   const rateRow = p.isP
     ? [["STU",p.stu],["CTL",p.ctl],["STM",p.stm]]
@@ -1973,8 +2024,8 @@ function HitterTable({players, onRelease, onSend, onCallUp, badge, bo, onName, p
           {bo&&<th className="pr-1">#</th>}{badge&&<th></th>}
           <th className="text-left py-1 pr-2">Pos</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th>
           <th>CON</th><th>POW</th><th>EYE</th><th>SPD</th><th>DEF</th>
-          <th>G</th><th>AB</th><th>R</th><th>H</th><th>HR</th><th>RBI</th><th>BB</th><th>SO</th><th>SB</th><th>CS</th>
-          <th>AVG</th><th>OBP</th><th>SLG</th><th>OPS</th><th className="text-right pr-2">Salary</th>{hasAct&&<th></th>}
+          <th>G</th><th>AB</th><th>R</th><th>H</th><th>2B</th><th>3B</th><th>HR</th><th>RBI</th><th>BB</th><th>SO</th><th>SB</th><th>CS</th>
+          <th>AVG</th><th>OBP</th><th>SLG</th><th>OPS</th><th>E</th><th>FPCT</th><th className="text-right pr-2">Salary</th>{hasAct&&<th></th>}
         </tr></thead>
         <tbody>
           {players.map((p,i)=>{ const s=p.stats; const assigned = posMap?(posMap[p.id]||p.pos):p.pos; const oop = assigned!==p.pos; return (
@@ -1991,6 +2042,8 @@ function HitterTable({players, onRelease, onSend, onCallUp, badge, bo, onName, p
               <td className="text-center">{s.AB||"—"}</td>
               <td className="text-center">{s.R||"—"}</td>
               <td className="text-center">{s.H||"—"}</td>
+              <td className="text-center text-slate-400">{s._2B||"—"}</td>
+              <td className="text-center text-slate-400">{s._3B||"—"}</td>
               <td className="text-center">{s.HR||"—"}</td>
               <td className="text-center">{s.RBI||"—"}</td>
               <td className="text-center">{s.BB||"—"}</td>
@@ -2001,6 +2054,8 @@ function HitterTable({players, onRelease, onSend, onCallUp, badge, bo, onName, p
               <td className="text-center">{(s.AB+s.BB)?f3(obp(s)):"—"}</td>
               <td className="text-center">{s.AB?f3(slg(s)):"—"}</td>
               <td className="text-center">{s.AB?f3(ops(s)):"—"}</td>
+              <td className="text-center text-slate-400">{s.E||"—"}</td>
+              <td className="text-center text-slate-400">{s.TC?f3(fpct(s)):"—"}</td>
               <td className="text-right pr-2 text-slate-300">{money(p.salary)}<span className="text-slate-600 text-xs"> {p.years}y</span></td>
               {hasAct&&<RowActions p={p} onRelease={onRelease} onSend={onSend} onCallUp={onCallUp}/>}
             </tr>
@@ -2020,7 +2075,7 @@ function PitcherTable({players, onRelease, onSend, onCallUp, badge, slots, onNam
           {slots&&<th className="pr-1">Slot</th>}{badge&&<th></th>}
           <th className="text-left py-1 pr-2">Role</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th>
           <th>STU</th><th>CTL</th><th>STM</th>
-          <th>W-L</th><th>GS</th><th>QS</th><th>IP</th><th>H</th><th>BB</th><th>SO</th><th>ER</th><th>ERA</th><th>WHIP</th><th>SV</th><th>HLD</th><th className="text-right pr-2">Salary</th>{hasAct&&<th></th>}
+          <th>W-L</th><th>GS</th><th>QS</th><th>IP</th><th>H</th><th>BB</th><th>SO</th><th>ER</th><th>ERA</th><th>WHIP</th><th>SV</th><th>HLD</th><th>HBP</th><th>WP</th><th>BK</th><th>GO/AO</th><th className="text-right pr-2">Salary</th>{hasAct&&<th></th>}
         </tr></thead>
         <tbody>
           {players.map((p,i)=>{ const s=p.stats; return (
@@ -2045,6 +2100,10 @@ function PitcherTable({players, onRelease, onSend, onCallUp, badge, slots, onNam
               <td className="text-center">{s.OUT?f2(whip(s)):"—"}</td>
               <td className="text-center">{s.SV||"—"}</td>
               <td className="text-center text-slate-400">{s.HLD||"—"}</td>
+              <td className="text-center text-slate-400">{s.HBP||"—"}</td>
+              <td className="text-center text-slate-400">{s.WP||"—"}</td>
+              <td className="text-center text-slate-400">{s.BK||"—"}</td>
+              <td className="text-center text-slate-400">{(s.GO||s.AO)?((s.AO?(s.GO/s.AO):0).toFixed(2)):"—"}</td>
               <td className="text-right pr-2 text-slate-300">{money(p.salary)}<span className="text-slate-600 text-xs"> {p.years}y</span></td>
               {hasAct&&<RowActions p={p} onRelease={onRelease} onSend={onSend} onCallUp={onCallUp}/>}
             </tr>

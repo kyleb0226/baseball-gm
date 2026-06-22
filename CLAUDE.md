@@ -213,12 +213,24 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   `NEWS_META`) renders the full wire; the Hub shows the latest five. Backfilled empty in `migrate`.
 
 ## Player model
-- **Tracked stats:** hitters `G/PA/AB/H/2B/3B/HR/R/RBI/BB/SO/SB/CS`; pitchers
-  `G/GS/QS/OUT/H/ER/BB/SO/W/L/SV/HLD/HRA`. **CS** is logged in the steal-fail branch; **QS** (6+ IP,
+- **Tracked stats:** hitters `G/PA/AB/H/2B/3B/HR/R/RBI/BB/SO/SB/CS/SF/HBP/GIDP/TC/E`; pitchers
+  `G/GS/QS/OUT/H/ER/BB/SO/W/L/SV/HLD/HRA/HBP/WP/BK/GO/AO/TC/E`. **CS** is logged in the steal-fail branch; **QS** (6+ IP,
   ≤3 ER) is credited post-game by diffing the starter's OUT/ER against a pre-game snapshot (`startSnap`);
   **HLD** is credited in `awardDecision` to used relievers in a ≤3-run win other than the winner/saver
   (an approximation — it runs a bit high because relievers rotate ~per inning). Shown in
   `HitterTable`/`PitcherTable`/`PlayerModal` and as **Quality Starts** / **Holds** leaderboards.
+  - **Counting stats added in the PA loop (`halfInning`):** **SF** (sac fly: air-out with a runner on 3rd, <2
+    outs — runner scores, no AB), **HBP** (≈0.9% of PAs via `paOutcome`, advances like a walk),
+    **GIDP** (grounder with a runner on 1st, <2 outs — batter out + lead runner erased, 2 outs recorded),
+    **WP**/**BK** (only with a runner aboard, bump every runner up a base, scoring from 3rd), and
+    **GO/AO** (every ball-in-play out flagged ground/air via `res.ground` from `paOutcome`). These shift the
+    run environment slightly, so rates are tuned modest and `babip` base was bumped 0.300→0.304 to offset the
+    HBP carve. Re-verify with a full-season sim (W===L per league; AVG leader ~.330–.355; HR leader ~45–55).
+  - **Fielding (`TC`/`E` → FPCT):** `fieldChance(fieldTeamId, pitcher, canErr)` charges a ball in play to a
+    fielder by a realistic position distribution (`FIELD_DIST`, resolved via `fielders` = team.pos → player,
+    DH excluded). Every ball in play except a HR is a chance (`TC`); on outs the fielder can boot it (`E`,
+    prob scales inverse to DEF). **Errors are pure bookkeeping — they do NOT put a runner on or change the
+    score**, so the tuned run environment is untouched; only `E` and `fpct(s)` = (TC−E)/TC show on the boards.
 - **Franchise records (`recordFranchiseRecords`, `team.records`):** each club's all-time single-season
   bests (team wins; HR/RBI/H/R/SB/AVG by a hitter; W/K/SV/ERA by a pitcher), each `{value, holder, season}`.
   Updated in `enterPlayoffs` (after `computeAwards`, before stats reset) with PA≥300 / OUT≥120 qualifiers.
