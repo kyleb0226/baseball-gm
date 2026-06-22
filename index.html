@@ -5308,7 +5308,7 @@ function HallOfFame({G}){
               <tbody>
                 {hof.map((h,i)=>{ const c=h.career||{};
                   const line = h.isP
-                    ? `${c.W||0}-${c.L||0}, ${c.SV||0} SV, ${c.SO||0} K, ${((c.OUT||0)/3).toFixed(0)} IP`
+                    ? `${c.W||0}-${c.L||0}, ${c.OUT?f2(era(c)):"—"} ERA, ${c.SO||0} K, ${c.SV||0} SV, ${((c.OUT||0)/3).toFixed(0)} IP`
                     : `${c.H||0} H, ${c.HR||0} HR, ${c.RBI||0} RBI, ${c.SB||0} SB`;
                   const honors=[];
                   if(h.rings) honors.push(`💍${h.rings}`);
