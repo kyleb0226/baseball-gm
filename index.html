@@ -4399,6 +4399,19 @@ function OffseasonHub({G, commit, tShow, setTab}){
         // AAA prospects stay under org control until 28 (they're cheap, haven't hit arb yet)
         if(isAAAId(p.teamId) && p.age<28){ setContract(p, p.salary||0.7, rint(2,4), []); return; }
         const t=teamById(G, p.teamId);
+        // AI clubs RE-SIGN their good, affordable players instead of letting them walk — the
+        // better he is the more likely, but only if it fits the budget (won't wreck the team).
+        if(t && !t.aaa && t.id!==G.userTeamId){
+          const aav=requiredAAV(p,3,1);
+          const space=(t.budget - payroll(G,t.id)) + (p.salary||0);   // his expiring money frees up
+          const keep = p.ovr>=80?0.97 : p.ovr>=74?0.82 : p.ovr>=68?0.55 : p.ovr>=62?0.22 : 0.05;
+          if(space>=aav && chance(keep)){
+            const yrs=clamp(p.age<28?rint(3,5):p.age<32?rint(2,4):rint(1,2),1,6);
+            setContract(p, round(aav*10)/10, yrs, []);
+            logNews(G,"signing",`${t.abbr} re-signed ${p.pos} ${p.name} (${p.ovr}) — ${yrs}y · ${money(aav)}/yr`, t.id);
+            return;   // stays on his club
+          }
+        }
         if(t){ t.lineup=t.lineup.filter(x=>x!==p.id); t.rotation=t.rotation.filter(x=>x!==p.id); if(t.pos) delete t.pos[p.id]; }
         logNews(G,"roster",`${p.name} (${p.pos}, ${p.ovr} OVR) contract expired — now a free agent`, t?t.id:null);
         if(t && (t.id===G.userTeamId || t.id===aaaIdOf(G.userTeamId)))
