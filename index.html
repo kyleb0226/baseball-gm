@@ -160,7 +160,7 @@ function teamById(G, id){ return id==null?null
 
 /* ----------------------------- player gen ------------------------------ */
 function emptyHitStats(){return{G:0,PA:0,AB:0,H:0,_2B:0,_3B:0,HR:0,R:0,RBI:0,BB:0,SO:0,SB:0,CS:0,SF:0,HBP:0,GIDP:0,TC:0,E:0};}
-function emptyPitStats(){return{G:0,GS:0,OUT:0,H:0,ER:0,BB:0,SO:0,W:0,L:0,SV:0,HRA:0,QS:0,HLD:0,HBP:0,WP:0,BK:0,GO:0,AO:0,TC:0,E:0};}
+function emptyPitStats(){return{G:0,GS:0,OUT:0,H:0,ER:0,BB:0,SO:0,W:0,L:0,SV:0,HRA:0,QS:0,HLD:0,HBP:0,WP:0,BK:0,GO:0,AO:0,TC:0,E:0,CG:0,SHO:0};}
 // Per-level (MLB vs AAA) stat splitting for the year-by-year history. The sim
 // pools everything into p.stats; we snapshot at each level change (call-up / send-down)
 // and at season end, attributing the delta since the last snapshot to the level the
@@ -560,7 +560,9 @@ function teamDefRating(team, players){
 
 function paOutcome(bat, pit, defN){
   const bc=n01(bat.con), bp=n01(bat.pow), be=n01(bat.eye), bs=n01(bat.spd);
-  const ps=n01(pit.stu), pc=n01(pit.ctl);
+  // fatigue: a gassed arm loses a bit of stuff & command (mild, capped)
+  const tired = clamp(((pit._tired||0)-0.8)*0.18, 0, 0.12);
+  const ps=clamp(n01(pit.stu)-tired,0,1), pc=clamp(n01(pit.ctl)-tired,0,1);
   let kP = clamp(0.215 + 0.13*(ps-0.5) - 0.11*(bc-0.5) + 0.05*(pc-0.5), 0.04, 0.45);
   let bbP = clamp(0.085 + 0.08*(be-0.5) - 0.08*(pc-0.5) - 0.02*(ps-0.5), 0.02, 0.22);
   // HR needs power AND some contact — a one-dimensional slugger who can't make contact
@@ -686,6 +688,16 @@ function simGame(home, away, players, idx){
                 [away.id]:{p:arms[away.id].starter, outs:0, er:0, idx:0, gs:true} };
   const starterTarget = id => 12 + round(n01(arms[id].starter.stm)*9); // ~12-21 outs (4-7 ip)
   const score = { [home.id]:0, [away.id]:0 };
+  // per-game feat tracking: hits/baserunners ALLOWED by each club's pitching (no-hitter/perfect),
+  // and each batter's hit types (cycle / multi-HR).
+  const hitsAllowed = { [home.id]:0, [away.id]:0 };
+  const reached = { [home.id]:0, [away.id]:0 };
+  const gBat = {};   // batterId -> {b1,b2,b3,hr}
+  const tallyHit = (batId, pitId, kind, batter) => {
+    hitsAllowed[pitId]++; reached[pitId]++;
+    const g = gBat[batter.id] || (gBat[batter.id]={b1:0,b2:0,b3:0,hr:0});
+    if(kind==="2B") g.b2++; else if(kind==="3B") g.b3++; else if(kind==="HR") g.hr++; else g.b1++;
+  };
   // mark GS
   cur[home.id].p.stats.GS++; cur[away.id].p.stats.GS++;
   cur[home.id].p.stats.G++; cur[away.id].p.stats.G++;
@@ -713,37 +725,50 @@ function simGame(home, away, players, idx){
     c.p = p; c.gs = false; c.segOuts = 0;
     if(!usedPen[pitId].includes(p.id)){ usedPen[pitId].push(p.id); p.stats.G++; if(!gSnap[p.id]) gSnap[p.id]=snapP(p); }
   }
-  // workload key: spread by what an arm has thrown THIS game, then THIS season
-  const loadKey = p => (gOuts[p.id]||0)*100000 + (p.stats.OUT||0);
+  // workload key: spread by what an arm has thrown THIS game, then FATIGUE, then season load —
+  // so a gassed reliever sits and the freshest arm gets the ball.
+  const loadKey = p => (gOuts[p.id]||0)*1e6 + (p._tired||0)*1000 + (p.stats.OUT||0);
   const leastLoaded = arr => arr.reduce((b,p)=> (b==null||loadKey(p)<loadKey(b))?p:b, null);
+  // drop arms that are too gassed to pitch, IF any rested option remains
+  const rested = arr => { const ok=arr.filter(p=>(p._tired||0)<1.2); return ok.length?ok:arr; };
   // Choose a reliever. pen is best-first (pen[0]=closer). Philosophy: LEAN ON THE
   // GOOD ARMS — the setup tier (best non-closers) carries the meaningful innings,
   // the closer locks down saves, and only the dregs mop up blowouts. Within those
-  // roles we hand the ball to whoever's freshest, so no single arm runs away with it.
+  // roles we hand the ball to whoever's freshest (and not gassed).
   function pickReliever(pitId, inning, lead){
     const pen = arms[pitId].pen; if(!pen.length) return cur[pitId].p||null;
     const curId = cur[pitId].p ? cur[pitId].p.id : null;
     const closer = pen[0];
-    // save situation: the closer finishes a 9th-inning (or later) lead of 1-3
-    if(inning>=9 && lead>0 && lead<=3 && closer && closer.id!==curId) return closer;
+    // save situation: the closer finishes a 9th+ lead of 1-3 — unless he's gassed
+    if(inning>=9 && lead>0 && lead<=3 && closer && closer.id!==curId && (closer._tired||0)<1.2) return closer;
     const tierCount = Math.max(1, Math.ceil(pen.length*0.55));
     const setup = pen.slice(1, 1+tierCount);          // best non-closer arms = high-leverage tier
     const low   = pen.slice(1+tierCount);             // fringe/mop-up arms
     // blowout (either way): rest the good arms, let the fringe soak it up
     if(Math.abs(lead) >= 7 && low.length){
-      const pool = low.filter(rp=>rp.id!==curId);
+      const pool = rested(low.filter(rp=>rp.id!==curId));
       return leastLoaded(pool.length?pool:low);
     }
-    // normal relief: ride the setup tier, freshest first
+    // normal relief: ride the setup tier, freshest (rested) first
     const tier = (setup.length?setup:pen.slice());
-    const pool = tier.filter(rp=>rp.id!==curId);
+    const pool = rested(tier.filter(rp=>rp.id!==curId));
     return leastLoaded(pool.length?pool:tier);
   }
   // decide whether to change pitchers before the next batter
   function changePitcher(batId, pitId, inning){
     const c = cur[pitId];
     if(c.gs){
-      if(c.outs >= starterTarget(pitId)) bringIn(pitId, pickReliever(pitId, inning, score[pitId]-score[batId]));
+      if(c.outs >= starterTarget(pitId)){
+        // A dominant starter earns a longer leash: while he's pitching a SHUTOUT he keeps going
+        // (chasing the complete-game shutout), and even further if it's a no-hitter/perfect game.
+        // The moment he gives up a run past his target, he's pulled at the next change.
+        const runsAllowed = score[batId];
+        const noHit = hitsAllowed[pitId]===0;
+        const perfect = reached[pitId]===0;
+        const cap = (perfect||noHit) ? 36 : (runsAllowed===0 ? 27 : starterTarget(pitId));
+        if(!(runsAllowed===0 && c.outs < cap))
+          bringIn(pitId, pickReliever(pitId, inning, score[pitId]-score[batId]));
+      }
       return;
     }
     if((c.segOuts||0) < 3) return;                   // only swap at an inning boundary
@@ -798,12 +823,12 @@ function simGame(home, away, players, idx){
       const res = paOutcome(bat, pitcher, defN[pitId]);
       bat.stats.PA++;
       if(res.o==="BB"){
-        bat.stats.BB++; pitcher.stats.BB++;
+        bat.stats.BB++; pitcher.stats.BB++; reached[pitId]++;
         const r = advance(bases,"BB",bat);
         bumpScore(batId,pitId,r); bat.stats.RBI+=r;
         cur[pitId].er+=r; pitcher.stats.ER+=r;
       } else if(res.o==="HBP"){
-        bat.stats.HBP=(bat.stats.HBP||0)+1; pitcher.stats.HBP=(pitcher.stats.HBP||0)+1;
+        bat.stats.HBP=(bat.stats.HBP||0)+1; pitcher.stats.HBP=(pitcher.stats.HBP||0)+1; reached[pitId]++;
         const r = advance(bases,"BB",bat);   // hit-by-pitch advances like a walk
         bumpScore(batId,pitId,r); bat.stats.RBI+=r;
         cur[pitId].er+=r; pitcher.stats.ER+=r;
@@ -829,7 +854,7 @@ function simGame(home, away, players, idx){
         }
       } else {
         // hit
-        bat.stats.AB++; bat.stats.H++; pitcher.stats.H++;
+        bat.stats.AB++; bat.stats.H++; pitcher.stats.H++; tallyHit(batId, pitId, res.o, bat);
         if(res.o==="2B") bat.stats._2B++;
         if(res.o==="3B") bat.stats._3B++;
         if(res.o==="HR"){ bat.stats.HR++; pitcher.stats.HRA++; }
@@ -871,11 +896,32 @@ function simGame(home, away, players, idx){
     const dout=sp.stats.OUT-startSnap[t.id].out, der=sp.stats.ER-startSnap[t.id].er;
     if(dout>=18 && der<=3) sp.stats.QS=(sp.stats.QS||0)+1;
   });
+  // complete games / shutouts / no-hitters / perfect games + hitter feats (cycle / multi-HR).
+  // Feats are returned in out.feats; the caller (with G) records the accolade + logs the news.
+  out.feats = [];
+  [home,away].forEach(t=>{
+    const tid=t.id, oppId = tid===home.id?away.id:home.id, sp=arms[tid].starter;
+    if(!sp || (usedPen[tid]||[]).length>0) return;          // CG only if the starter went the distance
+    sp.stats.CG=(sp.stats.CG||0)+1;
+    if(score[oppId]===0) sp.stats.SHO=(sp.stats.SHO||0)+1;
+    if(hitsAllowed[tid]===0) out.feats.push({pid:sp.id, isP:true, feat: reached[tid]===0?"Perfect Game":"No-Hitter"});
+  });
+  [home.id,away.id].forEach(tid=>{
+    lineups[tid].forEach(h=>{ const g=gBat[h.id]; if(!g) return;
+      if(g.b1>0&&g.b2>0&&g.b3>0&&g.hr>0) out.feats.push({pid:h.id, isP:false, feat:"Cycle"});
+      else if(g.hr>=4) out.feats.push({pid:h.id, isP:false, feat:"4-HR Game"});
+      else if(g.hr>=3) out.feats.push({pid:h.id, isP:false, feat:"3-HR Game"});
+    });
+  });
   // tag the teams pitchers actually threw for (for per-season history / multi-team years)
   [home,away].forEach(t=>{
     const lbl=teamLabel(t);
     if(arms[t.id].starter) tagTeam(arms[t.id].starter,lbl);
     (usedPen[t.id]||[]).forEach(id=>tagTeam(players[id],lbl));
+  });
+  // accumulate pitcher fatigue (~0.5 per inning thrown); it decays each day in simDay
+  [arms[home.id].starter.id, ...usedPen[home.id], arms[away.id].starter.id, ...usedPen[away.id]].forEach(pid=>{
+    const p=players[pid]; if(!p) return; p._tired = (p._tired||0) + (gOuts[pid]||0)/3 * 0.5;
   });
   // per-game stat lines (diff vs the start-of-game snapshot) for single-game records
   out.gameLines = [];
@@ -1776,6 +1822,7 @@ function simDay(G){
       const res = simGame(home, away, G.players, idx);
       markGamesPlayed(home, away, G.players, idx);
       if(isMLB) updateGameRecords(G, res.gameLines, G.season);   // single-game records (MLB only)
+      recordFeats(G, res);                                       // no-hitters / perfect games / cycles / multi-HR (all levels)
       g.played=true; g.hs=res.hs; g.as=res.as;
       if(isMLB) g.box=res.box;   // full box score for every MLB game (this season's schedule only)
       if(res.hs>res.as){ home.w++; away.l++; } else { away.w++; home.l++; }
@@ -1785,6 +1832,8 @@ function simDay(G){
   playDay(G.schedule, true);                     // MLB
   if(G.aaaSchedule) playDay(G.aaaSchedule, false); // AAA affiliates
   if(G.collegeSchedule) playDay(G.collegeSchedule, false); // amateur college league
+  // bullpen recovery: every arm sheds fatigue each day (≈3 days to recover from a heavy outing)
+  for(const id in G.players){ const p=G.players[id]; if(p._tired){ p._tired=Math.max(0,p._tired-0.34); if(p._tired<0.05) delete p._tired; } }
   G.day++;
   // BA Cup: a side knockout whose rounds are sprinkled through the season (no stat impact)
   ensureSeasonCup(G); tickBACup(G);
@@ -2221,7 +2270,7 @@ function PlayerModal({p, team, onClose, G}){
   // career WAR = sum of per-season WAR stamped in history (older rows may predate WAR → skip)
   const careerWar = (p.history||[]).reduce((t,h)=>t+(typeof h.war==="number"?h.war:0), 0);
   const hitCols = [["G","G"],["PA","PA"],["AB","AB"],["R","R"],["H","H"],["_2B","2B"],["_3B","3B"],["HR","HR"],["RBI","RBI"],["BB","BB"],["SO","SO"],["SB","SB"],["CS","CS"],["SF","SF"],["HBP","HBP"],["GIDP","GIDP"],["E","E"]];
-  const pitCols = [["G","G"],["GS","GS"],["QS","QS"],["W","W"],["L","L"],["SV","SV"],["HLD","HLD"],["H","H"],["BB","BB"],["SO","SO"],["ER","ER"],["HBP","HBP"],["WP","WP"],["BK","BK"]];
+  const pitCols = [["G","G"],["GS","GS"],["QS","QS"],["CG","CG"],["SHO","SHO"],["W","W"],["L","L"],["SV","SV"],["HLD","HLD"],["H","H"],["BB","BB"],["SO","SO"],["ER","ER"],["HBP","HBP"],["WP","WP"],["BK","BK"]];
   const cols = p.isP?pitCols:hitCols;
   const rateRow = p.isP
     ? [["STU",p.stu],["CTL",p.ctl],["STM",p.stm]]
@@ -2261,11 +2310,13 @@ function PlayerModal({p, team, onClose, G}){
         </div>
         {((p.accolades&&p.accolades.length>0) || (p.rings&&p.rings.length>0)) && (()=>{
           const ct={}; (p.accolades||[]).forEach(a=>{ct[a.award]=(ct[a.award]||0)+1;});
-          const order=["MVP","Cy Young","All-Star"];
+          const order=["MVP","Cy Young","All-Star","Rookie of the Year","Gold Glove","Silver Slugger","Reliever of the Year"];
+          const feats=[["Perfect Game","💎","bg-fuchsia-500/20 text-fuchsia-200 border-fuchsia-500/40"],["No-Hitter","🚫","bg-rose-500/20 text-rose-200 border-rose-500/40"],["Cycle","🔄","bg-emerald-500/20 text-emerald-200 border-emerald-500/40"],["4-HR Game","💣","bg-orange-500/20 text-orange-200 border-orange-500/40"],["3-HR Game","💥","bg-orange-500/20 text-orange-200 border-orange-500/40"]];
           const rings=(p.rings||[]).length;
           return <div className="flex gap-1 mb-3 flex-wrap">
             {rings>0 && <span className="text-xs bg-sky-500/20 text-sky-300 border border-sky-500/40 rounded px-2 py-1" title={"Champion: "+p.rings.join(", ")}>💍 {rings}× Ring{rings>1?"s":""}</span>}
             {order.filter(k=>ct[k]).map(k=><span key={k} className="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded px-2 py-1">🏆 {ct[k]}× {k}</span>)}
+            {feats.filter(([k])=>ct[k]).map(([k,ico,cls])=><span key={k} className={"text-xs rounded px-2 py-1 border "+cls}>{ico} {ct[k]>1?ct[k]+"× ":""}{k}</span>)}
           </div>;
         })()}
         <div className="space-y-3">
@@ -3798,6 +3849,17 @@ function awardLine(s, isP){ return isP
   ? `${s.W}-${s.L}, ${s.OUT?f2(era(s)):"—"} ERA, ${s.SO} K${s.SV?`, ${s.SV} SV`:""}`
   : `${f3(avg(s))}/${f3(obp(s))}/${f3(slg(s))}, ${s.HR} HR, ${s.RBI} RBI`; }
 function addAccolade(p,season,award,league){ (p.accolades=p.accolades||[]).push({season,award,league}); }
+// Record single-game feats (no-hitter/perfect game/cycle/multi-HR) as accolades + news.
+const FEAT_VERB = { "Perfect Game":"threw a PERFECT GAME! 💎", "No-Hitter":"threw a NO-HITTER! 🚫",
+  "Cycle":"hit for the CYCLE! 🔄", "4-HR Game":"smashed 4 HOME RUNS in a game! 💣", "3-HR Game":"hit 3 home runs in a game! 💥" };
+function recordFeats(G, out){
+  if(!out || !out.feats || !out.feats.length) return;
+  out.feats.forEach(f=>{ const p=G.players[f.pid]; if(!p) return;
+    addAccolade(p, G.season, f.feat);
+    const tid = isMlbId(p.teamId)?p.teamId:(isAAAId(p.teamId)?parentIdOf(p.teamId):null);
+    logNews(G,"award",`✨ ${p.name} ${FEAT_VERB[f.feat]||f.feat}`, tid);
+  });
+}
 // Hand out season awards (run at end of the regular season, before stats reset).
 function computeAwards(G){
   // MLB-only season line per player (a called-up player's AAA stats don't count toward MLB awards)
@@ -3981,6 +4043,7 @@ function seriesGame(G, hiId, loId, hiHome){
   const r = simGame(home, away, G.players);
   markGamesPlayed(home, away, G.players);
   if(isMlbId(hiId)) updateGameRecords(G, r.gameLines, G.season);   // MLB playoff games only
+  recordFeats(G, r);                                        // postseason no-hitters / cycles count too
   bankSeparate(roster, snap, postBucket(levelOf(hiId)));   // postseason stats, kept separate by level
   const winnerId = r.hs>r.as?home.id:away.id;
   return { winnerId, hs:r.hs, as:r.as, homeId:home.id, awayId:away.id, box:r.box };
