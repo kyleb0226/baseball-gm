@@ -552,7 +552,7 @@ function bullpenOrder(team, players, idx){
 }
 function getPitchers(team, players, idx){
   const ros = teamRoster(players, team.id, idx).filter(p=>p.isP);
-  const gi = team.w + team.l;
+  const gi = team.w + team.l + (team.poGi||0);
   const rotIds = team.rotation.length?team.rotation:ros.filter(p=>p.role==="SP").map(p=>p.id);
   let starter = players[rotIds[gi % Math.max(1,rotIds.length)]] || ros.find(p=>p.role==="SP") || ros[0];
   // pen is best-first by priority; pen[0] is the closer
@@ -3289,6 +3289,8 @@ function playoffSeriesGame(G, s, bestOf){
   const res = seriesGame(G, s.hi, s.lo, hiHome);
   if(res.winnerId===s.hi) s.hw++; else s.lw++;
   s.games.push(res);
+  G.teams[s.hi].poGi=(G.teams[s.hi].poGi||0)+1;
+  G.teams[s.lo].poGi=(G.teams[s.lo].poGi||0)+1;
   if(s.hw>=need){ s.done=true; s.winner=s.hi; }
   else if(s.lw>=need){ s.done=true; s.winner=s.lo; }
 }
@@ -4250,7 +4252,7 @@ function startNewSeason(G){
       logNews(G,"signing",`${t.abbr} ${t.budgetDelta>0?"revenue up":"budget tightens"} — payroll budget ${t.budgetDelta>0?"+":""}${t.budgetDelta} to ${money(t.budget)}`, t.id);
   });
   // reset records & stats (MLB + AAA)
-  G.teams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0; });
+  G.teams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
   G.aaaTeams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0; });
   G.schedule = buildSchedule(G.teams);
   G.aaaSchedule = buildSchedule(G.aaaTeams);
