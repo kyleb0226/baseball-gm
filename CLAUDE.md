@@ -180,6 +180,18 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
     add incentives, live accept/“wants more” verdict) and `RestructureModal` (defer current-year money
     to later years for a 10% premium). Finances → Contracts has Extend/Restructure; Free Agency has
     Negotiate. `payroll` counts only the base (`p.salary`).
+  - **Competitive free agency (`refreshFAMarket` / `processFAWave` / `offerFit`):** AI clubs bid on
+    free agents **first**, based on `teamSituation` needs + cap space — `refreshFAMarket(G)` writes each FA's
+    `p.offers` (top few) and `p.bestOffer` (interested clubs only, so weak/unneeded FAs get **no bids** while
+    coveted ones get many). A player signs the **best FIT** (`offerFit`: guaranteed money dominates, then
+    years, then a winner nudge), so a contender can land a guy for slightly less. `processFAWave(G, intensity)`
+    is one round of the market moving — rival clubs sign their best-fit targets (they can **steal** someone you
+    wanted). To sign anyone, the **user must beat the standing offer**: `ContractModal` takes `bestOffer` +
+    `userSit`, shows the competing bid, and only accepts when the user's `offerFit` ≥ the rival's AND the
+    player's ask is met. Timeline: `doProgression` opens the market (a light wave + refresh) so offers exist
+    before you look; the **Free Agency** tab shows each FA's top offer + a **"Let rivals sign"** button
+    (`advanceMarket` → `processFAWave`); `startNewSeason` runs ~6 waves (then a fallback fill) so AI rosters
+    fill through the market. Replaced the old "AI signs best affordable" loop.
   - **Money:** incentives are off-cap but real — `payIncentives` (called in `enterPlayoffs`) settles
     earned bonuses and **deducts them from the team's budget** (`t.incentivesPaid`), so the growth
     formula in `startNewSeason` builds on the reduced figure. Each offseason a rostered contract

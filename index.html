@@ -3029,7 +3029,7 @@ function extensionTerms(G, p){
 
 /* ---- Contract negotiation modal (sign a FA / extend your own player) ---- */
 const DEFAULT_NEED = { HR:25, RBI:80, H:150, R:80, SB:25, AVG:290, W:14, SO:180, SV:30, QS:18, IP:180 };
-function ContractModal({G, p, mode, capSpace, factor, refuses, onClose, onSign, tShow}){
+function ContractModal({G, p, mode, capSpace, factor, refuses, onClose, onSign, tShow, bestOffer, userSit}){
   const ask=contractAsk(p);
   const [years,setYears]=useState(ask.years);
   const [aav,setAav]=useState(Math.max(0.5, round(ask.fairAAV*(factor||1)*10)/10));
@@ -3043,13 +3043,19 @@ function ContractModal({G, p, mode, capSpace, factor, refuses, onClose, onSign, 
   const required=requiredAAV(p, years, factor);
   const neededBase=Math.max(0.5, round((required-0.5*incTotal)*10)/10);
   const capProblem = mode==="sign" && +aav>capSpace+0.001;
-  // he signs once the offer (base + half the incentives) meets his ask and it fits the cap
-  const accepts = !refuses && +aav>=0.5 && willSign(p, +aav, years, incTotal, factor) && !capProblem;
+  // competing market offer: the player picks the best FIT, so the user must out-bid (money/
+  // years, with a slight winner nudge baked into offerFit) to beat a rival's standing offer.
+  const rivalTeam = bestOffer ? teamById(G, bestOffer.teamId) : null;
+  const userFit = (mode==="sign" && bestOffer) ? offerFit(p, {aav:+aav, years}, userSit) : null;
+  const beatsMarket = !bestOffer || (userFit >= bestOffer.fit - 0.001);
+  // he signs once the offer (base + half the incentives) meets his ask, fits the cap, AND beats the market
+  const accepts = !refuses && +aav>=0.5 && willSign(p, +aav, years, incTotal, factor) && !capProblem && beatsMarket;
   const inp="bg-[#0b1220] border border-[#1d2940] rounded px-2 py-1 text-sm";
   const offer=()=>{
     if(refuses){ tShow&&tShow(`${p.name} wants to test free agency`); return; }
     if(capProblem){ tShow&&tShow(`Not enough cap space (base ${money(+aav)})`); return; }
-    if(!accepts){ tShow&&tShow(`${p.name} wants more — try ~${money(neededBase)}/yr base`); return; }
+    if(!willSign(p, +aav, years, incTotal, factor)){ tShow&&tShow(`${p.name} wants more — try ~${money(neededBase)}/yr base`); return; }
+    if(!beatsMarket){ tShow&&tShow(`${p.name} prefers ${rivalTeam?rivalTeam.abbr:"another club"}'s offer — beat ${bestOffer.years}y · ${money(bestOffer.aav)}/yr`); return; }
     onSign(+aav, years, incs.map(x=>({stat:x.stat, need:+x.need, amount:+x.amount, label:(STAT_INCENTIVES[x.stat]||{}).label||"bonus"})));
   };
   return (
@@ -3064,6 +3070,9 @@ function ContractModal({G, p, mode, capSpace, factor, refuses, onClose, onSign, 
           <button onClick={onClose} className="text-slate-400 hover:text-white text-xl leading-none">×</button>
         </div>
         {refuses && <div className="text-sm text-red-300 bg-red-900/20 border border-red-800/40 rounded p-2 mb-2">He won't talk extension on a losing club — win more, or let him test free agency.</div>}
+        {bestOffer && rivalTeam && <div className={"text-xs rounded p-2 mb-2 border "+(beatsMarket?"text-emerald-300 bg-emerald-900/15 border-emerald-800/40":"text-amber-300 bg-amber-900/15 border-amber-800/40")}>
+          💰 Competing offer — <b>{rivalTeam.abbr}</b>: {bestOffer.years}y · {money(bestOffer.aav)}/yr. {beatsMarket?"Your offer is winning the bidding.":"He prefers their deal — raise your salary/years to win him over."}
+        </div>}
         <div className="grid grid-cols-2 gap-3 mb-3">
           <label className="text-xs text-slate-400">Years
             <div className="flex items-center gap-2 mt-1">
@@ -3409,6 +3418,14 @@ function FreeAgency({G, commit, tShow}){
   const me=G.teams[G.userTeamId];
   const [pos,setPos]=useState("ALL");
   const [sort,setSort]=useState("ovr");
+  // Make sure the AI market has been computed at least once so the user sees rival offers
+  // (they bid first). Runs once per season when offers are missing — no render loop.
+  useEffect(()=>{
+    if(G.freeAgents.length && !G.freeAgents.some(id=>G.players[id] && G.players[id].bestOffer!==undefined)){
+      refreshFAMarket(G); commit(G);
+    }
+  }, [G.season]);
+  const userSit = useMemo(()=>teamSituation(G, G.userTeamId), [G.season, G.day]);
   const fas = G.freeAgents.map(id=>G.players[id]).filter(Boolean)
     .filter(p=>pos==="ALL" || (pos==="P"?p.isP:(!p.isP && p.pos===pos)))
     .sort(FA_SORTS[sort]||FA_SORTS.ovr);
@@ -3417,9 +3434,15 @@ function FreeAgency({G, commit, tShow}){
   const doSign=(p, aav, years, incentives)=>{
     setContract(p, aav, years, incentives);
     p.teamId=me.id; G.freeAgents=G.freeAgents.filter(id=>id!==p.id);
+    p.bestOffer=null; p.offers=[];
     const incTot=incentivesPerYear(p);
     logNews(G,"signing",`${me.abbr} signed ${p.pos} ${p.name} (${p.ovr}) — ${contractLabel(p)}${incTot?` +${money(incTot)}/yr inc`:""}`, me.id);
-    ensureLineup(me,G.players); setNegotiate(null); commit(G); tShow(`✅ Signed ${p.name}`);
+    ensureLineup(me,G.players); refreshFAMarket(G); setNegotiate(null); commit(G); tShow(`✅ Signed ${p.name}`);
+  };
+  // let the market move: rival clubs sign their best-fit targets (they may steal a guy you wanted)
+  const advanceMarket=()=>{
+    const n=processFAWave(G, 0.5);
+    commit(G); tShow(n>0?`📝 ${n} free agent${n>1?"s":""} signed elsewhere`:"Market quiet — no one signed");
   };
   const waived = (G.waivers||[]).map(w=>({w, p:G.players[w.id]})).filter(x=>x.p && x.p.teamId==null);
   const claim=(p)=>{
@@ -3437,12 +3460,14 @@ function FreeAgency({G, commit, tShow}){
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm text-slate-400">Cap space:</span>
           <b className={space>=0?"text-emerald-400":"text-red-400"}>{money(space)}</b>
-          <div className="ml-auto flex gap-1">
+          <button onClick={advanceMarket} className="px-2 py-1 rounded text-xs bg-amber-600/80 hover:bg-amber-500 text-slate-900 font-semibold" title="Rival clubs sign their targets — act fast or lose players">⏵ Let rivals sign</button>
+          <div className="ml-auto flex gap-1 flex-wrap">
             {["ALL","C","1B","2B","3B","SS","LF","CF","RF","DH","P"].map(x=>(
               <button key={x} onClick={()=>setPos(x)} className={"px-2 py-0.5 rounded text-xs "+(pos===x?"bg-emerald-500 text-slate-900":"bg-[#16213a]")}>{x}</button>
             ))}
           </div>
         </div>
+        <p className="text-[11px] text-slate-500 mt-1">Rival clubs bid on free agents based on their needs &amp; budget — you'll see the top competing offer. To sign a player you must beat it (players weigh money, years, and a winning club). Hit <b>Let rivals sign</b> to advance the market.</p>
       </Card>
       {waived.length>0 && <Card className="border-sky-700/40">
         <div className="text-sm font-semibold text-sky-300 mb-1">📋 Waiver Wire <span className="text-slate-500 text-xs font-normal">({waived.length})</span></div>
@@ -3479,10 +3504,10 @@ function FreeAgency({G, commit, tShow}){
             <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]">
               <th className="text-left">Pos</th><th className="text-left">Name</th>
               <SortTh k="age" label="Age"/><SortTh k="ovr" label="OVR"/><SortTh k="pot" label="POT"/>
-              <SortTh k="val" label="Val"/><SortTh k="ask" label="Ask" cls="text-right"/><th></th>
+              <SortTh k="val" label="Val"/><SortTh k="ask" label="Ask" cls="text-right"/><th className="text-right">Top Offer</th><th></th>
             </tr></thead>
             <tbody>
-              {fas.map(p=>(
+              {fas.map(p=>{ const bo=p.bestOffer, rt=bo?teamById(G,bo.teamId):null; return (
                 <tr key={p.id} className="border-b border-[#15203a]">
                   <td className="text-slate-400">{p.pos}</td>
                   <td className="text-left"><PlayerLink p={p} className="font-medium"/></td>
@@ -3491,17 +3516,19 @@ function FreeAgency({G, commit, tShow}){
                   <td className="text-center text-amber-300/90 font-semibold">{p.pot}</td>
                   <td className="text-center text-slate-400">{playerValue(p).toFixed(0)}</td>
                   <td className="text-right text-slate-400">~{money(salaryFor(p))}/yr</td>
+                  <td className="text-right text-xs whitespace-nowrap">{bo&&rt?<span className="text-amber-300">{rt.abbr} {bo.years}y·{money(bo.aav)}</span>:<span className="text-slate-600">no bids</span>}</td>
                   <td className="text-right pl-2 whitespace-nowrap">
                     <button onClick={()=>setNegotiate(p)} className="px-2 py-0.5 bg-emerald-600 rounded text-xs hover:bg-emerald-500">Negotiate</button>
                   </td>
                 </tr>
-              ))}
+              );})}
             </tbody>
           </table>
         </div>
       </Card>;
       })()}
       {negotiate && <ContractModal G={G} p={negotiate} mode="sign" capSpace={space} factor={1} refuses={false}
+        bestOffer={negotiate.bestOffer} userSit={userSit}
         onClose={()=>setNegotiate(null)} onSign={(a,y,inc)=>doSign(negotiate,a,y,inc)} tShow={tShow} />}
     </div>
   );
@@ -4129,6 +4156,9 @@ function OffseasonHub({G, commit, tShow, setTab}){
     G._lastOffseasonDepartures = { retired: retiredLog, expired: expiredLog };
     G.offStep="draft-build";
     buildDraft(G);
+    // open the free-agent market: rival clubs bid first (and a few early signings happen
+    // before you even look — act fast or lose targets), then leave fresh offers on the board.
+    processFAWave(G, 0.10); refreshFAMarket(G);
     commit(G);
     tShow("Players aged & contracts processed");
   };
@@ -4326,6 +4356,60 @@ function teamSituation(G, teamId){
   needs.sort((a,b)=>b.gap-a.gap);
   const needPos=needs.map(n=>n.pos);
   return { mode, strength:Math.round(strength), wp, age:Math.round(age), needs:needPos, topNeeds:needs.slice(0,3) };
+}
+
+/* ---- Competitive free agency: AI clubs bid FIRST; players sign the best FIT ----
+   Drives "teams send offers before me / steal players / some get many bids, some none". */
+// How much a player likes an offer. Guaranteed money dominates, then years, then a nudge
+// toward winners — so a contender can land a guy for slightly less ("better fit elsewhere").
+function offerFit(p, offer, sit){
+  const wp = sit ? sit.wp : 0.5, strength = sit ? sit.strength : 60;
+  return (offer.aav||0)*1.0 + (offer.years||1)*0.25 + (wp-0.5)*5 + Math.max(0,strength-60)*0.06;
+}
+// Recompute the AI market for every free agent: interested clubs (need + can afford) and
+// their offers. Stores p.offers (top few) + p.bestOffer for the FA tab + decision logic.
+function refreshFAMarket(G){
+  const sits={}; G.teams.forEach(t=>{ sits[t.id]=teamSituation(G,t.id); });
+  (G.freeAgents||[]).forEach(id=>{
+    const p=G.players[id]; if(!p) return;
+    const ask=requiredAAV(p, 3, 1);
+    const offers=[];
+    G.teams.forEach(t=>{
+      if(t.id===G.userTeamId) return;
+      const space=t.budget - payroll(G,t.id);
+      if(space < Math.max(0.6, ask*0.8)) return;            // can't afford → no offer
+      const sit=sits[t.id]; const posKey=p.isP?p.role:p.pos;
+      const needed = sit.needs.includes(posKey) || (!p.isP && sit.needs.includes(p.pos));
+      const winNow = sit.mode==="Win-now"||sit.mode==="Contender";
+      if(!(needed || (p.ovr>=74 && space>ask*1.4) || (winNow && p.ovr>=69))) return;  // not interested
+      const mult = needed ? (1.0 + Math.random()*0.22) : (winNow?0.98:0.9);
+      const aav = clamp(round(Math.min(space, ask*mult)*10)/10, 0.5, 70);
+      const years = clamp(p.age<28?rint(3,5):p.age<32?rint(2,4):rint(1,2), 1, 6);
+      offers.push({teamId:t.id, aav, years, fit:offerFit(p,{aav,years},sit)});
+    });
+    offers.sort((a,b)=>b.fit-a.fit);
+    p.offers = offers.slice(0,4);
+    p.bestOffer = offers[0] || null;
+  });
+}
+// One wave of the market moving: each FA may sign his current best offer (AI clubs land
+// their targets — this is how rivals "steal" a player before you act). Returns # signed.
+function processFAWave(G, intensity){
+  refreshFAMarket(G);
+  let signed=0;
+  (G.freeAgents||[]).slice().forEach(id=>{
+    const p=G.players[id]; if(!p || !p.bestOffer) return;
+    if(!chance(intensity)) return;
+    const off=p.bestOffer, t=G.teams[off.teamId]; if(!t) return;
+    if(off.aav > t.budget - payroll(G,t.id) + 0.001) return;     // cap moved since the bid
+    setContract(p, off.aav, off.years, []); p.teamId=t.id;
+    G.freeAgents=G.freeAgents.filter(x=>x!==p.id);
+    p.bestOffer=null; p.offers=[];
+    logNews(G,"signing",`${t.abbr} signed ${p.pos} ${p.name} (${p.ovr}) — ${off.years}y · ${money(off.aav)}/yr`, t.id);
+    signed++;
+  });
+  G.teams.forEach(t=>{ if(t.id!==G.userTeamId) aiAlignOrg(G,t.id); });
+  return signed;
 }
 // Score a prospect for a specific club: base talent, weighted by positional need and the
 // club's mode (win-now favors ready bats/arms; rebuilders chase ceiling).
@@ -4685,13 +4769,15 @@ function trimHistories(G, notableCap=25, fillerCap=3){
 }
 
 function startNewSeason(G){
-  // AI free agency: each AI team fills to ~26 and addresses cap
+  // Competitive AI free agency: several market waves where clubs land their best-FIT targets
+  // (anyone the user didn't sign). Then a fallback fill guarantees playable AI rosters.
+  for(let w=0; w<6; w++) processFAWave(G, 0.55);
   G.teams.forEach(t=>{
     if(t.id===G.userTeamId) return;
     let ros=rosterOf(G,t.id);
     let guard=0;
-    while(ros.length<28 && G.freeAgents.length && guard<80){
-      // pick best affordable FA
+    while(ros.length<26 && G.freeAgents.length && guard<80){
+      // fallback: best affordable FA at a fair price (the market may have left thin spots)
       const space=t.budget-payroll(G,t.id);
       const cand=G.freeAgents.map(id=>G.players[id]).filter(p=>p&&p.salary<=Math.max(space,1)).sort((a,b)=>b.ovr-a.ovr)[0];
       if(!cand) break;
