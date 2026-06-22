@@ -569,9 +569,13 @@ function simGame(home, away, players, idx){
   // snapshot season counters at game start so we can diff out each player's single-GAME
   // line afterward (for single-game records). Hitters in the lineup + both starters now;
   // relievers are snapshotted when they enter (in bringIn).
+  // full start-of-game line for every player who appears, so we can diff out a complete
+  // box-score line afterward (keys include HR/H/RBI/SO/OUT used by the single-game records).
+  const snapH = h => ({AB:h.stats.AB,R:h.stats.R,H:h.stats.H,RBI:h.stats.RBI,BB:h.stats.BB,SO:h.stats.SO,HR:h.stats.HR});
+  const snapP = p => ({OUT:p.stats.OUT,H:p.stats.H,ER:p.stats.ER,BB:p.stats.BB,SO:p.stats.SO,HRA:p.stats.HRA});
   const gSnap = {};
-  [home.id,away.id].forEach(tid=>{ lineups[tid].forEach(h=>{ gSnap[h.id]={HR:h.stats.HR,H:h.stats.H,RBI:h.stats.RBI}; });
-    const sp=cur[tid].p; gSnap[sp.id]={SO:sp.stats.SO,OUT:sp.stats.OUT}; });
+  [home.id,away.id].forEach(tid=>{ lineups[tid].forEach(h=>{ gSnap[h.id]=snapH(h); });
+    const sp=cur[tid].p; gSnap[sp.id]=snapP(sp); });
 
   // bring an arm into the game (counts an appearance the first time only this game)
   function bringIn(pitId, p){
@@ -579,7 +583,7 @@ function simGame(home, away, players, idx){
     const c = cur[pitId];
     if(c.p && c.p.id===p.id) return;
     c.p = p; c.gs = false; c.segOuts = 0;
-    if(!usedPen[pitId].includes(p.id)){ usedPen[pitId].push(p.id); p.stats.G++; if(!gSnap[p.id]) gSnap[p.id]={SO:p.stats.SO,OUT:p.stats.OUT}; }
+    if(!usedPen[pitId].includes(p.id)){ usedPen[pitId].push(p.id); p.stats.G++; if(!gSnap[p.id]) gSnap[p.id]=snapP(p); }
   }
   // workload key: spread by what an arm has thrown THIS game, then THIS season
   const loadKey = p => (gOuts[p.id]||0)*100000 + (p.stats.OUT||0);
@@ -671,12 +675,14 @@ function simGame(home, away, players, idx){
   // helper to credit runs scored to runners (R stat) — approximate: credit batters who score
   function addRuns(){ /* R for scorers approximated below */ }
 
-  // play 9 innings (or until decided in bottom 9 / extras)
+  // play 9 innings (or until decided in bottom 9 / extras). Track runs per half-inning
+  // for the box-score line score (away = top of each inning, home = bottom; null = didn't bat).
+  const lineScore = { [home.id]:[], [away.id]:[] };
   let inning=1;
   while(true){
-    halfInning(away.id, home.id, inning, false);  // top
-    if(inning>=9 && score[home.id]>score[away.id]) break; // walk-off not needed, home leads after top9
-    halfInning(home.id, away.id, inning, true);   // bottom
+    let b=score[away.id]; halfInning(away.id, home.id, inning, false); lineScore[away.id].push(score[away.id]-b);  // top
+    if(inning>=9 && score[home.id]>score[away.id]){ lineScore[home.id].push(null); break; } // home leads after top9 — no bottom
+    b=score[home.id]; halfInning(home.id, away.id, inning, true); lineScore[home.id].push(score[home.id]-b);       // bottom
     if(inning>=9 && score[home.id]!==score[away.id]) break;
     inning++;
     if(inning>20) break; // safety
@@ -690,7 +696,7 @@ function simGame(home, away, players, idx){
   // decisions
   const winnerId = out.hs>out.as ? home.id : away.id;
   const loserId  = winnerId===home.id ? away.id : home.id;
-  awardDecision(winnerId, loserId, arms, usedPen, players, {home,away,score});
+  const dec = awardDecision(winnerId, loserId, arms, usedPen, players, {home,away,score});
   // credit Quality Starts: the starter went 6+ IP (18+ outs) allowing <=3 ER this game
   [home,away].forEach(t=>{
     const sp=arms[t.id].starter; if(!sp) return;
@@ -711,6 +717,22 @@ function simGame(home, away, players, idx){
     [arms[tid].starter.id, ...usedPen[tid]].forEach(pid=>{ const p=players[pid], sn=gSnap[pid]; if(!p||!sn||sn.SO==null) return;
       out.gameLines.push({ name:p.name, team:tid, isP:true, so:p.stats.SO-sn.SO, out:p.stats.OUT-sn.OUT }); });
   });
+  // Full per-game box score (compact: player ids + ints, names resolved at view time) for the
+  // Box Score viewer. Batting: [pid,AB,R,H,RBI,BB,SO,HR]; pitching: [pid,OUT,H,R,ER,BB,SO,HRA]
+  // (R==ER — the sim treats every run as earned). Stored on the schedule/playoff game object.
+  const batLine = tid => lineups[tid].map(h=>{ const sn=gSnap[h.id]||{};
+    return [h.id, h.stats.AB-(sn.AB||0), h.stats.R-(sn.R||0), h.stats.H-(sn.H||0),
+            h.stats.RBI-(sn.RBI||0), h.stats.BB-(sn.BB||0), h.stats.SO-(sn.SO||0), h.stats.HR-(sn.HR||0)]; });
+  const pitLine = tid => [arms[tid].starter.id, ...usedPen[tid]].map(pid=>{ const p=players[pid], sn=gSnap[pid]||{};
+    const er=p.stats.ER-(sn.ER||0);
+    return [pid, p.stats.OUT-(sn.OUT||0), p.stats.H-(sn.H||0), er, er, p.stats.BB-(sn.BB||0), p.stats.SO-(sn.SO||0), p.stats.HRA-(sn.HRA||0)]; });
+  out.box = {
+     h:home.id, a:away.id, hs:out.hs, as:out.as,
+    ls:{ h:lineScore[home.id], a:lineScore[away.id] },
+    hb:batLine(home.id), ab:batLine(away.id),
+    hp:pitLine(home.id), ap:pitLine(away.id),
+    dec
+  };
   return out;
 }
 
@@ -736,6 +758,7 @@ function awardDecision(winnerId, loserId, arms, usedPen, players, ctx){
     (rp||wStarter).stats.W++; winPitId=(rp||wStarter).id;
   }
   arms[loserId].starter.stats.L++;
+  const loserPitId = arms[loserId].starter.id;
   // save: closer = pen[0] (best/priority arm), if he finished a win of <=3
   const margin = Math.abs(ctx.score[winnerId]-ctx.score[loserId]);
   const pen = arms[winnerId].pen; const closer = pen[0];
@@ -750,6 +773,7 @@ function awardDecision(winnerId, loserId, arms, usedPen, players, ctx){
       const rp=players[id]; if(rp) rp.stats.HLD=(rp.stats.HLD||0)+1;
     });
   }
+  return { w:winPitId, l:loserPitId, s:saverId };   // decision ids for the box score
 }
 
 /* mark games-played for hitters in lineup */
@@ -1458,6 +1482,7 @@ function simDay(G){
       markGamesPlayed(home, away, G.players, idx);
       if(isMLB) updateGameRecords(G, res.gameLines, G.season);   // single-game records (MLB only)
       g.played=true; g.hs=res.hs; g.as=res.as;
+      if(isMLB) g.box=res.box;   // full box score for every MLB game (this season's schedule only)
       if(res.hs>res.as){ home.w++; away.l++; } else { away.w++; home.l++; }
       home.rs+=res.hs; home.ra+=res.as; away.rs+=res.as; away.ra+=res.hs;
     });
@@ -2457,7 +2482,114 @@ function Leaders({G}){
 }
 
 /* ----------------------------- Schedule -------------------------------- */
+// Full game box score: inning-by-inning line score + batting & pitching lines for both clubs.
+// `box` is the compact shape saved by simGame (player ids + ints); names/teams resolve here.
+function BoxScore({G, box, onClose}){
+  if(!box) return null;
+  const homeT=teamById(G,box.h), awayT=teamById(G,box.a);
+  const nm = pid => { const p=G.players[pid]; return p?p.name:"—"; };
+  const pos = pid => { const p=G.players[pid]; return p?p.pos:""; };
+  const ip = outs => `${Math.floor(outs/3)}.${outs%3}`;
+  const innings = Math.max((box.ls.h||[]).length, (box.ls.a||[]).length);
+  const sumH = lines => lines.reduce((s,l)=>s+(l[3]||0),0);   // H is col index 3
+  const dec = box.dec||{};
+  const winSide = box.hs>box.as ? "h" : "a";
+
+  const LineScore = ()=>(
+    <div className="overflow-x-auto">
+      <table className="text-sm tnum border-collapse">
+        <thead><tr className="text-slate-400 text-xs">
+          <th className="text-left pr-3 font-semibold"> </th>
+          {Array.from({length:innings}).map((_,i)=><th key={i} className="px-1.5 w-6 text-center">{i+1}</th>)}
+          <th className="px-2 text-center font-bold text-slate-200 border-l border-[#1d2940]">R</th>
+          <th className="px-2 text-center font-bold text-slate-200">H</th>
+        </tr></thead>
+        <tbody>
+          {[["a",awayT,box.ls.a,box.as,sumH(box.ab)],["h",homeT,box.ls.h,box.hs,sumH(box.hb)]].map(([side,t,ls,r,h])=>(
+            <tr key={side} className={"border-t border-[#15203a] "+(winSide===side?"font-bold text-emerald-300":"text-slate-300")}>
+              <td className="text-left pr-3 whitespace-nowrap">{t?t.abbr:"?"} {t?t.nick:""}</td>
+              {Array.from({length:innings}).map((_,i)=>{ const v=(ls||[])[i];
+                return <td key={i} className="px-1.5 text-center text-slate-300">{v==null?"–":v}</td>; })}
+              <td className="px-2 text-center border-l border-[#1d2940]">{r}</td>
+              <td className="px-2 text-center text-slate-400">{h}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  const decTag = pid => dec.w===pid?<span className="text-emerald-400 font-bold"> (W)</span>
+    : dec.l===pid?<span className="text-red-400 font-bold"> (L)</span>
+    : dec.s===pid?<span className="text-sky-300 font-bold"> (S)</span> : null;
+
+  const Batting = ({t, lines})=>{
+    const tot=lines.reduce((a,l)=>[0,a[1]+l[1],a[2]+l[2],a[3]+l[3],a[4]+l[4],a[5]+l[5],a[6]+l[6],a[7]+l[7]],[0,0,0,0,0,0,0,0]);
+    return (
+      <div>
+        <div className="text-xs font-bold text-slate-300 mb-1">{t?`${t.abbr} ${t.nick}`:"?"} — Batting</div>
+        <table className="w-full text-sm tnum">
+          <thead><tr className="text-slate-500 text-[11px] border-b border-[#1d2940]">
+            <th className="text-left font-medium">Batter</th><th>AB</th><th>R</th><th>H</th><th>RBI</th><th>BB</th><th>SO</th><th>HR</th></tr></thead>
+          <tbody>
+            {lines.map(l=>(
+              <tr key={l[0]} className="border-b border-[#15203a]">
+                <td className="text-left truncate max-w-[10rem]"><span className="text-slate-500 text-[11px]">{pos(l[0])}</span> {nm(l[0])}</td>
+                <td className="text-center">{l[1]}</td><td className="text-center">{l[2]}</td>
+                <td className="text-center font-semibold">{l[3]}</td><td className="text-center">{l[4]}</td>
+                <td className="text-center">{l[5]}</td><td className="text-center">{l[6]}</td>
+                <td className="text-center text-amber-300">{l[7]||""}</td>
+              </tr>
+            ))}
+            <tr className="text-slate-400 font-semibold"><td className="text-left text-xs">Totals</td>
+              <td className="text-center">{tot[1]}</td><td className="text-center">{tot[2]}</td><td className="text-center">{tot[3]}</td>
+              <td className="text-center">{tot[4]}</td><td className="text-center">{tot[5]}</td><td className="text-center">{tot[6]}</td><td className="text-center">{tot[7]}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+  const Pitching = ({t, lines})=>(
+    <div>
+      <div className="text-xs font-bold text-slate-300 mb-1">{t?`${t.abbr} ${t.nick}`:"?"} — Pitching</div>
+      <table className="w-full text-sm tnum">
+        <thead><tr className="text-slate-500 text-[11px] border-b border-[#1d2940]">
+          <th className="text-left font-medium">Pitcher</th><th>IP</th><th>H</th><th>R</th><th>ER</th><th>BB</th><th>SO</th><th>HR</th></tr></thead>
+        <tbody>
+          {lines.map(l=>(
+            <tr key={l[0]} className="border-b border-[#15203a]">
+              <td className="text-left truncate max-w-[10rem]">{nm(l[0])}{decTag(l[0])}</td>
+              <td className="text-center font-semibold">{ip(l[1])}</td><td className="text-center">{l[2]}</td>
+              <td className="text-center">{l[3]}</td><td className="text-center">{l[4]}</td>
+              <td className="text-center">{l[5]}</td><td className="text-center">{l[6]}</td><td className="text-center text-amber-300">{l[7]||""}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-[#101a30] border border-[#1d2940] rounded-xl p-4 max-w-2xl w-full max-h-[90vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="font-bold">{awayT?awayT.abbr:"?"} {box.as} <span className="text-slate-500">@</span> {homeT?homeT.abbr:"?"} {box.hs}</div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-200 text-sm">✕ close</button>
+        </div>
+        <Card className="mb-3"><LineScore/></Card>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <Card><Batting t={awayT} lines={box.ab}/></Card>
+          <Card><Batting t={homeT} lines={box.hb}/></Card>
+          <Card><Pitching t={awayT} lines={box.ap}/></Card>
+          <Card><Pitching t={homeT} lines={box.hp}/></Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Schedule({G}){
+  const [boxGame,setBoxGame]=useState(null);
   const uid2=G.userTeamId;
   const rivalId=G.teams[uid2].rivalId;
   const games=[];
@@ -2474,16 +2606,21 @@ function Schedule({G}){
           const home=g.home===uid2; const opp=G.teams[home?g.away:g.home];
           const win=g.played?((home?g.hs>g.as:g.as>g.hs)?"W":"L"):null;
           const isRival = opp.id===rivalId;
+          const canBox = g.played && g.box;
           return (
-            <div key={di} className={"flex items-center gap-2 px-2 py-1 rounded "+(di===G.day?"bg-emerald-900/40":isRival?"bg-rose-950/40 border border-rose-900/40":"bg-[#13203a]")}>
+            <div key={di} onClick={canBox?()=>setBoxGame(g.box):undefined}
+              title={canBox?"View box score":undefined}
+              className={"flex items-center gap-2 px-2 py-1 rounded "+(canBox?"cursor-pointer hover:ring-1 hover:ring-emerald-600/60 ":"")+(di===G.day?"bg-emerald-900/40":isRival?"bg-rose-950/40 border border-rose-900/40":"bg-[#13203a]")}>
               <span className="text-slate-500 text-xs w-8">{di+1}</span>
               <span className="text-slate-400 text-xs w-6">{home?"vs":"@"}</span>
               <span className="flex-1 truncate">{isRival&&<span className="text-rose-400">⚔ </span>}{opp.abbr} {opp.nick}</span>
               {g.played && <span className={"text-xs font-bold "+(win==="W"?"text-emerald-400":"text-red-400")}>{win} {home?g.hs:g.as}-{home?g.as:g.hs}</span>}
+              {canBox && <span className="text-slate-600 text-[10px]">▦</span>}
             </div>
           );
         })}
       </div>
+      {boxGame && <BoxScore G={G} box={boxGame} onClose={()=>setBoxGame(null)} />}
     </Card>
   );
 }
@@ -3119,7 +3256,7 @@ function seriesGame(G, hiId, loId, hiHome){
   markGamesPlayed(home, away, G.players);
   updateGameRecords(G, r.gameLines, G.season);   // playoff games count toward single-game records
   const winnerId = r.hs>r.as?home.id:away.id;
-  return { winnerId, hs:r.hs, as:r.as, homeId:home.id, awayId:away.id };
+  return { winnerId, hs:r.hs, as:r.as, homeId:home.id, awayId:away.id, box:r.box };
 }
 
 // play a single game in one series (2-2-1 home pattern), updating its W tally
@@ -3173,6 +3310,7 @@ function buildNextRound(G){
 
 function Playoffs({G, commit, tShow}){
   const po=G.playoffs;
+  const [boxGame,setBoxGame]=useState(null);
   if(!po) return <Card>No active postseason.</Card>;
   const tn = id => G.teams[id];
   const round = po.round;
@@ -3203,8 +3341,9 @@ function Playoffs({G, commit, tShow}){
           {s.games.map((g,i)=>{
             const hiSc = g.homeId===s.hi? g.hs : g.as, loSc = g.homeId===s.lo? g.hs : g.as;
             const hiWon = g.winnerId===s.hi;
-            return <span key={i} title={"Game "+(i+1)}
-              className={"text-[10px] rounded px-1 tnum "+(hiWon?"bg-emerald-900/50 text-emerald-200":"bg-[#0b1220] text-slate-300")}>
+            return <span key={i} title={g.box?"View box score":"Game "+(i+1)}
+              onClick={g.box?()=>setBoxGame(g.box):undefined}
+              className={"text-[10px] rounded px-1 tnum "+(g.box?"cursor-pointer hover:ring-1 hover:ring-emerald-500/60 ":"")+(hiWon?"bg-emerald-900/50 text-emerald-200":"bg-[#0b1220] text-slate-300")}>
               G{i+1} {hiSc}-{loSc}</span>;
           })}
           {!s.done && <span className="text-[10px] text-slate-500 px-1">best of {len} · {Math.ceil(len/2)-Math.max(s.hw,s.lw)} to clinch</span>}
@@ -3259,6 +3398,7 @@ function Playoffs({G, commit, tShow}){
       </div>
       {po.ws && <Card><div className="font-bold text-amber-300 mb-2">World Series (Bo7)</div>
         <SeriesView title="WS" s={po.ws} len={7}/></Card>}
+      {boxGame && <BoxScore G={G} box={boxGame} onClose={()=>setBoxGame(null)} />}
     </div>
   );
 }

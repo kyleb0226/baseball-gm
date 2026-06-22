@@ -55,6 +55,17 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   `changePitcher`/`bringIn` (tracked by `segOuts`), with the highest-OVR reliever (last in `pen`)
   closing save situations — so innings distribute realistically instead of one arm soaking the game.
   Produces realistic leaders (≈ .330–.350 AVG / 45–55 HR / sub-2 ERA / ~30 SB; SP ~180–220 IP).
+- **Box scores (`out.box`, `BoxScore` modal):** `simGame` snapshots every appearing player's line at
+  game start (`snapH`/`snapP` → `gSnap`) and per-half-inning runs (`lineScore`), then diffs them into a
+  **compact** `out.box` (player **ids + ints**, names resolved at view time): `ls` (per-inning runs, `null`
+  = didn't bat → "X"), `hb`/`ab` batting `[pid,AB,R,H,RBI,BB,SO,HR]`, `hp`/`ap` pitching
+  `[pid,OUT,H,R,ER,BB,SO,HRA]` (R==ER — sim treats all runs earned), and `dec` (`{w,l,s}` ids, returned
+  by `awardDecision`). `simDay` stores it on **every MLB** schedule game (`g.box`, MLB only — not AAA);
+  `seriesGame` stores it on each playoff `s.games[]` entry. The `BoxScore` modal (line score grid +
+  batting/pitching tables, W/L/S tags) opens by **clicking a played game** in the **Schedule** tab (▦) or a
+  **line-score chip in Playoffs**. Storage stays bounded: the schedule is rebuilt each `startNewSeason`, so
+  only the **current** season's + current postseason's box scores persist (~1.3MB compressed/season, well
+  under quota). Final scores/records/history are unaffected and persist forever.
 - **Rotation & bullpen:** every team carries a **5-man rotation** (`autoSetLineups` promotes the best
   arms if short of true SPs) and each starter goes every 5th game (≈32–33 GS). The bullpen has a
   user-editable **priority order** (`team.bullpen`, resolved live by `bullpenOrder()`; `pen[0]` = closer).
