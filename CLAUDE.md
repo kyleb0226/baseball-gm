@@ -21,15 +21,22 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   `migrate(G)` (runs in `loadGame` and on import) so existing franchises keep loading across updates.
   Header has **Save File** / **Load File** (`exportSave`/`importSave`) for manual JSON backups; bump
   `SAVE_VERSION` when you add migration steps.
-  - **Save size / localStorage quota (~5MB):** the autosave must stay under the browser quota or
-    `saveGame`'s `setItem` throws. It now returns a bool, runs an emergency `trimHistories`/`pruneFreeAgents`
-    + retry on failure, and `commit` toasts a warning — never fail silently (the old silent `catch{}` is why
-    deep franchises "reverted to last season / lost records" on refresh: per-player `p.history` grew
-    ~0.24MB/season, ~73% of the save, and crossed quota ~16 seasons in). `trimHistories(G)` caps year-by-year
-    history (25 entries for notable players — user's org / peak≥75 / decorated; 3 for filler), keeping the
-    save ~3.7MB even at 40 seasons. Lossless for game logic: records/HoF/leaders read `p.career` + `G.records`
-    + `team.records`, not these arrays. Runs in `startNewSeason` (each rollover) and `migrate` (rescues
-    existing bloated saves on load). If you add new per-season-growing per-player data, bound it here too.
+  - **Save compression (the real quota fix):** the autosave is written **compressed** via a vendored,
+    inlined `LZString.compressToUTF16` (MIT, no CDN → works offline / in the iOS wrapper), with a `LZ16:`
+    marker prefix. JSON packs ~6–10× (a ~70KB game → ~10KB; a deep franchise that *didn't* fit now lands
+    far under the ~5MB quota). `loadGame` sniffs the prefix: `LZ16:`→decompress, else legacy plain JSON
+    (those start with `{`) → parse unchanged, so existing saves keep loading. `exportSave` stays **plain
+    JSON** (portable backups). This is what actually fixed the "refresh during playoffs/offseason reverts a
+    season, players a year younger, old stats/records deleted" bug: the uncompressed save crossed quota,
+    `setItem` threw, and a refresh loaded the last write that fit (an older season). Keep `saveGame`/
+    `loadGame` **synchronous** (commit pattern depends on it) — don't swap in async IndexedDB casually.
+  - **Save size / localStorage quota (~5MB):** even with compression, keep the autosave bounded.
+    `saveGame` returns a bool, runs an emergency `trimHistories`/`pruneFreeAgents` + retry on failure (now
+    a rare last-ditch backstop), and `commit` toasts a warning — never fail silently. `trimHistories(G)`
+    caps year-by-year history (25 entries for notable players — user's org / peak≥75 / decorated; 3 for
+    filler). Lossless for game logic: records/HoF/leaders read `p.career` + `G.records` + `team.records`,
+    not these arrays. Runs in `startNewSeason` (each rollover) and `migrate` (rescues existing bloated saves
+    on load). If you add new per-season-growing per-player data, bound it here too.
   - `G.players` is an **object dict keyed by id** (not an array). Use `Object.values(G.players)` or the
     `rosterOf(G, teamId)` helper. `autoSetLineups` accepts either an array or the dict.
   - `G.seed` holds the league seed (or `null`).
