@@ -78,13 +78,19 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   good arms get the meaningful innings (~85–105 IP), fringe arms sit (~10–17 IP), no reliever outlier.
   Edit the rotation order and bullpen priority in the **Lineup** tab. NOTE: a deep enough pen matters —
   AAA carries 8 RP so its setup tier has ~5 arms like the bigs (too few → per-arm IP balloons).
-- **Season / schedule:** `buildSchedule(teams)` builds a 162-game slate **with off days** — it spreads
-  the games over ~224 days (~11 games/day, each team idle ~62 days), so not everyone plays daily.
-  Matchup counts come from `gamesBetween` — **18 per division rival, 8 per same-league team, 2 per
-  mirror-division interleague team, 0 other interleague** (72 + 80 + 10 = 162). Games are packed greedily
-  into the emptiest valid day (no team twice/day). `padSchedules` keeps MLB and AAA calendars the same
-  length. `simDay()` plays both `G.schedule` and `G.aaaSchedule` (~4860 sims/season); `enterPlayoffs()`
-  fires at `G.day >= G.schedule.length`. Anything that referenced "162 days" now uses `G.schedule.length`.
+- **Season / schedule (series-based):** `buildSchedule(teams)` builds a 162-game slate as real **2–4 game
+  series** (the whole set played at one venue, `home` = host every game). Matchup counts come from
+  `gamesBetween` — **18 per division rival, 8 per same-league team, 2 per mirror-division interleague team,
+  0 other interleague** (72 + 80 + 10 = 162; mirror-division means the **same division string** across
+  leagues, e.g. both "East"). `seriesPlan(n)`/`SERIES_PLAN` split each matchup into series with a balanced
+  host alternation: **18→six 3-gamers** (9/9 home/away), **8→two 4-gamers** (4/4), **2→one 2-gamer**.
+  Series are placed greedily at the earliest day **both** clubs are free (tracked per-club in `free[]`, so a
+  team's series never overlap and nobody plays twice a day), with an occasional per-club off day after a
+  series. Result: ~190–200 days, ~12 games/day, exactly 162/team, ~81 home. (Rarely two same-opponent home
+  series land back-to-back, reading as one long homestand — benign.) `padSchedules` keeps MLB and AAA
+  calendars the same length. `simDay()` plays both `G.schedule` and `G.aaaSchedule` (~4860 sims/season);
+  `enterPlayoffs()` fires at `G.day >= G.schedule.length`. Everything uses `G.schedule.length`, not a
+  hardcoded day count, so the variable-length calendar is fine.
 - **AAA / minor leagues:** every org runs a AAA affiliate that plays its own 162-game season with the
   same `simGame` engine (it just operates on AAA team objects whose players carry the AAA teamId). AAA
   rosters are younger/weaker (`buildAAARoster`, `meanAdj=-6`; **14 hitters + 5 SP + 8 RP**) and prospects

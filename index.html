@@ -406,31 +406,53 @@ function gamesBetween(a, b){
   if(a.league===b.league) return a.division===b.division ? 18 : 8;
   return a.division===b.division ? 2 : 0;          // interleague only vs the mirror division
 }
-// Build a 162-game schedule spread over ~224 days WITH off days: not every team plays
-// every day. Returns an array of days, each an array of {home,away,played,hs,as}.
+// How to split a pair's N games into real back-to-back series (whole series at one venue).
+// gamesBetween only yields 18 / 8 / 2, each mapped to a plan that keeps home/away balanced:
+// 18 → six 3-gamers (host alternates → 9/9), 8 → two 4-gamers (4/4), 2 → one 2-gamer.
+const SERIES_PLAN = { 18:[3,3,3,3,3,3], 8:[4,4], 2:[2] };
+function seriesPlan(n){
+  if(SERIES_PLAN[n]) return SERIES_PLAN[n];
+  const out=[]; let rem=n; while(rem>0){ const c=rem===4?4:rem<3?rem:3; out.push(c); rem-=c; } return out; // generic fallback
+}
+// Build a 162-game schedule as a slate of 2–4 game SERIES (the whole set played at one park),
+// spread over the calendar WITH off days. Returns an array of days, each an array of
+// {home,away,played,hs,as}. A series occupies consecutive days; home stays the host all series.
 function buildSchedule(teams){
-  const games=[];
+  // 1) turn every matchup into a list of series {host, visitor, length}
+  const allSeries=[];
   for(let i=0;i<teams.length;i++) for(let j=i+1;j<teams.length;j++){
-    const a=teams[i], b=teams[j], n=gamesBetween(a,b);
-    for(let k=0;k<n;k++){ const [home,away]=(k%2===0)?[a.id,b.id]:[b.id,a.id]; games.push({home,away}); }
+    const a=teams[i], b=teams[j], n=gamesBetween(a,b); if(!n) continue;
+    const plan=seriesPlan(n);
+    plan.forEach((len,k)=>{
+      // alternate the host across a pair's series (balanced); a lone series picks by parity
+      const aHosts = plan.length>1 ? (k%2===0) : ((i+j)%2===0);
+      allSeries.push({ host: aHosts?a.id:b.id, visitor: aHosts?b.id:a.id, length:len });
+    });
   }
-  // shuffle so matchups scatter across the calendar
-  for(let i=games.length-1;i>0;i--){ const j=Math.floor(_rng()*(i+1)); [games[i],games[j]]=[games[j],games[i]]; }
-  // pack into days, never the same team twice a day, always filling the emptiest valid day
-  const TARGET_DAYS=224;
-  const days=Array.from({length:TARGET_DAYS},()=>({games:[],busy:new Set()}));
-  for(const g of games){
-    let best=-1, bestLen=Infinity;
-    for(let d=0; d<days.length; d++){
-      const day=days[d];
-      if(day.busy.has(g.home)||day.busy.has(g.away)) continue;
-      if(day.games.length<bestLen){ bestLen=day.games.length; best=d; if(bestLen===0) break; }
-    }
-    if(best<0){ days.push({games:[],busy:new Set()}); best=days.length-1; }
-    const day=days[best]; day.games.push(g); day.busy.add(g.home); day.busy.add(g.away);
+  // shuffle so a club's opponents vary through the year instead of clustering
+  for(let i=allSeries.length-1;i>0;i--){ const j=Math.floor(_rng()*(i+1)); [allSeries[i],allSeries[j]]=[allSeries[j],allSeries[i]]; }
+  // 2) greedily place each series at the earliest day BOTH clubs are free (so a team's series
+  // never overlap and nobody plays twice in a day). Repeatedly take the series that can start
+  // soonest, keeping all clubs' calendars roughly in lockstep. A small per-club gap = off days.
+  const free={}; teams.forEach(t=>free[t.id]=0);
+  const pending=allSeries.slice();
+  const placed=[];
+  while(pending.length){
+    let bi=0, bstart=Infinity;
+    for(let i=0;i<pending.length;i++){ const s=pending[i]; const st=Math.max(free[s.host],free[s.visitor]); if(st<bstart){ bstart=st; bi=i; } }
+    const s=pending.splice(bi,1)[0];
+    const start=Math.max(free[s.host],free[s.visitor]);
+    s.start=start;
+    free[s.host]=start+s.length+(chance(0.4)?1:0);     // occasional off day after a series
+    free[s.visitor]=start+s.length+(chance(0.4)?1:0);
+    placed.push(s);
   }
-  while(days.length && days[days.length-1].games.length===0) days.pop();
-  return days.map(d=>d.games.map(g=>({home:g.home, away:g.away, played:false, hs:0, as:0})));
+  // 3) expand series into per-day game arrays
+  const lastDay=placed.reduce((m,s)=>Math.max(m,s.start+s.length-1),0);
+  const days=Array.from({length:lastDay+1},()=>[]);
+  placed.forEach(s=>{ for(let k=0;k<s.length;k++) days[s.start+k].push({home:s.host, away:s.visitor, played:false, hs:0, as:0}); });
+  while(days.length && days[days.length-1].length===0) days.pop();
+  return days;
 }
 // keep the MLB and AAA calendars the same length (pad the shorter with off days)
 function padSchedules(a, b){
