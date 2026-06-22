@@ -108,8 +108,18 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   `leagueWarCtx`, season/career records, payIncentives) so college players never leak into MLB boards. The
   offseason contract loops skip `isCollegeId` players (amateurs don't expire/age contracts); college players
   get the same young-player development boost. The **College** tab (`CollegeLeague`) shows standings, full
-  leader boards, and the top-30 draft prospects — clickable names everywhere. **Draft integration (college
-  feeds the draft) + college/AAA playoffs are built in later phases.**
+  leader boards, and the top-30 draft prospects — clickable names everywhere.
+- **Draft pipeline (college + HS → draft):** `buildDraft` no longer generates a fresh class. Instead the
+  class = **college declarations** (`collegeDeclarations`: 22+ must declare, juniors ~70%, underclassmen only
+  if blue-chip — "declare whenever") who leave school (`teamId=null`, stay `amateur` until drafted, carrying
+  their **COL history rows**) + **~16–26 elite HS prospects** (`makeHSProspects`: 17–18, fat ceiling, a
+  freshly-generated **HS** stat line via `genHSLine` stored as an "HS" history row — HS is NOT simulated) +
+  generic filler only if supply is short (board guaranteed ≥160 for the 150 picks). `refillCollege` restocks
+  each school to ~25 with freshmen. The draft `assign` flips a pick from amateur→pro (`amateur=false`, rookie
+  contract, `teamId=aaaIdOf(owner)`) and stamps `draftInfo.from` ("College"/"HS", shown in `PlayerModal`).
+  In `doProgression`, college players' season stats are reset **without** `mergeCareer` (amateur stats live
+  only in history, never the pro career line). `YearByYear` styles COL (violet) and HS (rose) rows.
+  **College/AAA playoffs + the FA overhaul are built in later phases.**
 - **AI roster management (`aiAlignOrg`):** keeps each org's BEST talent on the big-league club instead of
   buried in AAA. Promotes by OVR while guaranteeing a natural fielder at every position and a 5-man-capable
   staff (≤16 hitters + ≤14 pitchers up, the rest to the affiliate). Called at league gen (all clubs) and in

@@ -2073,7 +2073,7 @@ function YearByYear({history, isP, accolades, ringSeasons}){
               <tr key={i} className="border-b border-[#15203a]">
                 <td className="text-left py-1">{h.season}</td>
                 <td className="whitespace-nowrap pr-1">{badges.map((b,j)=><span key={j} className={"text-[9px] border rounded px-1 mr-0.5 "+b[1]} title={b[0]==="MVP"?"MVP":b[0]==="CY"?"Cy Young":b[0]==="AS"?"All-Star":"Championship"}>{b[0]}</span>)}</td>
-                <td className="text-center"><span className={lvl==="AAA"?"text-amber-400 font-semibold":lvl==="COL"?"text-violet-300 font-semibold":"text-sky-300"}>{lvl}</span></td>
+                <td className="text-center"><span className={lvl==="AAA"?"text-amber-400 font-semibold":lvl==="COL"?"text-violet-300 font-semibold":lvl==="HS"?"text-rose-300 font-semibold":"text-sky-300"}>{lvl}</span></td>
                 <td className="text-left text-slate-400">{teamTxt}</td>
                 <td className="text-center">{h.age}</td>
                 <td className="text-center text-slate-400">{h.ovr}</td>
@@ -2126,7 +2126,7 @@ function PlayerModal({p, team, onClose, G}){
             <div className="font-bold text-lg">{p.name}</div>
             <div className="text-xs text-slate-400">{p.pos} · Age {p.age} · POT {p.pot} · {contractLabel(p)}{incentivesPerYear(p)>0?` +${money(incentivesPerYear(p))}/yr inc`:""} · {team?team.name:"Free Agent"}</div>
             {(p.incentives||[]).length>0 && <div className="text-xs text-slate-500 mt-0.5">Incentives: {p.incentives.map((x,i)=><span key={i}>{x.label||x.stat}≥{x.need}→+{money(x.amount)}{i<p.incentives.length-1?", ":""}</span>)}</div>}
-            {p.draftInfo && <div className="text-[11px] text-slate-500">Drafted {p.draftInfo.year} · Rd {p.draftInfo.round} (#{p.draftInfo.overall}) by {p.draftInfo.by}</div>}
+            {p.draftInfo && <div className="text-[11px] text-slate-500">Drafted {p.draftInfo.year} · Rd {p.draftInfo.round} (#{p.draftInfo.overall}) by {p.draftInfo.by}{p.draftInfo.from?` · out of ${p.draftInfo.from}`:""}</div>}
           </div>
           <button onClick={onClose} className="ml-auto text-slate-400 hover:text-white text-xl leading-none">×</button>
         </div>
@@ -3986,8 +3986,10 @@ function OffseasonHub({G, commit, tShow, setTab}){
         p.pot = clamp(Math.max(p.ovr, p.pot+rint(0,3)), p.ovr, 99);
       else if(p.age>=29) p.pot = Math.max(p.ovr, p.pot-1);
       p._lastDelta = p.ovr - before;        // for the offseason development report
-      // reset season stats -> career
-      mergeCareer(p);
+      // reset season stats -> career. Amateur (college) stats live ONLY in history rows,
+      // never in the pro career line, so a draftee's pro totals start clean.
+      if(isCollegeId(p.teamId)) p.stats = p.isP?emptyPitStats():emptyHitStats();
+      else mergeCareer(p);
       // a signed contract is fixed by its schedule — don't re-price it here
     });
     // retirements: driven by BOTH age and quality. Good players hang on (a 35+ vet who's
@@ -4288,16 +4290,76 @@ function aiDraftPickTrades(G){
   }
 }
 
+// Generate a fresh high-school stat line (we don't sim HS) — a single big amateur season
+// scaled to the player's ratings, stored as an "HS" history row on the prospect.
+function genHSLine(p, season){
+  if(p.isP){
+    const s=emptyPitStats(); const gs=rint(8,12); s.G=gs; s.GS=gs; s.OUT=gs*rint(15,20);
+    const stu=n01(p.stu);
+    s.SO=round(s.OUT/3 * (1.3+stu*0.9)); s.BB=round(s.OUT/3*(0.25+(1-n01(p.ctl))*0.5));
+    s.H=round(s.OUT/3*(0.6+(1-stu)*0.5)); s.ER=round(s.OUT/3*(0.18+(1-stu)*0.35));
+    s.HRA=rint(0,3); s.W=rint(round(gs*0.4),gs); s.L=gs-s.W; s.QS=round(gs*0.5);
+    return s;
+  }
+  const s=emptyHitStats(); const g=rint(26,34); s.G=g; s.AB=g*rint(3,4); s.PA=round(s.AB*1.18);
+  const con=n01(p.con), pow=n01(p.pow);
+  s.H=round(s.AB*(0.34+con*0.22));                 // HS aces hit .380-.560
+  s.HR=round((pow)*g*0.35); s._2B=round(s.H*0.22); s._3B=rint(1,4);
+  s.RBI=round(s.H*0.7+s.HR); s.R=round(s.H*0.8); s.BB=round(s.PA*(0.08+n01(p.eye)*0.12));
+  s.SO=round(s.AB*(0.10+(1-con)*0.12)); s.SB=round(n01(p.spd)*rint(8,22));
+  return s;
+}
+function makeHSProspects(G, n){
+  const out=[];
+  for(let i=0;i<n;i++){
+    const p = chance(0.45) ? makePitcher(chance(0.6)?"SP":"RP",[17,18],-14)
+                           : makeHitter(pick(INF_OF.concat(["DH"])),[17,18],-14);
+    // "very good for their age" — a fat ceiling so a HS phenom is worth an early pick
+    p.pot = clamp(Math.max(p.pot, p.ovr+rint(16,32)), p.ovr, 99); setPotential(p); p.pot=clamp(Math.max(p.pot,p.ovr+rint(16,32)),p.ovr,99);
+    p.teamId=null; p.amateur=true; p.fromHS=true; p.salary=0; p.contract=[]; p.years=0;
+    p.history=[{ season:G.season, age:p.age, ovr:p.ovr, isP:p.isP, level:"HS", teams:["HS"], stats:genHSLine(p) }];
+    out.push(p);
+  }
+  return out;
+}
+// Which college players declare for the draft this offseason (they leave school).
+// Seniors (22+) must go; juniors usually do; underclassmen only if they're blue-chips
+// ("declare whenever for whatever reason" — talent + a little randomness).
+function collegeDeclarations(G){
+  const declare=[];
+  Object.values(G.players).filter(p=>isCollegeId(p.teamId)).forEach(p=>{
+    const grade=prospectGrade(p);
+    let prob;
+    if(p.age>=22) prob=1;                                    // out of eligibility — must declare
+    else if(p.age>=21) prob=0.70;                            // juniors mostly go
+    else if(p.age>=20) prob=clamp((grade-58)/110, 0.04, 0.40);
+    else prob=clamp((grade-80)/220, 0, 0.10);               // freshmen/sophs: only elite
+    if(chance(prob)) declare.push(p);
+  });
+  return declare;
+}
+// Replace departed college players with fresh freshmen so each school stays ~25 deep.
+function refillCollege(G){
+  (G.collegeTeams||[]).forEach(t=>{
+    let ros=Object.values(G.players).filter(p=>p.teamId===t.id);
+    let h=ros.filter(p=>!p.isP).length, pi=ros.filter(p=>p.isP).length;
+    const fresh=p=>{ p.teamId=t.id; p.amateur=true; p.salary=0; p.contract=[]; p.years=0; p.classYr=21-p.age; G.players[p.id]=p; };
+    while(h<14){ const p=makeHitter(pick(INF_OF.concat(["DH"])),[17,18],-12); fresh(p); h++; }
+    while(pi<11){ const p=makePitcher(pi<5?"SP":"RP",[17,18],-12); fresh(p); pi++; }
+    autoSetLineups(t, G.players);   // drop departed ids, set freshmen lineups
+  });
+}
 function buildDraft(G){
-  // generate draft class: 5 rounds * 30 picks = 150 young prospects
+  // The draft class = declared college players (carrying their COL stats) + a few elite HS
+  // prospects (freshly generated HS stats), topped up with generics only if supply runs short.
   const cls=[];
-  for(let i=0;i<150;i++){
-    let p;
-    if(chance(0.45)) p=makePitcher(chance(0.6)?"SP":"RP",[18,22]);
-    else p=makeHitter(pick(INF_OF.concat(["DH"])),[18,22]);
-    // prospects: lower current, boosted potential
-    p.teamId=null; setContract(p, 0.7, 4, []);
-    cls.push(p.id); G.players[p.id]=p;
+  collegeDeclarations(G).forEach(p=>{ p.teamId=null; delete p.classYr; cls.push(p.id); });  // amateurs leave school (stay amateur until drafted)
+  makeHSProspects(G, rint(16,26)).forEach(p=>{ G.players[p.id]=p; cls.push(p.id); });
+  refillCollege(G);                       // freshmen replace those who left
+  // safety: guarantee a full 150-pick board even if declarations were light
+  while(cls.length<160){
+    const p = chance(0.45)?makePitcher(chance(0.6)?"SP":"RP",[18,21]):makeHitter(pick(INF_OF.concat(["DH"])),[18,21]);
+    p.teamId=null; p.amateur=true; p.salary=0; p.contract=[]; p.years=0; G.players[p.id]=p; cls.push(p.id);
   }
   aiDraftPickTrades(G);   // AI clubs swap picks (move up / accumulate) based on their situations
   // selection order from owned picks: by round, then the ORIGINAL team's
@@ -4334,7 +4396,10 @@ function Draft({G, commit, tShow, setTab}){
   const assign=(g,pid,ownerId)=>{ const p=g.players[pid]; if(!p) return;        // draftees start in AAA
     const pk=(g.draftPicks||[])[g.draftPick]||{};
     p.draftInfo={ year:g.season+1, round:pk.round||0, overall:g.draftPick+1,
-                  by:(g.teams[ownerId]?g.teams[ownerId].abbr:ownerId) };
+                  by:(g.teams[ownerId]?g.teams[ownerId].abbr:ownerId),
+                  from:(p.fromHS?"HS":"College") };
+    p.amateur=false; delete p.classYr;            // turns pro on draft day
+    setContract(p, 0.7, 4, []);                   // standard rookie-scale deal
     p.teamId=aaaIdOf(ownerId); };
   const draftPlayer=(pid)=>{
     if(!G.players[pid]) return;
