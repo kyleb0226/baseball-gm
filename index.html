@@ -3990,10 +3990,14 @@ function seriesGame(G, hiId, loId, hiHome){
 function simSeriesAuto(G, hiId, loId, bestOf){
   const need=Math.ceil(bestOf/2); const s={ hi:hiId, lo:loId, hw:0, lw:0, games:[], winner:null };
   let gp=0;
+  const ht=teamById(G,hiId), lt=teamById(G,loId);
   while(s.hw<need && s.lw<need && gp++<bestOf+2){
     const hiHome = s.games.length<2 || s.games.length>=4;
     const res=seriesGame(G, hiId, loId, hiHome);
     if(res.winnerId===hiId) s.hw++; else s.lw++;
+    // advance each club's playoff game index so getPitchers rotates the starter (matches MLB)
+    if(ht) ht.poGi=(ht.poGi||0)+1;
+    if(lt) lt.poGi=(lt.poGi||0)+1;
     // keep the box score so the user can open each playoff game's player stats (postseason only)
     s.games.push({ winnerId:res.winnerId, hs:res.hs, as:res.as, box:res.box });
   }
@@ -5147,7 +5151,7 @@ function startNewSeason(G){
   });
   // reset records & stats (MLB + AAA + college)
   G.teams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
-  G.aaaTeams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0; });
+  G.aaaTeams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
   (G.collegeTeams||[]).forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
   G.schedule = buildSchedule(G.teams);
   G.aaaSchedule = buildSchedule(G.aaaTeams);
