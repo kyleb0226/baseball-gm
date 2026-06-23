@@ -3860,6 +3860,23 @@ function recordFeats(G, out){
     logNews(G,"award",`✨ ${p.name} ${FEAT_VERB[f.feat]||f.feat}`, tid);
   });
 }
+// Career milestone news (run at season end while stats are live). First time a player is
+// seen, his already-passed milestones are baselined silently; later crossings get announced.
+const HIT_MILES = { HR:[100,200,300,400,500,600,700], H:[1000,2000,3000], RBI:[1000,1500,2000], R:[1000,1500,2000], SB:[300,400,500] };
+const PIT_MILES = { W:[100,200,250,300], SO:[1000,2000,2500,3000], SV:[100,200,300,400] };
+const MILE_LABEL = { HR:"home runs", H:"hits", RBI:"RBI", R:"runs", SB:"stolen bases", W:"wins", SO:"strikeouts", SV:"saves" };
+function checkMilestones(G){
+  Object.values(G.players).forEach(p=>{
+    if(!isMlbId(p.teamId)) return;
+    const fresh = !p._miles; p._miles = p._miles || {};
+    const c=p.career||{}, s=p.stats||{}, set = p.isP?PIT_MILES:HIT_MILES;
+    Object.keys(set).forEach(k=>{ const tot=(c[k]||0)+(s[k]||0);
+      set[k].forEach(m=>{ const key=k+m;
+        if(tot>=m && !p._miles[key]){ p._miles[key]=1; if(!fresh) logNews(G,"award",`🎉 ${p.name} reached ${m} career ${MILE_LABEL[k]}`, p.teamId); }
+      });
+    });
+  });
+}
 // Hand out season awards (run at end of the regular season, before stats reset).
 function computeAwards(G){
   // MLB-only season line per player (a called-up player's AAA stats don't count toward MLB awards)
@@ -4024,6 +4041,7 @@ function enterPlayoffs(G){
   recordSeasonRecords(G);      // league-wide single-season records
   recordCareerRecords(G);      // league-wide career records (high-water mark)
   recordMinorRecords(G,"AAA"); recordMinorRecords(G,"COL");   // AAA/college season + career bests (before playoff stats)
+  checkMilestones(G);   // 🎉 career milestone news (500 HR, 3000 K, 300 W, ...)
   payIncentives(G);   // settle stat-based contract bonuses (off-cap)
   G.phase="playoffs";
   const mk = league => {
