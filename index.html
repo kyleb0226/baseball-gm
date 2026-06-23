@@ -3865,6 +3865,7 @@ function computeAwards(G){
   // MLB-only season line per player (a called-up player's AAA stats don't count toward MLB awards)
   const ml=new Map(); const S=p=>{ if(!ml.has(p.id)) ml.set(p.id, levelStats(p,"MLB")); return ml.get(p.id); };
   const recOf=p=>p?{id:p.id,name:p.name,pos:p.pos,team:(teamById(G,p.teamId)||{}).abbr||"",ovr:p.ovr,line:awardLine(S(p),p.isP)}:null;
+  const warCtx=leagueWarCtx(G,"MLB");
   const out={season:G.season, leagues:{}};
   ["Empire","Pioneer"].forEach(lg=>{
     const pool=Object.values(G.players).filter(p=>{const t=teamById(G,p.teamId);return t&&!t.aaa&&!t.college&&t.league===lg;});
@@ -3882,6 +3883,31 @@ function computeAwards(G){
     if(cy){ addAccolade(cy,G.season,"Cy Young",lg); logNews(G,"award",`🏅 ${cy.name} won the ${lg} League Cy Young`, cy.teamId); }
     asHit.forEach(p=>addAccolade(p,G.season,"All-Star",lg));
     asPit.forEach(p=>addAccolade(p,G.season,"All-Star",lg));
+    // Rookie of the Year — best WAR among true rookies (no prior MLB season)
+    const rookies = pool.filter(p=> !(p.history||[]).some(h=>h.level==="MLB") && (p.isP? S(p).OUT>=60 : S(p).PA>=150));
+    const roy = rookies.reduce((b,p)=> (b==null||warOf(p,warCtx,S(p))>warOf(b,warCtx,S(b)))?p:b, null);
+    // Reliever of the Year — saves + holds + run prevention over a relief workload
+    const relScore = s => (s.SV||0)*1.0 + (s.HLD||0)*0.5 + (s.SO||0)*0.05 + (3.5-era(s))*12;   // ERA matters most
+    const relYr = pitchers.filter(p=> S(p).GS<5 && S(p).OUT>=90)
+      .reduce((b,p)=> (b==null||relScore(S(p))>relScore(S(b)))?p:b, null);
+    // Gold Glove — best fielder (by FPCT, DEF tiebreak) at each position, including P
+    const gg=[]; ["C","1B","2B","3B","SS","LF","CF","RF","P"].forEach(pos=>{
+      const sc=p=>fpct(S(p))+n01(p.def||50)*0.01;
+      const b=pool.filter(p=>(pos==="P"?p.isP:(!p.isP&&p.pos===pos)) && (S(p).TC||0)>=(pos==="P"?12:80))
+        .reduce((a,c)=>(a==null||sc(c)>sc(a))?c:a,null);
+      if(b) gg.push(b);
+    });
+    // Silver Slugger — best bat (by OPS) at each position, including DH
+    const ss=[]; ["C","1B","2B","3B","SS","LF","CF","RF","DH"].forEach(pos=>{
+      const b=hitters.filter(p=>p.pos===pos && S(p).PA>=200)
+        .reduce((a,c)=>(a==null||ops(S(c))>ops(S(a)))?c:a,null);
+      if(b) ss.push(b);
+    });
+    Object.assign(out.leagues[lg], { roy:recOf(roy), relYr:recOf(relYr), gg:gg.map(recOf), ss:ss.map(recOf) });
+    if(roy){ addAccolade(roy,G.season,"Rookie of the Year",lg); logNews(G,"award",`🏅 ${roy.name} won the ${lg} Rookie of the Year`, roy.teamId); }
+    if(relYr){ addAccolade(relYr,G.season,"Reliever of the Year",lg); logNews(G,"award",`🏅 ${relYr.name} won ${lg} Reliever of the Year`, relYr.teamId); }
+    gg.forEach(p=>addAccolade(p,G.season,"Gold Glove",lg));
+    ss.forEach(p=>addAccolade(p,G.season,"Silver Slugger",lg));
   });
   G.awards=out;
   (G.awardHistory=G.awardHistory||[]).unshift(out);
@@ -5475,7 +5501,11 @@ function Awards({G}){
               <div className="space-y-3 mb-3">
                 <div><div className="text-xs text-amber-300 font-semibold mb-1">Player of the Year</div><Person r={L.mvp} tag="MVP"/></div>
                 <div><div className="text-xs text-amber-300 font-semibold mb-1">Cy Young</div><Person r={L.cy} tag="CY"/></div>
+                {L.roy && <div><div className="text-xs text-amber-300 font-semibold mb-1">Rookie of the Year</div><Person r={L.roy} tag="ROY"/></div>}
+                {L.relYr && <div><div className="text-xs text-amber-300 font-semibold mb-1">Reliever of the Year</div><Person r={L.relYr} tag="RP"/></div>}
               </div>
+              {L.gg && L.gg.length>0 && <div className="text-[11px] text-slate-400 mb-2">🧤 <b>Gold Gloves:</b> {L.gg.map(r=>`${r.pos} ${r.name}`).join(", ")}</div>}
+              {L.ss && L.ss.length>0 && <div className="text-[11px] text-slate-400 mb-2">🏏 <b>Silver Sluggers:</b> {L.ss.map(r=>`${r.pos} ${r.name}`).join(", ")}</div>}
               <div className="text-xs text-slate-400 mb-1 font-semibold">All-Stars — Position Players</div>
               <div className="space-y-1 mb-3">{L.allStars.hitters.map((r,i)=><Person key={i} r={r}/>)}</div>
               <div className="text-xs text-slate-400 mb-1 font-semibold">All-Stars — Pitchers</div>
