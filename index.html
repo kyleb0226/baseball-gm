@@ -1895,7 +1895,10 @@ function simDay(G){
       recordFeats(G, res);                                       // no-hitters / perfect games / cycles / multi-HR (all levels)
       g.played=true; g.hs=res.hs; g.as=res.as;
       if(isMLB) g.box=res.box;   // full box score for every MLB game (this season's schedule only)
-      if(res.hs>res.as){ home.w++; away.l++; } else { away.w++; home.l++; }
+      const homeWon=res.hs>res.as;
+      if(homeWon){ home.w++; away.l++; } else { away.w++; home.l++; }
+      home.streak = homeWon ? (home.streak>=0?(home.streak||0)+1:1) : (home.streak<=0?(home.streak||0)-1:-1);
+      away.streak = homeWon ? (away.streak<=0?(away.streak||0)-1:-1) : (away.streak>=0?(away.streak||0)+1:1);
       home.rs+=res.hs; home.ra+=res.as; away.rs+=res.as; away.ra+=res.hs;
     });
   };
@@ -2794,16 +2797,18 @@ function Standings({G}){
           <Card key={k}>
             <h3 className="font-bold mb-2">{k}</h3>
             <table className="w-full text-sm tnum">
-              <thead><tr className="text-slate-400 text-xs"><th className="text-left">Team</th><th>W</th><th>L</th><th>PCT</th><th>GB</th><th>DIFF</th></tr></thead>
+              <thead><tr className="text-slate-400 text-xs"><th className="text-left">Team</th><th>W</th><th>L</th><th>PCT</th><th>GB</th><th>STRK</th><th>DIFF</th></tr></thead>
               <tbody>
                 {byDiv[k].map((t,i)=>{
                   const lead=byDiv[k][0];
                   const gb=i===0?"—":(((lead.w-t.w)+(t.l-lead.l))/2).toFixed(1);
+                  const sk=t.streak||0, skTxt=sk===0?"—":(sk>0?"W"+sk:"L"+(-sk));
                   return (
                     <tr key={t.id} className={"border-t border-[#15203a] "+(t.id===G.userTeamId?"bg-emerald-900/30 font-semibold":"")}>
                       <td className="text-left py-1">{i===0&&<span className="text-amber-400 mr-1" title="division leader">★</span>}{teamCell(t)}</td>
                       <td className="text-center">{t.w}</td><td className="text-center">{t.l}</td>
                       <td className="text-center">{f3(pct(t))}</td><td className="text-center">{gb}</td>
+                      <td className={"text-center text-xs "+(sk>=3?"text-emerald-400":sk<=-3?"text-red-400":"text-slate-400")}>{skTxt}</td>
                       <td className={"text-center "+((t.rs-t.ra)>=0?"text-emerald-400":"text-red-400")}>{t.rs-t.ra>=0?"+":""}{t.rs-t.ra}</td>
                     </tr>
                   );
@@ -5330,7 +5335,7 @@ function startNewSeason(G){
       logNews(G,"signing",`${t.abbr} ${t.budgetDelta>0?"revenue up":"budget tightens"} — payroll budget ${t.budgetDelta>0?"+":""}${t.budgetDelta} to ${money(t.budget)}`, t.id);
   });
   // reset records & stats (MLB + AAA + college)
-  G.teams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
+  G.teams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0;t.streak=0; });
   G.aaaTeams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
   Object.values(G.players).forEach(p=>{ if(p.injury) delete p.injury; if(p._tired) delete p._tired; });   // offseason heals everyone
   (G.collegeTeams||[]).forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
