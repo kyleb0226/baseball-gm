@@ -367,6 +367,10 @@ function buildPicks(season, teams){
   }
   return picks;
 }
+const PICK_YEARS = 3;   // how many future drafts' picks are tradeable at once
+function buildPicksMulti(startSeason, teams, years=PICK_YEARS){
+  let all=[]; for(let y=0;y<years;y++) all=all.concat(buildPicks(startSeason+y, teams)); return all;
+}
 function pickSlot(G, origId){ // 0 = projected worst team = first pick
   return [...G.teams].sort((a,b)=>pct(a)-pct(b)).map(t=>t.id).indexOf(origId);
 }
@@ -1444,7 +1448,12 @@ function migrate(G){
       padSchedules(G.schedule, G.aaaSchedule, G.collegeSchedule);
     }
     if(!G.collegeSchedule){ G.collegeSchedule = buildSchedule(G.collegeTeams, collegeGamesBetween); padSchedules(G.schedule, G.aaaSchedule, G.collegeSchedule); }
-    if(!G.picks) G.picks = buildPicks((G.season||2026)+1, G.teams);
+    if(!G.picks) G.picks = buildPicksMulti((G.season||2026)+1, G.teams);
+    // backfill to 3 tradeable draft years for saves created before multi-year picks (preserves existing/traded picks)
+    if(Array.isArray(G.picks) && G.picks.length){
+      const minS=Math.min(...G.picks.map(p=>p.season));
+      for(let y=minS; y<minS+PICK_YEARS; y++){ if(!G.picks.some(p=>p.season===y)) G.picks.push(...buildPicks(y, G.teams)); }
+    }
     if(!Array.isArray(G.draftPicks)) G.draftPicks = [];
     if(!Array.isArray(G.awardHistory)) G.awardHistory = [];
     if(!Array.isArray(G.news)) G.news = [];
@@ -1579,7 +1588,7 @@ function newGame(userTeamId, opts={}){
     season: 2026, day: 0, phase: "regular", version: SAVE_VERSION,
     seed: (opts && opts.seed!=null && !Number.isNaN(opts.seed)) ? (opts.seed>>>0) : null,
     userTeamId, teams, aaaTeams, collegeTeams, players, schedule, aaaSchedule, collegeSchedule,
-    picks: buildPicks(2027, teams),
+    picks: buildPicksMulti(2027, teams),   // next 3 drafts' picks are all tradeable
     freeAgents: [], draftClass: [], draftPicks: [], draftPick: 0,
     playoffs: null, champion: null, champions: [], hof: [], log: [], news: [],
     tradeDeadline: Math.round(schedule.length*0.58), tradeOffers: [], waivers: [],
@@ -3633,9 +3642,10 @@ function Trades({G, commit, tShow, tradeFocus, setTradeFocus}){
   useEffect(()=>{
     if(tradeFocus==null) return;
     const p = G.players[tradeFocus];
-    if(p && p.teamId!=null){
+    // only MLB/AAA org players can be traded — college amateurs (and FAs) are not tradeable
+    if(p && p.teamId!=null && !isCollegeId(p.teamId)){
       const orgId = isAAAId(p.teamId) ? parentIdOf(p.teamId) : p.teamId;
-      if(orgId!==me.id){ setOtherId(orgId); setGive([]); setGivePk([]); setGetPk([]); setGet([p.id]); }
+      if(orgId!==me.id && G.teams[orgId]){ setOtherId(orgId); setGive([]); setGivePk([]); setGetPk([]); setGet([p.id]); }
     }
     if(setTradeFocus) setTradeFocus(null);
   }, [tradeFocus]);
@@ -3643,8 +3653,8 @@ function Trades({G, commit, tShow, tradeFocus, setTradeFocus}){
   // players: MLB roster + AAA affiliate, AAA tagged
   const orgPlayers = mlbId => rosterOf(G,mlbId).concat(rosterOf(G,aaaIdOf(mlbId))).sort((a,b)=>b.ovr-a.ovr);
   const myRos = orgPlayers(me.id), otRos = orgPlayers(other.id);
-  const myPicks = (G.picks||[]).filter(pk=>pk.owner===me.id).sort((a,b)=>a.round-b.round);
-  const otPicks = (G.picks||[]).filter(pk=>pk.owner===other.id).sort((a,b)=>a.round-b.round);
+  const myPicks = (G.picks||[]).filter(pk=>pk.owner===me.id).sort((a,b)=>a.season-b.season||a.round-b.round);
+  const otPicks = (G.picks||[]).filter(pk=>pk.owner===other.id).sort((a,b)=>a.season-b.season||a.round-b.round);
   const toggle=(arr,set,id)=>set(arr.includes(id)?arr.filter(x=>x!==id):[...arr,id]);
 
   const giveVal = give.reduce((s,id)=>s+playerValue(G.players[id]),0) + givePk.reduce((s,id)=>s+pickValue(G,(G.picks||[]).find(p=>p.id===id)||{round:5,orig:me.id}),0);
@@ -3696,7 +3706,7 @@ function Trades({G, commit, tShow, tradeFocus, setTradeFocus}){
   const pickBox = (title, picks, sel, set) => (
     <Card>
       <div className="font-bold mb-2 text-sm">{title}</div>
-      {picks.length? <div className="space-y-0.5">
+      {picks.length? <div className="space-y-0.5 max-h-72 overflow-y-auto">
         {picks.map(pk=>(
           <label key={pk.id} className={"flex items-center gap-2 px-2 py-1 rounded cursor-pointer text-sm "+(sel.includes(pk.id)?"bg-emerald-900/40":"hover:bg-[#13203a]")}>
             <input type="checkbox" checked={sel.includes(pk.id)} onChange={()=>toggle(sel,set,pk.id)} />
@@ -4965,15 +4975,17 @@ function aiDraftSelect(G, ownerId){
 function aiDraftPickTrades(G){
   const aiTeams=G.teams.filter(t=>t.id!==G.userTeamId);
   const sit={}; aiTeams.forEach(t=>sit[t.id]=teamSituation(G,t.id));
+  const dy = (G.picks&&G.picks.length) ? Math.min(...G.picks.map(p=>p.season)) : null;   // only the upcoming draft
+  const yearPicks = (G.picks||[]).filter(p=>p.season===dy);
   let trades=0;
   for(let n=0;n<24 && trades<6;n++){
     const C=pick(aiTeams);
     if(!(sit[C.id].mode==="Win-now"||sit[C.id].mode==="Contender")) continue;
     if(!sit[C.id].needs.length) continue;                          // no glaring need → no reason to move up
-    const early=(G.picks||[]).filter(pk=>pk.round<=2 && pk.owner!==C.id && sit[pk.owner] && sit[pk.owner].mode==="Rebuild");
+    const early=yearPicks.filter(pk=>pk.round<=2 && pk.owner!==C.id && sit[pk.owner] && sit[pk.owner].mode==="Rebuild");
     if(!early.length) continue;
     const target=pick(early); const tv=pickValue(G,target); const R=G.teams[target.owner];
-    const mine=(G.picks||[]).filter(pk=>pk.owner===C.id && pk.id!==target.id).sort((a,b)=>pickValue(G,b)-pickValue(G,a));
+    const mine=yearPicks.filter(pk=>pk.owner===C.id && pk.id!==target.id).sort((a,b)=>pickValue(G,b)-pickValue(G,a));
     let give=[],acc=0;
     for(const pk of mine){ if(acc>=tv || give.length>=2) break; give.push(pk); acc+=pickValue(G,pk); }
     if(give.length<1 || acc < tv*0.9) continue;                   // couldn't put together a fair offer
@@ -5059,7 +5071,9 @@ function buildDraft(G){
   // reverse-standings slot (so traded picks keep their original draft value)
   const worstFirst=[...G.teams].sort((a,b)=>pct(a)-pct(b)).map(t=>t.id);
   const slotOf=id=>worstFirst.indexOf(id);
-  G.draftPicks=[...G.picks].sort((a,b)=> a.round-b.round || slotOf(a.orig)-slotOf(b.orig));
+  // only the SOONEST draft year is on the board now; later years stay tradeable in G.picks
+  const draftYear = G.picks.length ? Math.min(...G.picks.map(p=>p.season)) : G.season+1;
+  G.draftPicks=G.picks.filter(p=>p.season===draftYear).sort((a,b)=> a.round-b.round || slotOf(a.orig)-slotOf(b.orig));
   G.draftPick=0;
   G.draftClass=cls.sort((a,b)=>G.players[b].pot-G.players[a].pot);
 }
@@ -5069,6 +5083,10 @@ function Draft({G, commit, tShow, setTab}){
   const [showSits,setShowSits]=useState(false);
   const situations = useMemo(()=>{ const m={}; G.teams.forEach(t=>{ m[t.id]=teamSituation(G,t.id); }); return m; }, [G.season]);
   const picksArr = G.draftPicks||[];
+  // Keep the draft order's owners in sync with LIVE (tradeable) ownership: save/load
+  // decouples G.draftPicks from G.picks (no shared refs through JSON), so a pick traded
+  // mid-draft — including the one on the clock — would otherwise be missed and wasted.
+  picksArr.forEach(dp=>{ const live=(G.picks||[]).find(p=>p.id===dp.id); if(live && dp.owner!==live.owner) dp.owner=live.owner; });
   if(!picksArr.length)
     return <Card>The draft isn't ready yet — process the offseason from the Hub first.</Card>;
   const totalPicks = picksArr.length;
@@ -5359,7 +5377,11 @@ function startNewSeason(G){
   G.day=0; G.season++; G.phase="regular";
   startBACup(G);                                // fresh BA Cup bracket for the new season
   G.playoffs=null; G.draftClass=[]; G.draftPicks=[]; G.draftPick=0; G.offStep=null;
-  G.picks = buildPicks(G.season+1, G.teams);   // next year's tradeable picks
+  // roll the tradeable pick pool: the just-drafted year is consumed; keep the remaining
+  // future years (preserving any trades) and add a fresh far year, so 3 drafts stay tradeable
+  const keepFrom = G.season+1;
+  G.picks = (G.picks||[]).filter(p=>p.season>=keepFrom);
+  for(let y=keepFrom; y<=G.season+PICK_YEARS; y++){ if(!G.picks.some(p=>p.season===y)) G.picks.push(...buildPicks(y, G.teams)); }
   G.tradeDeadline = Math.round(G.schedule.length*0.58);   // recompute for the new calendar
   G.tradeOffers = [];                                      // pending offers don't carry over
   (G.waivers||[]).forEach(w=>{ const p=G.players[w.id]; if(p&&p.teamId==null&&!G.freeAgents.includes(p.id)) G.freeAgents.push(p.id); });
@@ -5697,7 +5719,7 @@ function PlayersBrowser({G, commit, tShow, setTab, setTradeFocus}){
 
   const isMine=p=>p.teamId===me.id || p.teamId===aaaIdOf(me.id);
   const isFA=p=>p.teamId==null;
-  const isOtherMLB=p=>!isMine(p)&&!isFA(p)&&p.teamId!=null&&!isAAAId(p.teamId);
+  const isOtherMLB=p=>!isMine(p)&&!isFA(p)&&isMlbId(p.teamId);   // MLB only — not AAA, not college amateurs
 
   // stat columns for ratings vs stats view
   const hitRatCols=[["CON","con"],["POW","pow"],["EYE","eye"],["SPD","spd"],["DEF","def"]];
