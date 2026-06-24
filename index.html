@@ -2343,6 +2343,14 @@ function PlayerModal({p, team, onClose, G}){
   const seasonWar = warCtx ? warOf(p, warCtx, levelStats(p, lvl)) : null;
   // career WAR = sum of per-season WAR stamped in history (older rows may predate WAR → skip)
   const careerWar = (p.history||[]).reduce((t,h)=>t+(typeof h.war==="number"?h.war:0), 0);
+  // career totals split BY LEAGUE (MLB / AAA / College) from the per-season history,
+  // plus the live season at the player's current level — so MLB and college totals stay separate.
+  const LVLFULL = {MLB:"MLB", AAA:"AAA", COL:"College"};
+  const careerByLevel = L => { const t = p.isP?emptyPitStats():emptyHitStats();
+    (p.history||[]).forEach(h=>{ if(h.level===L && h.stats) for(const k in t) t[k]=(t[k]||0)+(h.stats[k]||0); });
+    if(L===levelOf(p.teamId)){ const cs=levelStats(p,L); for(const k in t) t[k]=(t[k]||0)+(cs[k]||0); }
+    return t; };
+  const hasGames = st => p.isP ? (st.OUT>0||st.G>0) : (st.PA>0||st.G>0);
   const hitCols = [["G","G"],["PA","PA"],["AB","AB"],["R","R"],["H","H"],["_2B","2B"],["_3B","3B"],["HR","HR"],["RBI","RBI"],["BB","BB"],["SO","SO"],["SB","SB"],["CS","CS"],["SF","SF"],["HBP","HBP"],["GIDP","GIDP"],["E","E"]];
   const pitCols = [["G","G"],["GS","GS"],["QS","QS"],["CG","CG"],["SHO","SHO"],["W","W"],["L","L"],["SV","SV"],["HLD","HLD"],["H","H"],["BB","BB"],["SO","SO"],["ER","ER"],["HBP","HBP"],["WP","WP"],["BK","BK"]];
   const cols = p.isP?pitCols:hitCols;
@@ -2396,7 +2404,8 @@ function PlayerModal({p, team, onClose, G}){
         })()}
         <div className="space-y-3">
           {line("This Season", s)}
-          {line("Career (prior seasons)", c)}
+          {["MLB","AAA","COL"].map(L=>{ const ct=careerByLevel(L); return hasGames(ct)
+            ? <React.Fragment key={L}>{line(LVLFULL[L]+" Career", ct)}</React.Fragment> : null; })}
         </div>
         <YearByYear history={p.history} isP={p.isP} accolades={p.accolades} ringSeasons={p.rings} postStats={p.postStats} cupStats={p.cupStats} />
       </div>
@@ -5362,7 +5371,13 @@ function startNewSeason(G){
 // Inductees are career snapshots (the player has retired / been pruned), so this renders
 // from the stored snapshot rather than a live player object.
 function HofModal({h, onClose}){
-  const c=h.career||{};
+  // headline = MLB-only career (from the stored per-season history); legacy inductees
+  // without history fall back to the pooled career total. AAA/college split shows below.
+  const careerLvl = L => { const t=h.isP?emptyPitStats():emptyHitStats();
+    (h.history||[]).forEach(r=>{ if(r.level===L && r.stats) for(const k in t) t[k]=(t[k]||0)+(r.stats[k]||0); }); return t; };
+  const hasHist = h.history && h.history.length;
+  const c = hasHist ? careerLvl("MLB") : (h.career||{});
+  const careerLabel = hasHist ? "MLB Career" : "Career";
   const honors=[];
   if(h.rings) honors.push(`💍 ${h.rings}× Ring${h.rings>1?"s":""}`);
   if(h.mvp) honors.push(`🏆 ${h.mvp}× MVP`);
@@ -5388,7 +5403,7 @@ function HofModal({h, onClose}){
         {honors.length>0 && <div className="flex gap-1 flex-wrap mb-3">
           {honors.map((x,i)=><span key={i} className="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded px-2 py-1">{x}</span>)}
         </div>}
-        <div className="text-xs text-slate-400 mb-1">Career — <span className="text-slate-300">{slash}</span></div>
+        <div className="text-xs text-slate-400 mb-1">{careerLabel} — <span className="text-slate-300">{slash}</span></div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm tnum">
             <thead><tr className="text-slate-500 text-xs border-b border-[#1d2940]">{cols.map(([k,l])=><th key={k}>{l}</th>)}</tr></thead>
