@@ -4036,10 +4036,13 @@ function recordFranchiseRecords(G){
 function ensureRecords(G){ if(!G.records) G.records={ game:{}, season:{}, career:{} }; return G.records; }
 const teamAbbrOf = (G,p)=>{ const t=teamById(G,p.teamId); return t?(t.aaa?t.abbr+" AAA":t.abbr):""; };
 
+const RECNAME={teamWins:"wins (season)",HR:"home runs (season)",RBI:"RBI (season)",H:"hits (season)",R:"runs (season)",SB:"steals (season)",AVG:"batting avg (season)",pW:"wins (season)",pK:"strikeouts (season)",pSV:"saves (season)",ERA:"ERA (season)"};
+const fmtRec=(k,v)=>k==="AVG"?f3(v):k==="ERA"?f2(v):v;
 function recordSeasonRecords(G){
   const R=ensureRecords(G).season;
-  const up=(k,v,holder,team)=>{ if(v==null||v<=0) return; if(!R[k]||v>R[k].value) R[k]={value:v,holder,team,season:G.season}; };
-  const lo=(k,v,holder,team)=>{ if(v==null) return; if(!R[k]||v<R[k].value) R[k]={value:v,holder,team,season:G.season}; };
+  const announce=(k,v,holder,old)=>{ if(old) logNews(G,"award",`🏆 NEW LEAGUE RECORD! ${holder} — ${fmtRec(k,v)} ${RECNAME[k]||k} (broke ${old.holder}'s ${fmtRec(k,old.value)})`, null); };
+  const up=(k,v,holder,team)=>{ if(v==null||v<=0) return; const old=R[k]; if(!old||v>old.value){ announce(k,v,holder,old); R[k]={value:v,holder,team,season:G.season}; } };
+  const lo=(k,v,holder,team)=>{ if(v==null) return; const old=R[k]; if(!old||v<old.value){ announce(k,v,holder,old); R[k]={value:v,holder,team,season:G.season}; } };
   G.teams.forEach(t=>up("teamWins", t.w, t.name, t.abbr));
   const mlb=Object.values(G.players).filter(p=>isMlbId(p.teamId));
   const hitters=mlb.filter(p=>!p.isP && p.stats.PA>=300);
