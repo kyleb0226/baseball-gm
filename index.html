@@ -1920,6 +1920,10 @@ function simDay(G){
   for(const id in G.players){ const p=G.players[id]; if(p._tired){ p._tired=Math.max(0,p._tired-0.34); if(p._tired<0.05) delete p._tired; } }
   tickInjuries(G);                                // heal/return players, then roll new injuries
   G.day++;
+  // Mid-season All-Star Game (exhibition, ~season midpoint) — banked separately, no stat impact
+  if((!G.allStarGame || G.allStarGame.season!==G.season) && G.day>=Math.floor(G.schedule.length*0.5)){
+    try{ playAllStarGame(G); }catch(e){ /* never let the exhibition block the sim */ }
+  }
   // BA Cup: a side knockout whose rounds are sprinkled through the season (no stat impact)
   ensureSeasonCup(G); tickBACup(G);
   // trade market: drop offers once they're stale or the deadline passes; before the
@@ -1946,6 +1950,7 @@ function userNextGame(G){
 function Hub({G, commit, tShow, setTab}){
   const user = G.teams[G.userTeamId];
   const [busy,setBusy]=useState(false);
+  const [asgBox,setAsgBox]=useState(null);
   const lastDay = G.day>0 ? G.schedule[G.day-1] : null;
   const userLast = lastDay && lastDay.find(x=>x.home===G.userTeamId||x.away===G.userTeamId);
   const next = userNextGame(G);
@@ -2012,6 +2017,24 @@ function Hub({G, commit, tShow, setTab}){
           })}
         </div>
       </Card>}
+
+      {G.allStarGame && G.allStarGame.season===G.season && (()=>{
+        const ag=G.allStarGame;
+        return (
+          <Card className="border-amber-600/40">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <div className="text-xs font-semibold text-amber-300">⭐ {ag.season} All-Star Game</div>
+                <div className="text-sm text-slate-200">Pioneer <b className="tnum">{ag.pioneerScore}</b> – <b className="tnum">{ag.empireScore}</b> Empire <span className="text-slate-500">· {ag.winner} wins</span></div>
+                {ag.mvp && <div className="text-xs text-slate-400 mt-0.5">MVP: <PlayerLink p={G.players[ag.mvp.id]} text={ag.mvp.name}/> {ag.mvp.team?`(${ag.mvp.team})`:""}</div>}
+              </div>
+              {ag.box && <button onClick={()=>setAsgBox(ag.box)} className="px-3 py-2 bg-[#16213a] hover:bg-[#1c2c4a] rounded-lg text-sm whitespace-nowrap">Box score →</button>}
+            </div>
+          </Card>
+        );
+      })()}
+
+      {asgBox && <BoxScore G={G} box={asgBox} onClose={()=>setAsgBox(null)} />}
 
       {(()=>{
         const rival = user.rivalId!=null ? G.teams[user.rivalId] : null;
@@ -2404,7 +2427,7 @@ function PlayerModal({p, team, onClose, G}){
         </div>
         {((p.accolades&&p.accolades.length>0) || (p.rings&&p.rings.length>0)) && (()=>{
           const ct={}; (p.accolades||[]).forEach(a=>{ct[a.award]=(ct[a.award]||0)+1;});
-          const order=["MVP","Cy Young","All-Star","Rookie of the Year","Gold Glove","Silver Slugger","Reliever of the Year","Comeback Player"];
+          const order=["MVP","Cy Young","All-Star","All-Star MVP","Rookie of the Year","Gold Glove","Silver Slugger","Reliever of the Year","Comeback Player"];
           const feats=[["Perfect Game","💎","bg-fuchsia-500/20 text-fuchsia-200 border-fuchsia-500/40"],["No-Hitter","🚫","bg-rose-500/20 text-rose-200 border-rose-500/40"],["Cycle","🔄","bg-emerald-500/20 text-emerald-200 border-emerald-500/40"],["4-HR Game","💣","bg-orange-500/20 text-orange-200 border-orange-500/40"],["3-HR Game","💥","bg-orange-500/20 text-orange-200 border-orange-500/40"]];
           const rings=(p.rings||[]).length;
           return <div className="flex gap-1 mb-3 flex-wrap">
@@ -3267,7 +3290,7 @@ function Leaders({G}){
 // `box` is the compact shape saved by simGame (player ids + ints); names/teams resolve here.
 function BoxScore({G, box, onClose}){
   if(!box) return null;
-  const homeT=teamById(G,box.h), awayT=teamById(G,box.a);
+  const homeT=teamById(G,box.h)||box.homeT, awayT=teamById(G,box.a)||box.awayT;
   const nm = pid => { const p=G.players[pid]; return p?p.name:"—"; };
   const pos = pid => { const p=G.players[pid]; return p?p.pos:""; };
   const ip = outs => `${Math.floor(outs/3)}.${outs%3}`;
@@ -4051,6 +4074,76 @@ function computeAwards(G){
   G.awards=out;
   (G.awardHistory=G.awardHistory||[]).unshift(out);
   if(G.awardHistory.length>40) G.awardHistory.pop();
+}
+
+/* ------------------------------ All-Star Game ------------------------------ */
+// A mid-season exhibition (Empire vs Pioneer) played with the REAL sim, banked separately so
+// it never touches regular-season stats (like the BA Cup). Rosters are picked from current
+// MLB form (best at each lineup slot + top arms), mirroring the season-end All-Star selection.
+const ASG_HOME_ID=900, ASG_AWAY_ID=901;   // ad-hoc team ids (outside the MLB/AAA/college namespace)
+const asgBucket = p => p.asgStats = p.asgStats || (p.isP?emptyPitStats():emptyHitStats());
+function pickAllStars(G, lg){
+  const pool=Object.values(G.players).filter(p=>{const t=teamById(G,p.teamId);return t&&!t.aaa&&!t.college&&t.league===lg && !isInjured(p);});
+  const S=p=>levelStats(p,"MLB");
+  const hitters=pool.filter(p=>!p.isP), pitchers=pool.filter(p=>p.isP);
+  const chosen=[];
+  ["C","1B","2B","3B","SS","LF","CF","RF","DH"].forEach(pos=>{
+    const cand = pos==="DH" ? hitters.filter(p=>!chosen.includes(p))
+                            : hitters.filter(p=>p.pos===pos && !chosen.includes(p));
+    const b=bestBy(cand,p=>mvpScore(S(p))) || bestBy(hitters.filter(p=>!chosen.includes(p)),p=>mvpScore(S(p)));
+    if(b) chosen.push(b);
+  });
+  const arms=[...pitchers].sort((a,b)=>cyScore(S(b))-cyScore(S(a))).slice(0,8);
+  return { hitters:chosen, pitchers:arms };
+}
+function makeAllStarTeam(G, lg, id, roster){
+  const order=["C","1B","2B","3B","SS","LF","CF","RF","DH"];
+  const pos={}; roster.hitters.forEach((p,i)=>{ pos[p.id]=order[i]||p.pos; });
+  // batting order: contact/eye up top, like autoSetLineups
+  const lineup=roster.hitters.slice().sort((a,b)=>(b.con+b.eye)-(a.con+a.eye)).map(p=>p.id).slice(0,9);
+  const sp=roster.pitchers.filter(p=>p.role==="SP");
+  const starter=sp[0]||roster.pitchers[0];
+  return { id, name:lg+" All-Stars", city:lg, nick:"All-Stars", abbr: lg==="Empire"?"EMP":"PIO",
+           league:lg, division:"AS", w:0,l:0,poGi:0,rs:0,ra:0, streak:0,
+           lineup, pos, rotation:[starter.id], bullpen:roster.pitchers.filter(p=>p.id!==starter.id).map(p=>p.id) };
+}
+function asgScore(s0, s, isP, onWinner){
+  let v;
+  if(isP){ const outs=(s.OUT||0)-(s0.OUT||0), er=(s.ER||0)-(s0.ER||0), so=(s.SO||0)-(s0.SO||0);
+    v = outs/3*1.2 + so*0.8 - er*1.5; }
+  else { const h=(s.H||0)-(s0.H||0), hr=(s.HR||0)-(s0.HR||0), rbi=(s.RBI||0)-(s0.RBI||0), r=(s.R||0)-(s0.R||0), sb=(s.SB||0)-(s0.SB||0);
+    v = h*1.0 + hr*2.0 + rbi*1.2 + r*0.8 + sb*0.5; }
+  return v + (onWinner?2.5:0);
+}
+function playAllStarGame(G){
+  const eR=pickAllStars(G,"Empire"), pR=pickAllStars(G,"Pioneer");
+  if(eR.hitters.length<9 || pR.hitters.length<9 || !eR.pitchers.length || !pR.pitchers.length) return;
+  // home = Pioneer, away = Empire (arbitrary, neutral exhibition)
+  const home=makeAllStarTeam(G,"Pioneer",ASG_HOME_ID,pR), away=makeAllStarTeam(G,"Empire",ASG_AWAY_ID,eR);
+  const homeRoster=[...pR.hitters,...pR.pitchers], awayRoster=[...eR.hitters,...eR.pitchers];
+  const idx={ [ASG_HOME_ID]:homeRoster, [ASG_AWAY_ID]:awayRoster };
+  const roster=[...homeRoster,...awayRoster];
+  const winSet=new Set();   // filled after the result
+  const snap={}; roster.forEach(p=>snap[p.id]=Object.assign({},p.stats));
+  const res=simGame(home,away,G.players,idx);   // REAL sim; no markGamesPlayed / records / feats (exhibition)
+  const homeWon=res.hs>res.as;
+  const winnerId=homeWon?ASG_HOME_ID:ASG_AWAY_ID;
+  (homeWon?homeRoster:awayRoster).forEach(p=>winSet.add(p.id));
+  // MVP — best line, with a nudge toward the winning side (computed BEFORE banking)
+  let mvp=null, mvpSc=-1e9;
+  roster.forEach(p=>{ const sc=asgScore(snap[p.id],p.stats,p.isP,winSet.has(p.id));
+    if(sc>mvpSc){ mvpSc=sc; mvp=p; } });
+  bankSeparate(roster, snap, asgBucket);   // move the game's stats out of p.stats (regular season stays clean)
+  if(mvp){ addAccolade(mvp,G.season,"All-Star MVP",(teamById(G,mvp.teamId)||{}).league||"");
+    logNews(G,"award",`⭐ ${mvp.name} (${(teamById(G,mvp.teamId)||{}).abbr||""}) is the ${G.season} All-Star Game MVP`, mvp.teamId); }
+  // label the box so the generic BoxScore shows the All-Star team names (teamById can't resolve ad-hoc ids)
+  res.box.homeT={abbr:home.abbr, nick:home.nick}; res.box.awayT={abbr:away.abbr, nick:away.nick};
+  G.allStarGame={ season:G.season, day:G.day,
+                  empireScore: res.as, pioneerScore: res.hs,   // away=Empire, home=Pioneer
+                  winner: homeWon?"Pioneer":"Empire",
+                  mvp: mvp?{id:mvp.id, name:mvp.name, team:(teamById(G,mvp.teamId)||{}).abbr||"", isP:mvp.isP}:null,
+                  box: res.box };
+  logNews(G,"award",`⭐ ${G.season} All-Star Game: Pioneer ${res.hs}, Empire ${res.as}`, null);
 }
 
 // Update each franchise's all-time, single-season record book. Run at season end
