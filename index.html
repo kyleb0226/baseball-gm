@@ -5054,11 +5054,21 @@ function refillCollege(G){
     autoSetLineups(t, G.players);   // drop departed ids, set freshmen lineups
   });
 }
+// Where a draft prospect came from: "HS" for high schoolers, else his college (abbr).
+// Falls back to the most recent COL history row for prospects declared before fromSchool existed.
+function prospectSchool(p){
+  if(p.fromHS) return "HS";
+  if(p.fromSchool) return p.fromSchool;
+  const col=(p.history||[]).filter(h=>h.level==="COL");
+  const last=col[col.length-1];
+  if(last && last.teams && last.teams.length) return last.teams[last.teams.length-1].replace(/ \(C\)$/,"").replace(/ AAA$/,"");
+  return "—";
+}
 function buildDraft(G){
   // The draft class = declared college players (carrying their COL stats) + a few elite HS
   // prospects (freshly generated HS stats), topped up with generics only if supply runs short.
   const cls=[];
-  collegeDeclarations(G).forEach(p=>{ p.teamId=null; delete p.classYr; cls.push(p.id); });  // amateurs leave school (stay amateur until drafted)
+  collegeDeclarations(G).forEach(p=>{ const sch=teamById(G,p.teamId); p.fromSchool = sch?sch.abbr:""; p.teamId=null; delete p.classYr; cls.push(p.id); });  // amateurs leave school (stay amateur until drafted)
   makeHSProspects(G, rint(16,26)).forEach(p=>{ G.players[p.id]=p; cls.push(p.id); });
   refillCollege(G);                       // freshmen replace those who left
   // safety: guarantee a full 150-pick board even if declarations were light
@@ -5172,11 +5182,12 @@ function Draft({G, commit, tShow, setTab}){
           <div className="text-xs text-slate-400 mb-1">Best Available ({avail.length})</div>
           <div className="overflow-x-auto max-h-[65vh] overflow-y-auto">
             <table className="w-full text-sm tnum">
-              <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Pos</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th>{isUser&&<th></th>}</tr></thead>
+              <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Pos</th><th className="text-left">Name</th><th className="text-left">From</th><th>Age</th><th>OVR</th><th>POT</th>{isUser&&<th></th>}</tr></thead>
               <tbody>
                 {avail.slice(0,60).map(p=>(
                   <tr key={p.id} className="border-b border-[#15203a]">
                     <td className="text-slate-400">{p.pos}</td><td className="text-left"><PlayerLink p={p} className="font-medium"/></td>
+                    <td className={"text-left text-xs "+(p.fromHS?"text-rose-300":"text-violet-300")}>{prospectSchool(p)}</td>
                     <td className="text-center">{p.age}</td><td className="text-center"><OvrPill v={p.ovr}/></td>
                     <td className="text-center text-amber-300 font-semibold">{p.pot}</td>
                     {isUser&&<td className="text-right"><button onClick={()=>draftPlayer(p.id)} className="px-2 py-0.5 bg-emerald-600 rounded text-xs hover:bg-emerald-500">Draft</button></td>}
@@ -5210,7 +5221,7 @@ function Draft({G, commit, tShow, setTab}){
                           <span className="text-slate-500 text-xs w-9 shrink-0">#{p.draftInfo.overall}</span>
                           <span className="text-slate-600 text-[10px] w-7 shrink-0">R{p.draftInfo.round}</span>
                           <span className={"font-semibold w-10 shrink-0 "+(mine?"text-emerald-300":"text-slate-300")}>{p.draftInfo.by}</span>
-                          <span className="flex-1 truncate"><PlayerLink p={p}/></span>
+                          <span className="flex-1 truncate min-w-0"><PlayerLink p={p}/> <span className={"text-[10px] "+(p.fromHS?"text-rose-300":"text-violet-300")}>{prospectSchool(p)}</span></span>
                           <span className="text-slate-500 text-[10px] shrink-0"><span className="text-slate-400 font-semibold">{p.pos}</span> · {p.ovr}→<span className="text-amber-300">{p.pot}</span></span>
                         </div>
                       );
