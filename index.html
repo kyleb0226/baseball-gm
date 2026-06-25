@@ -303,8 +303,20 @@ const BALLPARK_NAMES = [
   "Cedar Ridge Stadium","Saltflats Field","Vanguard Park","Northgate Stadium","Emerald Field",
 ];
 function parkFactorFor(idx){ return Math.round((1.0 + ((idx-14.5)/14.5)*0.06)*1000)/1000; }   // ~0.94..1.06, avg 1.0
-function makeBallpark(idx){ return { name: BALLPARK_NAMES[idx%BALLPARK_NAMES.length], pf: parkFactorFor(idx) }; }
+// Handedness bias derived from the SAME drawn outfield geometry (seeded by the park name): a
+// shorter right field (vs left) means a short porch that helps LHB → positive; shorter left
+// → helps RHB → negative. ~0 for the (symmetric) majority. Feeds paOutcome's HR nudge.
+function ballparkHand(name){
+  const g=ballparkGeom(hashSeed(name||"park")), W=g.wall, n=W.length;
+  const d=p=>Math.hypot(p.x-180,p.y-150), mid=(n-1)/2;
+  let lS=0,lc=0,rS=0,rc=0;
+  W.forEach((p,i)=>{ if(i<mid){lS+=d(p);lc++;} else if(i>mid){rS+=d(p);rc++;} });
+  const lAvg=lc?lS/lc:0, rAvg=rc?rS/rc:0;
+  return clamp(Math.round((lAvg-rAvg)/90*100)/100, -1, 1);   // RF shorter → + (favors LHB)
+}
+function makeBallpark(idx){ const name=BALLPARK_NAMES[idx%BALLPARK_NAMES.length]; return { name, pf: parkFactorFor(idx), hand: ballparkHand(name) }; }
 function parkLabel(pf){ const d=Math.round((pf-1)*100); return d>=2?`Hitter-friendly (+${d}%)`:d<=-2?`Pitcher-friendly (${d}%)`:"Neutral park"; }
+function parkHandLabel(hand){ return hand>=0.12?"Short RF porch — favors LHB":hand<=-0.12?"Short LF porch — favors RHB":"Balanced field — no platoon lean"; }
 
 function makeTeam(def, idx){
   const [city,nick,abbr,league,division] = def;
@@ -578,8 +590,8 @@ function teamDefRating(team, players){
   return n ? sum/n : 50;
 }
 
-function paOutcome(bat, pit, defN, park){
-  park = park||1;
+function paOutcome(bat, pit, defN, park, parkHand){
+  park = park||1; parkHand = parkHand||0;
   const bc=n01(bat.con), bp=n01(bat.pow), be=n01(bat.eye), bs=n01(bat.spd);
   // fatigue: a gassed arm loses a bit of stuff & command (mild, capped)
   const tired = clamp(((pit._tired||0)-0.8)*0.18, 0, 0.12);
@@ -588,8 +600,11 @@ function paOutcome(bat, pit, defN, park){
   let bbP = clamp(0.085 + 0.08*(be-0.5) - 0.08*(pc-0.5) - 0.02*(ps-0.5), 0.02, 0.22);
   // HR needs power AND some contact — a one-dimensional slugger who can't make contact
   // shouldn't lead the league in homers, so a contact term gates the pure-power slope.
-  // park factor nudges power most, contact a touch (both clubs share the park → balance kept)
-  let hrP = clamp((0.019 + 0.074*(bp-0.5) + 0.040*(bc-0.5) - 0.030*(ps-0.5)) * (1+(park-1)*1.6), 0.002, 0.14);
+  // park factor nudges power most, contact a touch (both clubs share the park → balance kept).
+  // handedness: a short porch helps a PULL hitter of the matching hand (RF short → LHB, LF short
+  // → RHB) and mildly suppresses the opposite hand; switch hitters neutral. parkHand: +RF short.
+  const hside = bat.bats==="L" ? parkHand : bat.bats==="R" ? -parkHand : 0;
+  let hrP = clamp((0.019 + 0.074*(bp-0.5) + 0.040*(bc-0.5) - 0.030*(ps-0.5)) * (1+(park-1)*1.6) * (1+hside*0.20), 0.002, 0.14);
   const hbpP = 0.009;  // hit by pitch — small, roughly real-life ~1% of PAs
   const r = Math.random();
   if(r < kP) return {o:"K"};
@@ -685,6 +700,7 @@ function lineupHitters(team, players, idx){
 function simGame(home, away, players, idx){
   const out = { home, away };
   const park = (home && home.ballpark && home.ballpark.pf) || 1;   // home park nudges this game's run environment
+  const parkHand = (home && home.ballpark && home.ballpark.hand) || 0;   // +RF short (favors LHB), −LF short (favors RHB)
   const lineups = { [home.id]: lineupHitters(home,players,idx), [away.id]: lineupHitters(away,players,idx) };
   const order = { [home.id]:0, [away.id]:0 };
   const defN = { [home.id]: n01(teamDefRating(home,players)), [away.id]: n01(teamDefRating(away,players)) };
@@ -847,7 +863,7 @@ function simGame(home, away, players, idx){
       }
       const pitcher = cur[pitId].p;
       const bat = hitters[order[batId] % hitters.length]; order[batId]++;
-      const res = paOutcome(bat, pitcher, defN[pitId], park);
+      const res = paOutcome(bat, pitcher, defN[pitId], park, parkHand);
       bat.stats.PA++;
       if(res.o==="BB"){
         bat.stats.BB++; pitcher.stats.BB++; reached[pitId]++;
@@ -1485,7 +1501,7 @@ function migrate(G){
     if(G.tradeDeadline==null) G.tradeDeadline = Math.round((G.schedule?G.schedule.length:224)*0.58);
     if(!Array.isArray(G.hof)) G.hof = [];
     if(!Array.isArray(G.hofBallot)) G.hofBallot = [];
-    (G.teams||[]).forEach((t,i)=>{ if(!t.ballpark) t.ballpark = makeBallpark(i); });   // backfill ballparks
+    (G.teams||[]).forEach((t,i)=>{ if(!t.ballpark) t.ballpark = makeBallpark(i); else if(t.ballpark.hand==null) t.ballpark.hand = ballparkHand(t.ballpark.name); });   // backfill ballparks (+ handedness bias)
     if(!Array.isArray(G.champions)) G.champions = G.champion ? [{season:G.champion.season, id:G.champion.id}] : [];
     // de-dupe any accidental repeat champions (one entry per season; keep the winner)
     if(Array.isArray(G.champions)){
@@ -2321,6 +2337,9 @@ function BallparkView({team}){
           <span className={"font-semibold "+labelColor}>{parkLabel(pf)}</span>
           <span className="text-slate-500 text-xs"> · park factor {pf.toFixed(3)}</span>
           <div className="text-xs text-slate-500 mt-0.5">{pf>1?"Fly balls carry — a boost for hitters at home.":pf<1?"Deep gaps and heavy air suppress offense at home.":"Plays right down the middle."}</div>
+          {(()=>{ const h=bp.hand||0; const lean=Math.abs(h)>=0.12; return (
+            <div className={"text-xs mt-1 "+(lean?(h>0?"text-rose-300":"text-emerald-300"):"text-slate-500")}>{parkHandLabel(h)}</div>
+          ); })()}
         </div>
       </div>
     </Card>
