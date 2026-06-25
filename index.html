@@ -2247,12 +2247,45 @@ function GameLine({G, g, preview}){
 function rosterOf(G, teamId){ return Object.values(G.players).filter(p=>p.teamId===teamId); }
 function payroll(G, teamId){ return rosterOf(G,teamId).reduce((s,p)=>s+p.salary,0); }
 
-// Stylized inline-SVG ballpark illustration for the bottom of the Roster tab.
+// Procedurally generate a ballpark's outfield wall — deterministic per park (seeded by the
+// name) so each team's stadium is stable and distinct. Most are normal/symmetric; some are
+// asymmetric; a few are quirky (a short porch + angular corner, Fenway-style). Returns the
+// ordered wall points (left foul pole → right foul pole) + an outer ring for the grandstand.
+const HX=180, HY=150;   // home plate
+function ballparkGeom(seed){
+  const rng=mulberry32((seed>>>0)||1);
+  const push=(pt,d)=>{ const dx=pt.x-HX, dy=pt.y-HY, len=Math.hypot(dx,dy)||1; return {x:pt.x+dx/len*d, y:pt.y+dy/len*d}; };
+  const base=[ {x:42,y:80},{x:96,y:40},{x:180,y:26},{x:264,y:40},{x:318,y:80} ];   // L pole, L gap, CF, R gap, R pole
+  const roll=rng();
+  let wall;
+  if(roll<0.50){            // normal / symmetric — small mirrored jitter
+    const dP=(rng()*2-1)*7, dG=(rng()*2-1)*9, dC=(rng()*2-1)*7;
+    wall=[ push(base[0],dP), push(base[1],dG), push(base[2],dC), push(base[3],dG), push(base[4],dP) ];
+  } else if(roll<0.85){     // asymmetric — independent jitter per point
+    wall=base.map(pt=>push(pt,(rng()*2-1)*15));
+  } else {                  // quirky — a short porch on one side + an angular corner
+    wall=base.map(pt=>push(pt,(rng()*2-1)*9));
+    const left=rng()<0.5, gi=left?1:3, fi=left?0:4;
+    wall[gi]=push(base[gi], -(16+rng()*12));                          // pull the gap in (short porch)
+    const corner={ x:(wall[fi].x+wall[gi].x)/2+(left?-12:12), y:(wall[fi].y+wall[gi].y)/2-12 };  // angular jut
+    wall.splice(left?1:3, 0, corner);
+  }
+  wall.forEach(p=>{ p.x=clamp(p.x,16,344); p.y=clamp(p.y,16,118); });
+  const outer=wall.map(p=>push(p,16));
+  return { wall, outer };
+}
+// Stylized inline-SVG ballpark illustration (bottom of the Roster tab / team roster modal).
 function BallparkView({team}){
   const bp = team.ballpark || {name:"Ballpark", pf:1};
   const pf = bp.pf||1;
   const accent = pf>=1.02 ? "#fbbf24" : pf<=0.98 ? "#38bdf8" : "#64748b";   // hitter=amber, pitcher=sky
   const labelColor = pf>=1.02 ? "text-amber-300" : pf<=0.98 ? "text-sky-300" : "text-slate-300";
+  const geom = ballparkGeom(hashSeed(bp.name||"park"));
+  const W=geom.wall, O=geom.outer, last=W.length-1;
+  const pt=p=>`${p.x.toFixed(1)} ${p.y.toFixed(1)}`;
+  const grassPath = `M${HX} ${HY} L`+W.map(pt).join(" L ")+" Z";
+  const wallLine = "M"+W.map(pt).join(" L ");
+  const standsBand = "M"+W.map(pt).join(" L ")+" L "+O.slice().reverse().map(pt).join(" L ")+" Z";
   return (
     <Card>
       <h3 className="font-bold mb-2">🏟️ {bp.name}</h3>
@@ -2263,26 +2296,26 @@ function BallparkView({team}){
             <linearGradient id="bpGrass" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#1f7a43"/><stop offset="1" stopColor="#15602f"/></linearGradient>
           </defs>
           <rect x="0" y="0" width="360" height="168" rx="12" fill="url(#bpSky)"/>
-          {/* grandstands beyond the outfield */}
-          <path d="M26 64 Q180 -4 334 64 L322 80 Q180 16 38 80 Z" fill="#27344d"/>
-          <path d="M26 64 Q180 -4 334 64" fill="none" stroke="#33425e" strokeWidth="2"/>
-          {/* light towers */}
-          {[58,302].map((x,i)=>(<g key={i}><rect x={x-1.5} y="40" width="3" height="34" fill="#3a4a5a"/><rect x={x-11} y="30" width="22" height="12" rx="2" fill="#1c2740" stroke="#3a4a5a"/>{[-7,-1.5,4].map((dx,j)=><circle key={j} cx={x+dx} cy="36" r="1.8" fill="#fde68a"/>)}</g>))}
-          {/* field grass (fan from home plate) */}
-          <path d="M180 152 L44 60 Q180 18 316 60 Z" fill="url(#bpGrass)"/>
+          {/* grandstands hugging the outfield wall */}
+          <path d={standsBand} fill="#27344d"/>
+          <path d={"M"+O.map(pt).join(" L ")} fill="none" stroke="#33425e" strokeWidth="2"/>
+          {/* field grass (fan from home plate to the wall) */}
+          <path d={grassPath} fill="url(#bpGrass)"/>
           {/* outfield wall accent (park character) */}
-          <path d="M44 60 Q180 18 316 60" fill="none" stroke={accent} strokeWidth="3.5" strokeLinecap="round"/>
+          <path d={wallLine} fill="none" stroke={accent} strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"/>
           {/* infield dirt diamond */}
           <path d="M180 150 L222 120 L180 92 L138 120 Z" fill="#c39157"/>
           <path d="M180 150 L222 120 L180 92 L138 120 Z" fill="none" stroke="#a9763f" strokeWidth="1"/>
-          {/* foul lines */}
-          <path d="M180 151 L44 60 M180 151 L316 60" stroke="#e6edf6" strokeWidth="1.4" opacity="0.85"/>
+          {/* foul lines (home → each foul pole) */}
+          <path d={`M180 151 L ${pt(W[0])} M180 151 L ${pt(W[last])}`} stroke="#e6edf6" strokeWidth="1.4" opacity="0.85"/>
           {/* bases + mound + home plate */}
           <circle cx="180" cy="121" r="4" fill="#d9a86b" stroke="#a9763f"/>
           <rect x="217" y="116" width="7" height="7" rx="1" transform="rotate(45 220 119)" fill="#f1f5f9"/>
           <rect x="177" y="89" width="7" height="7" rx="1" transform="rotate(45 180 92)" fill="#f1f5f9"/>
           <rect x="135" y="116" width="7" height="7" rx="1" transform="rotate(45 138 119)" fill="#f1f5f9"/>
           <path d="M176 149 h8 v4 l-4 3 l-4 -3 Z" fill="#f1f5f9"/>
+          {/* corner light towers */}
+          {[34,326].map((x,i)=>(<g key={i}><rect x={x-1.5} y="42" width="3" height="30" fill="#3a4a5a"/><rect x={x-11} y="32" width="22" height="12" rx="2" fill="#1c2740" stroke="#3a4a5a"/>{[-7,-1.5,4].map((dx,j)=><circle key={j} cx={x+dx} cy="38" r="1.8" fill="#fde68a"/>)}</g>))}
         </svg>
         <div className="mt-2 text-sm text-center">
           <span className={"font-semibold "+labelColor}>{parkLabel(pf)}</span>
@@ -2965,6 +2998,7 @@ function TeamRosterModal({G, team, onClose}){
         {section("Rotation", <PitcherTable players={rotation} slots={rotSlots} onName={open} />)}
         {closer && section("Closer", <PitcherTable players={[closer]} slots={["CL"]} onName={open} />)}
         {section("Bullpen", bullpen.length?<PitcherTable players={bullpen} badge="BN" onName={open}/>:<div className="text-sm text-slate-500">—</div>)}
+        {!team.aaa && !team.college && team.ballpark && <BallparkView team={team} />}
       </div>
     </div>
     {sel && <PlayerModal p={sel} team={teamById(G, sel.teamId)} G={G} onClose={()=>setSel(null)} />}
