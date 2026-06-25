@@ -1908,6 +1908,48 @@ function tickInjuries(G){
 }
 
 /* ----------------------------- Hub / sim ------------------------------- */
+// Trade rumor mill: flavor news in the run-up to the deadline, driven by team situations
+// (sellers shop vets, buyers scout their needs) and player value — not random spam.
+function tickTradeRumors(G){
+  if(G.phase!=="regular") return;
+  const dl=G.tradeDeadline||9999;
+  if(G.day>dl || G.day < dl-28) return;        // only as the deadline approaches
+  if(!chance(0.4)) return;                       // ~a few per week
+  const teams=G.teams, sitOf=t=>teamSituation(G,t.id);
+  // most valuable MLB player matching a filter (with a little randomness so it varies)
+  const valuable=(filter)=>{ let best=null,bv=-1;
+    teams.forEach(t=>rosterOf(G,t.id).forEach(p=>{ if(p.amateur) return; if(filter&&!filter(p,t)) return;
+      const v=playerValue(p)*(0.75+Math.random()*0.5); if(v>bv){bv=v;best={p,t};} }));
+    return best; };
+  const r=Math.random(); let msg=null, tid=null, subj=null;
+  if(r<0.34){
+    // a seller (rebuild/retool club) shops a useful veteran
+    const sellers=teams.filter(t=>{const m=sitOf(t).mode; return m==="Rebuild"||m==="Retool";});
+    const t=pick(sellers.length?sellers:teams);
+    const cand=rosterOf(G,t.id).filter(p=>!p.amateur && p.age>=29 && p.ovr>=66).sort((a,b)=>playerValue(b)-playerValue(a))[0];
+    if(cand){ msg=`📋 ${t.abbr} reportedly making ${cand.pos} ${cand.name} (${cand.ovr} OVR) available ahead of the deadline`; tid=t.id; subj=cand.name; }
+  } else if(r<0.67){
+    // a star drawing interest as contenders circle
+    const sel=valuable(p=>p.ovr>=72);
+    if(sel){ msg=`👀 ${sel.p.pos} ${sel.p.name} (${sel.t.abbr}) is drawing trade interest as contenders circle`; tid=sel.t.id; subj=sel.p.name; }
+  } else {
+    // a buyer (win-now/contender) scouting a club to fill a need
+    const buyers=teams.filter(t=>{const m=sitOf(t).mode; return m==="Win-now"||m==="Contender";});
+    const b=pick(buyers.length?buyers:teams), need=(sitOf(b).needs||[])[0];
+    let target=null;
+    if(need) teams.forEach(t=>{ if(t.id===b.id) return; rosterOf(G,t.id).forEach(p=>{ if(p.amateur) return;
+      const posOk = (need==="SP"||need==="RP") ? (p.isP&&p.role===need) : (!p.isP&&p.pos===need);
+      if(posOk && p.ovr>=68 && (!target||p.ovr>target.p.ovr)) target={p,t}; }); });
+    if(need && target){ msg=`🔎 ${b.abbr} scouts spotted watching ${target.t.abbr}'s ${target.p.pos} ${target.p.name} — hunting ${need} help`; tid=b.id; subj=target.p.name; }
+    else { const sel=valuable(p=>p.ovr>=70); if(sel){ msg=`🔎 ${b.abbr} said to be aggressive on the market, eyeing ${sel.p.pos} ${sel.p.name} (${sel.t.abbr})`; tid=b.id; subj=sel.p.name; } }
+  }
+  if(!msg) return;
+  G._rumorRecent = G._rumorRecent || [];
+  if(subj && G._rumorRecent.includes(subj)) return;   // don't headline the same player back-to-back
+  if(subj){ G._rumorRecent.push(subj); if(G._rumorRecent.length>6) G._rumorRecent.shift(); }
+  logNews(G,"rumor",msg,tid);
+}
+
 function simDay(G){
   let idx = rosterIndex(G.players);             // build the team→players index ONCE for the whole day
   // safety net: a team that can't field a lineup/staff would crash simGame and hang the
@@ -1958,6 +2000,7 @@ function simDay(G){
   else {
     G.tradeOffers = G.tradeOffers.filter(o=>(G.day-o.day)<=12);
     if(G.tradeOffers.length<2 && chance(0.045)){ const off=makeAITradeOffer(G); if(off) G.tradeOffers.push(off); }
+    tickTradeRumors(G);   // flavor rumors building toward the deadline
   }
   // waiver wire: occasional AI cuts + claim processing
   maybeAIWaive(G); processWaivers(G);
@@ -5658,6 +5701,7 @@ function startNewSeason(G){
   for(let y=keepFrom; y<=G.season+PICK_YEARS; y++){ if(!G.picks.some(p=>p.season===y)) G.picks.push(...buildPicks(y, G.teams)); }
   G.tradeDeadline = Math.round(G.schedule.length*0.58);   // recompute for the new calendar
   G.tradeOffers = [];                                      // pending offers don't carry over
+  G._rumorRecent = [];                                     // reset the rumor-mill dedup ring
   (G.waivers||[]).forEach(w=>{ const p=G.players[w.id]; if(p&&p.teamId==null&&!G.freeAgents.includes(p.id)) G.freeAgents.push(p.id); });
   G.waivers = [];                                          // anyone still on the wire clears to FA
   setOwnerMandate(G);                                      // owner sets this season's mandate from the new roster
@@ -5867,6 +5911,7 @@ function HallOfFame({G}){
 /* ----------------------------- News / League Wire ---------------------- */
 const NEWS_META = {
   trade:   {label:"Trades",   dot:"bg-sky-400"},
+  rumor:   {label:"Rumors",   dot:"bg-indigo-400"},
   signing: {label:"Signings", dot:"bg-emerald-400"},
   roster:  {label:"Roster",   dot:"bg-slate-400"},
   draft:   {label:"Draft",    dot:"bg-amber-400"},
