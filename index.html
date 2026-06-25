@@ -2404,7 +2404,7 @@ function PlayerModal({p, team, onClose, G}){
         </div>
         {((p.accolades&&p.accolades.length>0) || (p.rings&&p.rings.length>0)) && (()=>{
           const ct={}; (p.accolades||[]).forEach(a=>{ct[a.award]=(ct[a.award]||0)+1;});
-          const order=["MVP","Cy Young","All-Star","Rookie of the Year","Gold Glove","Silver Slugger","Reliever of the Year"];
+          const order=["MVP","Cy Young","All-Star","Rookie of the Year","Gold Glove","Silver Slugger","Reliever of the Year","Comeback Player"];
           const feats=[["Perfect Game","💎","bg-fuchsia-500/20 text-fuchsia-200 border-fuchsia-500/40"],["No-Hitter","🚫","bg-rose-500/20 text-rose-200 border-rose-500/40"],["Cycle","🔄","bg-emerald-500/20 text-emerald-200 border-emerald-500/40"],["4-HR Game","💣","bg-orange-500/20 text-orange-200 border-orange-500/40"],["3-HR Game","💥","bg-orange-500/20 text-orange-200 border-orange-500/40"]];
           const rings=(p.rings||[]).length;
           return <div className="flex gap-1 mb-3 flex-wrap">
@@ -4019,7 +4019,30 @@ function computeAwards(G){
         .reduce((a,c)=>(a==null||ops(S(c))>ops(S(a)))?c:a,null);
       if(b) ss.push(b);
     });
-    Object.assign(out.leagues[lg], { roy:recOf(roy), relYr:recOf(relYr), gg:gg.map(recOf), ss:ss.map(recOf) });
+    // Comeback Player of the Year — biggest rebound vs last season, or a productive return
+    // after missing last year (e.g. injury). Needs prior MLB experience and a real down/lost
+    // year; must actually produce now. Some seasons may have no clear winner.
+    const cpoy = (()=>{
+      let best=null, bestSc=-1e9;
+      pool.forEach(p=>{
+        const cur=S(p); if(p.isP? cur.OUT<120 : cur.PA<300) return;
+        const mlbRows=(p.history||[]).filter(h=>h.level==="MLB");
+        if(!mlbRows.length) return;                       // no prior MLB → a rookie, not a comeback
+        const curWar=warOf(p,warCtx,cur);
+        if(curWar<3) return;                              // must produce now
+        const lastRow=mlbRows.find(h=>h.season===G.season-1);
+        if(lastRow && lastRow.war==null) return;          // can't assess (pre-WAR history row)
+        const missedLast=!lastRow;                        // didn't play MLB last year → a return
+        const baseline=lastRow?lastRow.war:0;
+        if(!(missedLast || baseline<1.5)) return;         // last year must have been down/lost
+        const sc=(curWar-baseline)+(missedLast?1.0:0);
+        if(sc>bestSc){ bestSc=sc; best={p,missedLast}; }
+      });
+      return bestSc>=3 ? best : null;
+    })();
+    Object.assign(out.leagues[lg], { roy:recOf(roy), relYr:recOf(relYr), cpoy:recOf(cpoy?cpoy.p:null), gg:gg.map(recOf), ss:ss.map(recOf) });
+    if(cpoy){ addAccolade(cpoy.p,G.season,"Comeback Player",lg);
+      logNews(G,"award",`🏅 ${cpoy.p.name} won the ${lg} Comeback Player of the Year${cpoy.missedLast?" (return season)":""}`, cpoy.p.teamId); }
     if(roy){ addAccolade(roy,G.season,"Rookie of the Year",lg); logNews(G,"award",`🏅 ${roy.name} won the ${lg} Rookie of the Year`, roy.teamId); }
     if(relYr){ addAccolade(relYr,G.season,"Reliever of the Year",lg); logNews(G,"award",`🏅 ${relYr.name} won ${lg} Reliever of the Year`, relYr.teamId); }
     gg.forEach(p=>addAccolade(p,G.season,"Gold Glove",lg));
@@ -5687,6 +5710,7 @@ function Awards({G}){
                 <div><div className="text-xs text-amber-300 font-semibold mb-1">Cy Young</div><Person r={L.cy} tag="CY"/></div>
                 {L.roy && <div><div className="text-xs text-amber-300 font-semibold mb-1">Rookie of the Year</div><Person r={L.roy} tag="ROY"/></div>}
                 {L.relYr && <div><div className="text-xs text-amber-300 font-semibold mb-1">Reliever of the Year</div><Person r={L.relYr} tag="RP"/></div>}
+                {L.cpoy && <div><div className="text-xs text-amber-300 font-semibold mb-1">Comeback Player of the Year</div><Person r={L.cpoy} tag="CPOY"/></div>}
               </div>
               {L.gg && L.gg.length>0 && <div className="text-[11px] text-slate-400 mb-2">🧤 <b>Gold Gloves:</b> {L.gg.map(r=>`${r.pos} ${r.name}`).join(", ")}</div>}
               {L.ss && L.ss.length>0 && <div className="text-[11px] text-slate-400 mb-2">🏏 <b>Silver Sluggers:</b> {L.ss.map(r=>`${r.pos} ${r.name}`).join(", ")}</div>}
