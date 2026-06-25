@@ -1465,6 +1465,7 @@ function migrate(G){
     if(!G.ownerMandate && G.phase==="regular"){ try{ setOwnerMandate(G); }catch(e){} }   // backfill a mandate for in-season saves
     if(G.tradeDeadline==null) G.tradeDeadline = Math.round((G.schedule?G.schedule.length:224)*0.58);
     if(!Array.isArray(G.hof)) G.hof = [];
+    if(!Array.isArray(G.hofBallot)) G.hofBallot = [];
     if(!Array.isArray(G.champions)) G.champions = G.champion ? [{season:G.champion.season, id:G.champion.id}] : [];
     // de-dupe any accidental repeat champions (one entry per season; keep the winner)
     if(Array.isArray(G.champions)){
@@ -4838,7 +4839,7 @@ function OffseasonHub({G, commit, tShow, setTab}){
     const retiredLog=[];
     retired.forEach(id=>{
       const p=G.players[id]; const t=teamById(G, p.teamId);
-      inductIfWorthy(G, p);                  // great careers enter the Hall of Fame on retirement
+      nominateForHOF(G, p);                  // worthy careers go on the Hall of Fame ballot
       if(t){ t.lineup=t.lineup.filter(x=>x!==id); t.rotation=t.rotation.filter(x=>x!==id); if(t.pos) delete t.pos[id]; }
       G.freeAgents=G.freeAgents.filter(x=>x!==id);
       const tName=t?(t.aaa?G.teams[parentIdOf(t.id)].abbr:t.abbr):"FA";
@@ -4847,6 +4848,7 @@ function OffseasonHub({G, commit, tShow, setTab}){
         retiredLog.push({n:p.name, ovr:p.ovr, age:p.age, pos:p.pos});
       delete G.players[id];
     });
+    runHofVote(G);                           // hold the Hall of Fame vote (new nominees + lingering ballot)
     // advance each rostered contract one year (drop the season just played), then expire to FA.
     // Free agents keep their ask intact — their "contract" is a demand, not a deal in progress.
     Object.values(G.players).forEach(p=>{
@@ -4988,25 +4990,54 @@ function hofScore(p){
   }
   return (c.HR||0)*0.45 + (c.H||0)*0.035 + (c.RBI||0)*0.032 + (c.SB||0)*0.12 + (c.R||0)*0.02 + peakBonus + accBonus;
 }
-function inductIfWorthy(G, p){
-  if(hofScore(p) < HOF_THRESHOLD) return;
-  G.hof = G.hof || [];
+// Self-contained career snapshot (the player is deleted from G.players on retirement, so the
+// ballot/Hall must carry everything the plaque needs).
+function hofSnapshot(G, p){
   const lt = (p.teamId!=null && !isAAAId(p.teamId) && G.teams[p.teamId]) ? G.teams[p.teamId].abbr
            : (p._yrTeams && p._yrTeams.length ? p._yrTeams[p._yrTeams.length-1] : "");
-  G.hof.push({
+  return {
     name:p.name, pos:p.pos, isP:p.isP, peakOvr:p.peakOvr||p.ovr,
-    age:p.age, inducted:G.season, lastTeam:lt,
-    seasons:(p.history?p.history.length:0),
+    age:p.age, lastTeam:lt, seasons:(p.history?p.history.length:0),
     score:round(hofScore(p)),
     mvp:accCount(p,"MVP"), cy:accCount(p,"Cy Young"), allStar:accCount(p,"All-Star"), rings:ringCount(p),
     career:Object.assign({}, p.career||{}),
-    // keep the full career detail so the HoF plaque can show year-by-year + per-season honors
     history:(p.history||[]).map(h=>Object.assign({}, h)),
     accolades:(p.accolades||[]).map(a=>Object.assign({}, a)),
     ringSeasons:[...(p.rings||[])],
     postStats: p.postStats?Object.assign({},p.postStats):null,
     cupStats: p.cupStats?Object.assign({},p.cupStats):null,
+  };
+}
+// HOF voting: on retirement, a worthy-enough career goes on the BALLOT (a lower bar than
+// induction, so borderline guys can linger). Each offseason the ballot is voted: a vote%
+// derived from hofScore (+ hardware/rings already baked into the score) + ballot momentum;
+// 75%+ inducts (a 90%+ first-year vote is "first ballot"), and a candidate can wait a few
+// years before getting in or falling off.
+const HOF_BALLOT_FLOOR = 120;   // below this, a career never reaches the ballot
+function nominateForHOF(G, p){
+  if(hofScore(p) < HOF_BALLOT_FLOOR) return;
+  const c = hofSnapshot(G, p); c.yearsOnBallot = 0; c.votePct = 0;
+  (G.hofBallot = G.hofBallot || []).push(c);
+}
+// score 175 (old auto-induct bar) ≈ 75% first year; +0.42%/score-point; +4%/year of patience.
+function hofVotePct(score, years){ return clamp(Math.round(75 + (score-175)*0.42 + (years||0)*4), 1, 99); }
+function runHofVote(G){
+  G.hof = G.hof || []; G.hofBallot = G.hofBallot || [];
+  const remain=[];
+  G.hofBallot.forEach(c=>{
+    const pct = hofVotePct(c.score, c.yearsOnBallot);
+    c.votePct = pct;
+    if(pct>=75){
+      c.firstBallot = (c.yearsOnBallot===0 && pct>=90);
+      c.inducted = G.season;
+      G.hof.push(c);
+      logNews(G,"award",`🎖️ ${c.name} (${c.lastTeam}) elected to the Hall of Fame${c.firstBallot?" — FIRST BALLOT!":""} — ${pct}% of the vote`, null);
+    } else {
+      c.yearsOnBallot++;
+      if(c.yearsOnBallot<=5 && pct>=30) remain.push(c);   // else falls off the ballot, not inducted
+    }
   });
+  G.hofBallot = remain;
 }
 
 // snapshot the season that just ended into per-year history (with team[s] played for),
@@ -5768,9 +5799,31 @@ function HallOfFame({G}){
         })()}
       </Card>
 
+      {(()=>{
+        const ballot=(G.hofBallot||[]).slice().map(c=>({...c, pct:hofVotePct(c.score,c.yearsOnBallot)})).sort((a,b)=>b.pct-a.pct);
+        return (
+          <Card>
+            <h3 className="font-bold mb-1">🗳️ Hall of Fame Ballot <span className="text-slate-500 text-sm">({ballot.length})</span></h3>
+            <p className="text-xs text-slate-500 mb-2">Retired stars are voted on each offseason — <span className="text-emerald-300">75%+</span> earns induction. Candidates linger up to 6 years before getting in or falling off.</p>
+            {ballot.length ? (
+              <div className="space-y-1">
+                {ballot.map((c,i)=>(
+                  <div key={i} className="flex items-center gap-2 px-2 py-1 rounded bg-[#13203a] text-sm">
+                    <OvrPill v={c.peakOvr}/>
+                    <span className="flex-1 truncate">{c.pos} <span className="font-medium">{c.name}</span> <span className="text-slate-600 text-xs">{c.lastTeam} · yr {c.yearsOnBallot+1}</span></span>
+                    <div className="w-24 h-2 rounded bg-[#0c1525] overflow-hidden shrink-0"><div className={"h-full "+(c.pct>=75?"bg-emerald-500":c.pct>=50?"bg-amber-500":"bg-rose-500/70")} style={{width:Math.min(100,c.pct)+"%"}}/></div>
+                    <span className={"tnum font-bold w-10 text-right "+(c.pct>=75?"text-emerald-300":"text-slate-300")}>{c.pct}%</span>
+                  </div>
+                ))}
+              </div>
+            ) : <div className="text-sm text-slate-500">No one on the ballot right now. Newly-retired stars appear here for a vote each offseason.</div>}
+          </Card>
+        );
+      })()}
+
       <Card>
         <h3 className="font-bold mb-1">🎖️ Hall of Fame <span className="text-slate-500 text-sm">({hof.length})</span></h3>
-        <p className="text-xs text-slate-500 mb-2">Legends are inducted when they retire after a truly great career.</p>
+        <p className="text-xs text-slate-500 mb-2">Inducted by an offseason vote (75%+). A 💎 marks a first-ballot legend.</p>
         {hof.length ? (
           <div className="overflow-x-auto">
             <table className="w-full text-sm tnum">
@@ -5791,8 +5844,8 @@ function HallOfFame({G}){
                   if(h.allStar) honors.push(`${h.allStar}× AS`);
                   return (
                     <tr key={i} className="border-b border-[#15203a]">
-                      <td className="py-1 text-slate-400">{h.inducted}</td>
-                      <td className="text-left font-medium"><button onClick={()=>setHofSel(h)} className="hover:text-emerald-300 text-left">{h.name}</button> <span className="text-slate-600 text-xs">{h.lastTeam}</span></td>
+                      <td className="py-1 text-slate-400">{h.inducted}{h.votePct?<span className="text-slate-600 text-[10px]"> · {h.votePct}%</span>:null}</td>
+                      <td className="text-left font-medium"><button onClick={()=>setHofSel(h)} className="hover:text-emerald-300 text-left">{h.name}</button>{h.firstBallot&&<span className="text-amber-300 text-xs" title="First-ballot Hall of Famer"> 💎</span>} <span className="text-slate-600 text-xs">{h.lastTeam}</span></td>
                       <td className="text-center text-slate-400">{h.pos}</td>
                       <td className="text-center"><OvrPill v={h.peakOvr}/></td>
                       <td className="text-center text-slate-400">{h.seasons||"—"}</td>
