@@ -935,7 +935,7 @@ function simGame(home, away, players, idx){
   out.gameLines = [];
   [home.id,away.id].forEach(tid=>{
     lineups[tid].forEach(h=>{ const sn=gSnap[h.id]; if(!sn||sn.HR==null) return;
-      out.gameLines.push({ name:h.name, team:tid, isP:false, hr:h.stats.HR-sn.HR, h:h.stats.H-sn.H, rbi:h.stats.RBI-sn.RBI }); });
+      out.gameLines.push({ pid:h.id, name:h.name, team:tid, isP:false, hr:h.stats.HR-sn.HR, h:h.stats.H-sn.H, rbi:h.stats.RBI-sn.RBI, ab:h.stats.AB-(sn.AB||0) }); });
     [arms[tid].starter.id, ...usedPen[tid]].forEach(pid=>{ const p=players[pid], sn=gSnap[pid]; if(!p||!sn||sn.SO==null) return;
       out.gameLines.push({ name:p.name, team:tid, isP:true, so:p.stats.SO-sn.SO, out:p.stats.OUT-sn.OUT }); });
   });
@@ -1901,6 +1901,7 @@ function simDay(G){
       const res = simGame(home, away, G.players, idx);
       markGamesPlayed(home, away, G.players, idx);
       if(isMLB) updateGameRecords(G, res.gameLines, G.season);   // single-game records (MLB only)
+      if(isMLB) updateHitStreaks(G, res.gameLines);              // active hitting streaks (MLB only)
       recordFeats(G, res);                                       // no-hitters / perfect games / cycles / multi-HR (all levels)
       g.played=true; g.hs=res.hs; g.as=res.as;
       if(isMLB) g.box=res.box;   // full box score for every MLB game (this season's schedule only)
@@ -1908,6 +1909,7 @@ function simDay(G){
       if(homeWon){ home.w++; away.l++; } else { away.w++; home.l++; }
       home.streak = homeWon ? (home.streak>=0?(home.streak||0)+1:1) : (home.streak<=0?(home.streak||0)-1:-1);
       away.streak = homeWon ? (away.streak<=0?(away.streak||0)-1:-1) : (away.streak>=0?(away.streak||0)+1:1);
+      home._wsMax = Math.max(home._wsMax||0, home.streak); away._wsMax = Math.max(away._wsMax||0, away.streak);
       home.rs+=res.hs; home.ra+=res.as; away.rs+=res.as; away.ra+=res.hs;
     });
   };
@@ -4036,6 +4038,7 @@ function recordFranchiseRecords(G){
     const up = (key,value,holder)=>{ if(value==null||value<=0) return; if(!rec[key]||value>rec[key].value) rec[key]={value,holder,season:G.season}; };
     const lo = (key,value,holder)=>{ if(value==null) return; if(!rec[key]||value<rec[key].value) rec[key]={value,holder,season:G.season}; };
     up("teamWins", t.w, t.name);
+    up("winStreak", t._wsMax, t.name);
     const ros = Object.values(G.players).filter(p=>p.teamId===t.id);
     const hitters = ros.filter(p=>!p.isP && p.stats.PA>=300);
     const pitchers = ros.filter(p=>p.isP && p.stats.OUT>=120);
@@ -4055,7 +4058,7 @@ function recordFranchiseRecords(G){
 function ensureRecords(G){ if(!G.records) G.records={ game:{}, season:{}, career:{} }; return G.records; }
 const teamAbbrOf = (G,p)=>{ const t=teamById(G,p.teamId); return t?(t.aaa?t.abbr+" AAA":t.abbr):""; };
 
-const RECNAME={teamWins:"wins (season)",HR:"home runs (season)",RBI:"RBI (season)",H:"hits (season)",R:"runs (season)",SB:"steals (season)",AVG:"batting avg (season)",pW:"wins (season)",pK:"strikeouts (season)",pSV:"saves (season)",ERA:"ERA (season)"};
+const RECNAME={teamWins:"wins (season)",winStreak:"win streak (season)",HR:"home runs (season)",RBI:"RBI (season)",H:"hits (season)",R:"runs (season)",SB:"steals (season)",AVG:"batting avg (season)",pW:"wins (season)",pK:"strikeouts (season)",pSV:"saves (season)",ERA:"ERA (season)"};
 const fmtRec=(k,v)=>k==="AVG"?f3(v):k==="ERA"?f2(v):v;
 function recordSeasonRecords(G){
   const R=ensureRecords(G).season;
@@ -4063,6 +4066,7 @@ function recordSeasonRecords(G){
   const up=(k,v,holder,team)=>{ if(v==null||v<=0) return; const old=R[k]; if(!old||v>old.value){ announce(k,v,holder,old); R[k]={value:v,holder,team,season:G.season}; } };
   const lo=(k,v,holder,team)=>{ if(v==null) return; const old=R[k]; if(!old||v<old.value){ announce(k,v,holder,old); R[k]={value:v,holder,team,season:G.season}; } };
   G.teams.forEach(t=>up("teamWins", t.w, t.name, t.abbr));
+  G.teams.forEach(t=>up("winStreak", t._wsMax, t.name, t.abbr));
   const mlb=Object.values(G.players).filter(p=>isMlbId(p.teamId));
   const hitters=mlb.filter(p=>!p.isP && p.stats.PA>=300);
   const pitchers=mlb.filter(p=>p.isP && p.stats.OUT>=120);
@@ -4097,6 +4101,38 @@ function updateGameRecords(G, lines, season){
     if(l.isP){ up("gK",l.so,l.name,team); }
     else { up("gHR",l.hr,l.name,team); up("gH",l.h,l.name,team); up("gRBI",l.rbi,l.name,team); }
   });
+}
+
+// Active hitting streaks: consecutive MLB regular-season games with >=1 hit. Fed live from
+// simGame's per-game lines (MLB only, via simDay). A no-bat day (ab===0) leaves the streak
+// intact; a hitless game with >=1 AB ends it. Logs milestones to the wire (15+, then every 5)
+// and keeps the league single-season + career record for the longest streak ever.
+function updateHitStreaks(G, lines){
+  if(!lines||!lines.length) return;
+  lines.forEach(l=>{
+    if(l.isP || !(l.ab>0)) return;
+    const p=G.players[l.pid]; if(!p) return;
+    if(l.h>0){
+      p._hitStreak=(p._hitStreak||0)+1;
+      if(p._hitStreak>(p._bestHitStreak||0)) p._bestHitStreak=p._hitStreak;
+      const s=p._hitStreak;
+      if(s===15 || (s>15 && s%5===0))
+        logNews(G,"award",`🔥 ${p.name} (${teamAbbrOf(G,p)}) extends his hitting streak to ${s} games`, p.teamId);
+      recordHitStreak(G, p, s);
+    } else {
+      p._hitStreak=0;
+    }
+  });
+}
+function recordHitStreak(G, p, s){
+  const R=ensureRecords(G), team=teamAbbrOf(G,p);
+  const old=R.season.hitStreak;
+  if(!old || s>old.value){
+    if(old && s>=15) logNews(G,"award",`🏆 NEW LEAGUE RECORD! ${p.name} — ${s}-game hitting streak (broke ${old.holder}'s ${old.value})`, null);
+    R.season.hitStreak={value:s, holder:p.name, team, season:G.season};
+  }
+  if(!R.career.cHitStreak || s>R.career.cHitStreak.value)
+    R.career.cHitStreak={value:s, holder:p.name, team, season:G.season};
 }
 
 // a player's CAREER total at one level (sum of that level's history rows + the live season,
@@ -5376,9 +5412,9 @@ function startNewSeason(G){
       logNews(G,"signing",`${t.abbr} ${t.budgetDelta>0?"revenue up":"budget tightens"} — payroll budget ${t.budgetDelta>0?"+":""}${t.budgetDelta} to ${money(t.budget)}`, t.id);
   });
   // reset records & stats (MLB + AAA + college)
-  G.teams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0;t.streak=0; });
+  G.teams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0;t.streak=0;t._wsMax=0; });
   G.aaaTeams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
-  Object.values(G.players).forEach(p=>{ if(p.injury) delete p.injury; if(p._tired) delete p._tired; });   // offseason heals everyone
+  Object.values(G.players).forEach(p=>{ if(p.injury) delete p.injury; if(p._tired) delete p._tired; if(p._hitStreak) delete p._hitStreak; });   // offseason heals everyone; hitting streaks reset (career best kept)
   (G.collegeTeams||[]).forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
   G.schedule = buildSchedule(G.teams);
   G.aaaSchedule = buildSchedule(G.aaaTeams);
@@ -5457,8 +5493,8 @@ function HallOfFame({G}){
   const [recTier,setRecTier]=useState("season");
   const [hofSel,setHofSel]=useState(null);
   const rec=(G.teams[recTeam]||{}).records||{};
-  const RECDEFS=[["teamWins","Most Wins (season)"],["HR","Home Runs"],["RBI","RBI"],["H","Hits"],["R","Runs"],["SB","Stolen Bases"],["AVG","Batting Avg"],["pW","Pitcher Wins"],["pK","Strikeouts"],["pSV","Saves"],["ERA","Lowest ERA"]];
-  const CAREER_DEFS=[["cHR","Home Runs"],["cH","Hits"],["cRBI","RBI"],["cR","Runs"],["cSB","Stolen Bases"],["cW","Pitcher Wins"],["cK","Strikeouts"],["cSV","Saves"],["cIP","Innings Pitched"]];
+  const RECDEFS=[["teamWins","Most Wins (season)"],["winStreak","Win Streak"],["hitStreak","Hitting Streak"],["HR","Home Runs"],["RBI","RBI"],["H","Hits"],["R","Runs"],["SB","Stolen Bases"],["AVG","Batting Avg"],["pW","Pitcher Wins"],["pK","Strikeouts"],["pSV","Saves"],["ERA","Lowest ERA"]];
+  const CAREER_DEFS=[["cHitStreak","Hitting Streak"],["cHR","Home Runs"],["cH","Hits"],["cRBI","RBI"],["cR","Runs"],["cSB","Stolen Bases"],["cW","Pitcher Wins"],["cK","Strikeouts"],["cSV","Saves"],["cIP","Innings Pitched"]];
   const GAME_DEFS=[["gHR","HR (game)"],["gH","Hits (game)"],["gRBI","RBI (game)"],["gK","Strikeouts (game)"]];
   const titlesByTeam = {}; (G.champions||[]).forEach(c=>{ titlesByTeam[c.id]=(titlesByTeam[c.id]||0)+1; });
   const mostTitles = Object.entries(titlesByTeam).sort((a,b)=>b[1]-a[1]).slice(0,5);
@@ -5495,7 +5531,7 @@ function HallOfFame({G}){
                 <div key={k} className="flex items-center gap-2 px-2 py-1 rounded bg-[#13203a] text-sm">
                   <span className="text-slate-400 text-xs flex-1">{label}</span>
                   <span className="font-bold tnum">{val}</span>
-                  <span className="text-slate-500 text-xs truncate max-w-[120px]">{k==="teamWins"?r.season:`${r.holder} '${String(r.season).slice(-2)}`}</span>
+                  <span className="text-slate-500 text-xs truncate max-w-[120px]">{(k==="teamWins"||k==="winStreak")?r.season:`${r.holder} '${String(r.season).slice(-2)}`}</span>
                 </div>
               );
             })}
@@ -5526,7 +5562,7 @@ function HallOfFame({G}){
                   <div key={k} className="flex items-center gap-2 px-2 py-1 rounded bg-[#13203a] text-sm">
                     <span className="text-slate-400 text-xs flex-1">{label}</span>
                     <span className="font-bold tnum text-amber-300">{fmt(k,r.value)}</span>
-                    <span className="text-slate-500 text-xs truncate max-w-[140px]">{k==="teamWins"?`${r.holder} '${String(r.season).slice(-2)}`:`${r.holder}${r.team?" ("+r.team+")":""} '${String(r.season).slice(-2)}`}</span>
+                    <span className="text-slate-500 text-xs truncate max-w-[140px]">{(k==="teamWins"||k==="winStreak")?`${r.holder} '${String(r.season).slice(-2)}`:`${r.holder}${r.team?" ("+r.team+")":""} '${String(r.season).slice(-2)}`}</span>
                   </div>
                 );
               })}
