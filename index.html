@@ -3940,6 +3940,7 @@ function FreeAgency({G, commit, tShow}){
     setContract(p, aav, years, incentives);
     p.teamId=me.id; G.freeAgents=G.freeAgents.filter(id=>id!==p.id);
     p.bestOffer=null; p.offers=[];
+    onFreeAgentSigned(G, p, me.id);   // QO comp pick if he declined elsewhere's QO (no-op if he re-signs with you)
     const incTot=incentivesPerYear(p);
     logNews(G,"signing",`${me.abbr} signed ${p.pos} ${p.name} (${p.ovr}) — ${contractLabel(p)}${incTot?` +${money(incTot)}/yr inc`:""}`, me.id);
     ensureLineup(me,G.players); refreshFAMarket(G); setNegotiate(null); commit(G); tShow(`✅ Signed ${p.name}`);
@@ -4813,6 +4814,50 @@ function BACup({G, commit, tShow}){
   );
 }
 
+/* ------------------- contract realism: arbitration + QOs ------------------- */
+// Arbitration: a pre-FA, under-team-control MLB player gets a modest performance-based raise
+// each offseason instead of a flat salary. Scaled by last season's WAR + OVR, bounded so
+// budgets stay sane. Returns the raise applied (or 0). Run in the contract-advance loop.
+function applyArbitration(G, p){
+  if(!isMlbId(p.teamId) || p.amateur) return 0;
+  if((p.years||0)<1) return 0;                 // expiring/FA handled elsewhere
+  if(p.age>27) return 0;                        // veterans on guaranteed deals don't auto-bump
+  const rows=(p.history||[]).filter(x=>x.level==="MLB");
+  const last=rows[rows.length-1];
+  const war=(last && last.season===G.season && typeof last.war==="number") ? Math.max(0,last.war) : 0;
+  const market=requiredAAV(p,1,1);
+  const target=market*clamp(0.30 + war*0.06 + (p.ovr-60)*0.01, 0.25, 0.85);
+  const base=p.salary||0.7;
+  const newSal=clamp(round(Math.max(base, target)*10)/10, base, base*1.5+1.5);   // raise only, bounded
+  if(newSal <= base+0.05) return 0;
+  p.contract = (Array.isArray(p.contract)&&p.contract.length) ? p.contract.map(s=>Math.max(s,newSal)) : [newSal];
+  p.salary=p.contract[0]; p.years=p.contract.length;
+  return round((newSal-base)*10)/10;
+}
+// Qualifying offer eligibility: a genuinely good MLB player about to hit free agency.
+function qoEligible(p){ return isMlbId(p.teamId) && !p.amateur && (p.ovr>=76) && (p.age<=33); }
+function qoAmount(G,p){ return clamp(round(requiredAAV(p,1,1)*0.9*10)/10, 6, 35); }
+// Compensation pick: an extra supplemental (round-2) pick in the draft AFTER the upcoming one
+// (so it survives the offseason rollover, is tradeable now, and enters that draft naturally).
+function awardCompPick(G, teamId){
+  const yrs=(G.picks||[]).map(p=>p.season);
+  const compYear=(yrs.length?Math.min(...yrs):G.season+1)+1;
+  const pk={ id:"comp"+compYear+"-"+teamId+"-"+round(Math.random()*1e6), season:compYear, round:2, orig:teamId, owner:teamId, comp:true };
+  (G.picks=G.picks||[]).push(pk);
+  return pk;
+}
+// Called whenever a free agent signs: if he declined a QO and signs ELSEWHERE, his old club
+// gets a comp pick. Re-signing with the QO club (or signing after no QO) gives nothing.
+function onFreeAgentSigned(G, p, newTeamId){
+  if(p._qoFrom==null) return;
+  if(p._qoFrom!==newTeamId){
+    awardCompPick(G, p._qoFrom);
+    const ot=G.teams[p._qoFrom], nt=G.teams[newTeamId];
+    logNews(G,"draft",`🎟️ ${ot?ot.abbr:"?"} get a compensatory pick — ${p.pos} ${p.name} declined the QO, signed with ${nt?nt.abbr:"?"}`, p._qoFrom);
+  }
+  delete p._qoFrom;
+}
+
 /* ----------------------------- Offseason ------------------------------- */
 function startOffseason(G){
   G.phase="offseason";
@@ -4894,13 +4939,18 @@ function OffseasonHub({G, commit, tShow, setTab}){
     runHofVote(G);                           // hold the Hall of Fame vote (new nominees + lingering ballot)
     // advance each rostered contract one year (drop the season just played), then expire to FA.
     // Free agents keep their ask intact — their "contract" is a demand, not a deal in progress.
+    let userArbCount=0, userArbTotal=0;
     Object.values(G.players).forEach(p=>{
       if(isCollegeId(p.teamId)) return;             // amateurs: no pro contract to advance
       if(p.teamId==null){ ensureContract(p); return; }
       if(Array.isArray(p.contract) && p.contract.length) p.contract.shift();
       p.years = Array.isArray(p.contract) ? p.contract.length : Math.max(0, (p.years||1)-1);
       if(Array.isArray(p.contract) && p.contract.length){ p.salary = p.contract[0]; p.incentive = incentivesPerYear(p); }
+      // arbitration: under-control MLB players get a performance-based raise (not a flat salary)
+      const raise = applyArbitration(G, p);
+      if(raise && p.teamId===G.userTeamId){ userArbCount++; userArbTotal=round((userArbTotal+raise)*10)/10; }
     });
+    if(userArbCount>0) logNews(G,"signing",`⚖️ Arbitration: ${userArbCount} of your players earned raises (+${money(userArbTotal)} total payroll)`, G.userTeamId);
     const expiredLog=[];
     Object.values(G.players).forEach(p=>{
       if(isCollegeId(p.teamId)) return;             // amateurs don't expire to FA
@@ -4908,9 +4958,27 @@ function OffseasonHub({G, commit, tShow, setTab}){
         // AAA prospects stay under org control until 28 (they're cheap, haven't hit arb yet)
         if(isAAAId(p.teamId) && p.age<28){ setContract(p, p.salary||0.7, rint(2,4), []); return; }
         const t=teamById(G, p.teamId);
+        // Qualifying offer: a good MLB player about to walk gets a 1-year QO from his club.
+        // Accept → 1yr at the QO (stays); decline → tests FA, club gets a comp pick if he signs
+        // elsewhere (handled in onFreeAgentSigned).
+        if(t && !t.aaa && qoEligible(p)){
+          const qo=qoAmount(G,p), space=(t.budget - payroll(G,t.id)) + (p.salary||0);
+          if(space>=qo){
+            const declineP=clamp(0.30 + (p.ovr-76)*0.05 + (30-p.age)*0.03, 0.1, 0.95);
+            if(chance(declineP)){
+              p._qoFrom=t.id;   // declines → falls through to FA (skips AI auto-resign below)
+              if(t.id===G.userTeamId) logNews(G,"signing",`You extended a QO to ${p.pos} ${p.name} (${p.ovr}); he declined to test free agency — comp pick if he signs elsewhere`, t.id);
+            } else {
+              setContract(p, qo, 1, []);
+              logNews(G,"signing",`${t.abbr} extended a 1-yr QO to ${p.pos} ${p.name} (${p.ovr}); he accepted — ${money(qo)}`, t.id);
+              return;   // stays on his club for one year
+            }
+          }
+        }
         // AI clubs RE-SIGN their good, affordable players instead of letting them walk — the
         // better he is the more likely, but only if it fits the budget (won't wreck the team).
-        if(t && !t.aaa && t.id!==G.userTeamId){
+        // A QO-decliner is set on testing the market, so the AI doesn't just re-up him here.
+        if(p._qoFrom==null && t && !t.aaa && t.id!==G.userTeamId){
           const aav=requiredAAV(p,3,1);
           const space=(t.budget - payroll(G,t.id)) + (p.salary||0);   // his expiring money frees up
           const keep = p.ovr>=80?0.97 : p.ovr>=74?0.82 : p.ovr>=68?0.55 : p.ovr>=62?0.22 : 0.05;
@@ -5249,6 +5317,7 @@ function processFAWave(G, intensity){
     setContract(p, off.aav, off.years, []); p.teamId=t.id;
     G.freeAgents=G.freeAgents.filter(x=>x!==p.id);
     p.bestOffer=null; p.offers=[];
+    onFreeAgentSigned(G, p, t.id);   // comp pick if he declined a QO and signed elsewhere
     logNews(G,"signing",`${t.abbr} signed ${p.pos} ${p.name} (${p.ovr}) — ${off.years}y · ${money(off.aav)}/yr`, t.id);
     signed++;
   });
@@ -5645,6 +5714,7 @@ function startNewSeason(G){
       const cand=G.freeAgents.map(id=>G.players[id]).filter(p=>p&&p.salary<=Math.max(space,1)).sort((a,b)=>b.ovr-a.ovr)[0];
       if(!cand) break;
       cand.teamId=t.id; G.freeAgents=G.freeAgents.filter(id=>id!==cand.id);
+      onFreeAgentSigned(G, cand, t.id);   // comp pick if a QO-decliner lands here
       ros=rosterOf(G,t.id); guard++;
     }
     aiAlignOrg(G, t.id);          // promote the org's best to the bigs before trimming/lineups
