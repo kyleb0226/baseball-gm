@@ -424,3 +424,36 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   (`trimRoster(t, AAA_CAP=38)`), sweeps orphaned teamless players (e.g. leftover draft class) into the FA
   pool, then `pruneFreeAgents` (keep best ~220, delete the rest from `G.players`). `migrate` runs a
   one-time cleanup on already-bloated saves (>2800 players). Without this the dict grew +150/yr forever.
+
+## Recent feature additions (2026-06 batch)
+- **Hitting & win streaks:** `updateHitStreaks` (MLB regular-season only, fed from `simGame`'s
+  per-game `gameLines`, which now carry `pid`/`ab`) tracks each hitter's active streak (`p._hitStreak`,
+  career best `p._bestHitStreak`); 15+ logs to the wire (then every 5). League records: `G.records.season.hitStreak`
+  + `.career.cHitStreak`, and team `winStreak` (per-season max `t._wsMax`, in franchise + league records).
+  Shown in the Hall of Fame League Records cards. `_hitStreak`/`_wsMax` reset each season.
+- **Comeback Player of the Year** (`computeAwards`, per league): biggest WAR rebound vs the prior MLB season
+  (or a productive return after missing last year, +bonus). Needs prior MLB experience + a real down/lost
+  year + ≥3 WAR now. Accolade "Comeback Player" + Awards tab (`cpoy`) + news.
+- **All-Star Game** (`playAllStarGame`, fired at the season midpoint in `simDay`): a real-sim exhibition
+  (Empire vs Pioneer) on ad-hoc team objects + a custom roster index; banked into `p.asgStats` (like the
+  BA Cup) so it never touches regular-season stats. All-Star MVP accolade + news. Shown on the Hub with a
+  clickable box score (`BoxScore` gained `box.homeT/awayT` label fallbacks for the ad-hoc teams). `G.allStarGame`.
+- **Owner mandate / GM hot seat** (USER team only): `setOwnerMandate` (in `newGame`+`startNewSeason`) sets a
+  goal from `teamSituation` mode; `evalOwnerMandate` (in `enterPlayoffs`) grades it — a met/close season
+  resets `G.gmStrikes`, only a BADLY missed one adds a strike; 3 straight → `G.gmFired` (the `GMFired`
+  game-over screen, checked in `App`). Hub shows the mandate + strike pips. AI clubs unaffected.
+- **Hall of Fame voting** replaced auto-induction: on retirement `nominateForHOF` (score ≥ `HOF_BALLOT_FLOOR`
+  120) pushes a self-contained snapshot onto `G.hofBallot`; each offseason `runHofVote` grades vote% =
+  `hofVotePct(score, yearsOnBallot)` (75+ inducts, 90+ first year = `firstBallot` 💎, lingers ≤6 yrs then
+  falls off). HOF tab shows the live ballot + induction vote%/diamond. Inductions hit the wire.
+- **Trade rumor mill** (`tickTradeRumors`, in `simDay`, ~few/week within 28 days of the deadline): flavor
+  `rumor`-type news driven by team situations + player value (sellers shop vets, buyers scout their top
+  need, stars draw interest); a 6-deep `G._rumorRecent` ring blocks back-to-back repeats. New "Rumors" NEWS_META filter.
+- **Arbitration + qualifying offers** (`applyArbitration`/`qoEligible`/`qoAmount`/`awardCompPick`/`onFreeAgentSigned`,
+  all in the offseason contract loop): under-control MLB players ≤27 get bounded performance-based raises
+  (not flat); a good expiring player gets a 1-yr QO (accept = stays; decline = tests FA and his club gets a
+  round-2 comp pick in the NEXT draft via `onFreeAgentSigned`, hooked into the AI wave + user sign + fallback fill).
+- **Ballparks + park factors:** `makeTeam` assigns `t.ballpark = {name, pf}` from `BALLPARK_NAMES` +
+  `parkFactorFor` (30 factors symmetric around 1.0, avg EXACTLY 1.0 → league run env unchanged). `simGame`
+  passes the home park's `pf` to `paOutcome`, nudging HR (×1.6) and BABIP (×0.6) — both clubs share it, so
+  W/L balance is untouched. `BallparkView` renders an inline-SVG park at the bottom of the Roster tab. Migrate backfills.
