@@ -457,3 +457,20 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   `parkFactorFor` (30 factors symmetric around 1.0, avg EXACTLY 1.0 → league run env unchanged). `simGame`
   passes the home park's `pf` to `paOutcome`, nudging HR (×1.6) and BABIP (×0.6) — both clubs share it, so
   W/L balance is untouched. `BallparkView` renders an inline-SVG park at the bottom of the Roster tab. Migrate backfills.
+- **Varied park shapes + handedness:** `ballparkGeom(seed)` procedurally generates each park's outfield wall
+  (seeded by the park NAME → stable): ~50% normal/symmetric, ~35% asymmetric, ~15% quirky (short porch + an
+  angular corner). `BallparkView` draws field/wall/grandstand/towers from those points; it also renders in the
+  `TeamRosterModal` so EVERY club's park is viewable (not just the user's). `ballparkHand(name)` derives a
+  platoon bias from the SAME geometry (RF shorter than LF → `+` favors LHB, LF shorter → `−` favors RHB; ~0 for
+  the symmetric majority), stored as `t.ballpark.hand` (migrate backfills). `paOutcome(...,parkHand)` nudges a
+  batter's HR by his pull side vs the porch (≤±20%; switch hitters neutral). Hand averages ~0 league-wide so
+  total run env + W/L balance stay intact; `parkHandLabel` shows the lean.
+- **Game log (scoring-play log):** `simGame` builds `out.plays` — a compact entry per run-scoring event
+  `{i,btm,o,b(atter),p(itcher),k(ind),r(uns),hs,as}` (sum of `r` per side === final score, verified) — plus
+  `out.walkoff`/`out.finalInning`. WALK-OFFS now end the half early: `halfInning` breaks when the home club
+  (bottom 9th+) takes the lead (tiny, symmetric PA effect; W/L balance verified intact). Stored only where
+  bounded: the USER's regular-season games (`simDay` gates on `userTeamId`) and ALL postseason games (MLB via
+  `playoffSeriesGame`, AAA/college via `simSeriesAuto`, both through `seriesGame` which attaches plays to the
+  box). The `BoxScore` modal renders a **Game Log** card (inning arrows ▲/▼, batting club, play description,
+  running score, 🎉 walk-off badge) under the line score. Plays live on `box.plays` so all existing
+  `setBoxGame(g.box)` call sites just work.

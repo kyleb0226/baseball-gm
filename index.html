@@ -823,6 +823,8 @@ function simGame(home, away, players, idx){
   // candidate) and the opponent's pitcher who surrendered the go-ahead run (the loss).
   // The last such change sticks → relievers can earn the W or the L, not just starters.
   let decisionRec = null;
+  const plays = [];          // compact scoring-play log (every run-scoring event), for the game-log view
+  let walkoff = false;       // home took the lead in the bottom of the 9th+ to end it
   const bumpScore = (batId, pitId, r) => {
     if(!r) return;
     const wasAhead = score[batId] > score[pitId];
@@ -839,13 +841,17 @@ function simGame(home, away, players, idx){
     const recOut = pitcher => { outs++; cur[pitId].outs++; cur[pitId].segOuts=(cur[pitId].segOuts||0)+1; pitcher.stats.OUT++; gOuts[pitcher.id]=(gOuts[pitcher.id]||0)+1; };
     // wild pitch / balk: bump every runner up a base, scoring from third
     const wpAdvance = ()=>{ let r=0; if(bases[2]){r++;bases[2]=null;} if(bases[1]){bases[2]=bases[1];bases[1]=null;} if(bases[0]){bases[1]=bases[0];bases[0]=null;} return r; };
+    // record a run-scoring play (post-bump score) for the game log
+    const logScore = (kind, batter, r) => { if(!r) return; plays.push({ i:inning, btm:isBottom?1:0, o:outs, b:batter?batter.id:null, p:cur[pitId].p?cur[pitId].p.id:null, k:kind, r, hs:score[home.id], as:score[away.id] }); };
     while(outs<3){
+      // walk-off: home (bottom half, 9th+) just took the lead → game over, end the half here
+      if(isBottom && inning>=9 && score[batId] > score[pitId]){ walkoff=true; break; }
       changePitcher(batId, pitId, inning);
       // wild pitch / balk (only with a runner aboard) — credited to the pitcher
       if(bases[0]||bases[1]||bases[2]){
         const pit=cur[pitId].p;
-        if(chance(0.018)){ pit.stats.WP=(pit.stats.WP||0)+1; const r=wpAdvance(); bumpScore(batId,pitId,r); cur[pitId].er+=r; pit.stats.ER+=r; }
-        else if(chance(0.004)){ pit.stats.BK=(pit.stats.BK||0)+1; const r=wpAdvance(); bumpScore(batId,pitId,r); cur[pitId].er+=r; pit.stats.ER+=r; }
+        if(chance(0.018)){ pit.stats.WP=(pit.stats.WP||0)+1; const r=wpAdvance(); bumpScore(batId,pitId,r); logScore("WP",null,r); cur[pitId].er+=r; pit.stats.ER+=r; }
+        else if(chance(0.004)){ pit.stats.BK=(pit.stats.BK||0)+1; const r=wpAdvance(); bumpScore(batId,pitId,r); logScore("BK",null,r); cur[pitId].er+=r; pit.stats.ER+=r; }
       }
       // stolen-base attempt: runner on first with second base open
       if(bases[0] && !bases[1]){
@@ -868,12 +874,12 @@ function simGame(home, away, players, idx){
       if(res.o==="BB"){
         bat.stats.BB++; pitcher.stats.BB++; reached[pitId]++;
         const r = advance(bases,"BB",bat);
-        bumpScore(batId,pitId,r); bat.stats.RBI+=r;
+        bumpScore(batId,pitId,r); logScore("BB",bat,r); bat.stats.RBI+=r;
         cur[pitId].er+=r; pitcher.stats.ER+=r;
       } else if(res.o==="HBP"){
         bat.stats.HBP=(bat.stats.HBP||0)+1; pitcher.stats.HBP=(pitcher.stats.HBP||0)+1; reached[pitId]++;
         const r = advance(bases,"BB",bat);   // hit-by-pitch advances like a walk
-        bumpScore(batId,pitId,r); bat.stats.RBI+=r;
+        bumpScore(batId,pitId,r); logScore("HBP",bat,r); bat.stats.RBI+=r;
         cur[pitId].er+=r; pitcher.stats.ER+=r;
       } else if(res.o==="K"){
         bat.stats.AB++; bat.stats.SO++; pitcher.stats.SO++;
@@ -888,7 +894,7 @@ function simGame(home, away, players, idx){
         } else if(!ground && bases[2] && outs<2 && chance(0.42)){
           // sacrifice fly — runner on third scores, batter charged no AB
           bat.stats.SF=(bat.stats.SF||0)+1; pitcher.stats.AO=(pitcher.stats.AO||0)+1;
-          bases[2]=null; bumpScore(batId,pitId,1); bat.stats.RBI+=1; cur[pitId].er+=1; pitcher.stats.ER+=1;
+          bases[2]=null; bumpScore(batId,pitId,1); logScore("SF",bat,1); bat.stats.RBI+=1; cur[pitId].er+=1; pitcher.stats.ER+=1;
           recOut(pitcher); fieldChance(pitId, pitcher, true);
         } else {
           bat.stats.AB++;
@@ -903,7 +909,7 @@ function simGame(home, away, players, idx){
         if(res.o==="HR"){ bat.stats.HR++; pitcher.stats.HRA++; }
         else fieldChance(pitId, pitcher, false);   // a fielder handled it cleanly (no error)
         const r = advance(bases, res.o, bat);
-        bumpScore(batId,pitId,r); bat.stats.RBI+=r;
+        bumpScore(batId,pitId,r); logScore(res.o,bat,r); bat.stats.RBI+=r;
         cur[pitId].er+=r; pitcher.stats.ER+=r;
       }
     }
@@ -929,6 +935,7 @@ function simGame(home, away, players, idx){
   distributeRuns(away, players, score[away.id], idx);
 
   out.hs = score[home.id]; out.as = score[away.id];
+  out.plays = plays; out.walkoff = walkoff; out.finalInning = inning;   // scoring-play log for the game-log view
   // decisions
   const winnerId = out.hs>out.as ? home.id : away.id;
   const loserId  = winnerId===home.id ? away.id : home.id;
@@ -2007,7 +2014,10 @@ function simDay(G){
       if(isMLB) updateHitStreaks(G, res.gameLines);              // active hitting streaks (MLB only)
       recordFeats(G, res);                                       // no-hitters / perfect games / cycles / multi-HR (all levels)
       g.played=true; g.hs=res.hs; g.as=res.as;
-      if(isMLB) g.box=res.box;   // full box score for every MLB game (this season's schedule only)
+      if(isMLB){ g.box=res.box;   // full box score for every MLB game (this season's schedule only)
+        // attach the scoring-play game log only to the USER's games (keeps the save bounded)
+        if(g.home===G.userTeamId || g.away===G.userTeamId){ g.box.plays=res.plays; g.box.walkoff=res.walkoff; g.box.finalInning=res.finalInning; }
+      }
       const homeWon=res.hs>res.as;
       if(homeWon){ home.w++; away.l++; } else { away.w++; home.l++; }
       home.streak = homeWon ? (home.streak>=0?(home.streak||0)+1:1) : (home.streak<=0?(home.streak||0)-1:-1);
@@ -3589,6 +3599,42 @@ function BoxScore({G, box, onClose}){
           <button onClick={onClose} className="text-slate-400 hover:text-slate-200 text-sm">✕ close</button>
         </div>
         <Card className="mb-3"><LineScore/></Card>
+        {box.plays && box.plays.length>0 && (()=>{
+          const describe = pl => { const bat = pl.b!=null ? nm(pl.b) : ""; const sc = pl.r===1?"1 run scores":pl.r+" runs score";
+            switch(pl.k){
+              case "HR": return `${bat} hits a ${pl.r>1?pl.r+"-run":"solo"} home run`;
+              case "1B": return `${bat} singles — ${sc}`;
+              case "2B": return `${bat} doubles — ${sc}`;
+              case "3B": return `${bat} triples — ${sc}`;
+              case "BB": return `${bat} walks — ${sc}`;
+              case "HBP": return `${bat} hit by pitch — ${sc}`;
+              case "SF": return `${bat} sacrifice fly — ${sc}`;
+              case "WP": return `wild pitch — ${sc}`;
+              case "BK": return `balk — ${sc}`;
+              default: return `${bat} — ${sc}`;
+            } };
+          const lastIdx = box.plays.length-1;
+          return (
+            <Card className="mb-3">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="font-bold text-sm">📋 Game Log <span className="text-slate-500 font-normal">— scoring plays</span></h3>
+                {box.walkoff && <span className="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded px-2 py-0.5">🎉 Walk-off</span>}
+              </div>
+              <div className="space-y-0.5">
+                {box.plays.map((pl,i)=>{ const bt = pl.btm?homeT:awayT; const wo = box.walkoff && i===lastIdx;
+                  return (
+                    <div key={i} className={"flex items-start gap-2 text-sm py-1 border-b border-[#15203a] "+(wo?"bg-amber-500/10 rounded px-1":"")}>
+                      <span className="text-[10px] text-slate-500 w-9 shrink-0 mt-0.5 tnum">{pl.btm?"▼":"▲"}{pl.i}</span>
+                      <span className="flex-1"><span className="text-slate-400 text-xs font-semibold">{bt?bt.abbr:"?"}</span> {describe(pl)}{wo && <span className="text-amber-300 font-bold"> — walk-off!</span>}</span>
+                      <span className="tnum text-slate-500 text-xs whitespace-nowrap mt-0.5">{awayT?awayT.abbr:"A"} {pl.as}–{pl.hs} {homeT?homeT.abbr:"H"}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              {box.finalInning>9 && <div className="text-xs text-slate-500 mt-2">Final in {box.finalInning} innings.</div>}
+            </Card>
+          );
+        })()}
         <div className="grid sm:grid-cols-2 gap-3">
           <Card><Batting t={awayT} lines={box.ab}/></Card>
           <Card><Batting t={homeT} lines={box.hb}/></Card>
@@ -4552,6 +4598,8 @@ function seriesGame(G, hiId, loId, hiHome){
   recordFeats(G, r);                                        // postseason no-hitters / cycles count too
   bankSeparate(roster, snap, postBucket(levelOf(hiId)));   // postseason stats, kept separate by level
   const winnerId = r.hs>r.as?home.id:away.id;
+  // keep the scoring-play game log on every postseason game's box (bounded set)
+  if(r.box){ r.box.plays=r.plays; r.box.walkoff=r.walkoff; r.box.finalInning=r.finalInning; }
   return { winnerId, hs:r.hs, as:r.as, homeId:home.id, awayId:away.id, box:r.box };
 }
 // Auto-sim an entire best-of series (2-2-1 home pattern) to completion — used for the
