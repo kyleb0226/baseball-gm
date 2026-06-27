@@ -506,3 +506,35 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
 - **Season recap:** `buildSeasonRecap(G)` (in `enterPlayoffs`) snapshots the year to `G.seasonRecap` (user
   record/finish, top hitter/pitcher by WAR, their awards, league leaders, longest hit streak, best record);
   the Offseason Hub renders a recap card. Pitcher leaders use OUT≥300 (starter-level).
+
+## Recent feature additions (2026-06, "depth" batch)
+- **Park/league-adjusted stats:** `leagueWarCtx` also returns league OBP/SLG/ERA; `opsPlus`/`wrcPlus`/`eraPlus`
+  (100 = avg, park-adjusted at half-strength via `parkAdj(pf)`) shown as player-card pills + Leaders boards.
+- **Two lineups:** `team.lineupVsL`/`posVsL` (edited via a vs-RHP/vs-LHP toggle in `LineupEditor`;
+  `placeAtPosition` takes lineup/pos keys). `dayLineup`/`posMapFor` use the vs-L lineup verbatim vs a LHP
+  starter (else auto-platoon). AI never sets it.
+- **Mid-season award races:** Awards tab shows a live MVP/Cy/Rookie "Award Watch" (mvpScore/cyScore/WAR) once >15% in.
+- **Player/Pitcher of the Month + monthly splits:** season split into 6 "months"; `tickMonthly` (simDay)
+  snapshots + awards via mvpScore/cyScore, stores `p._monthly`, counts `p.potm`/`potmP`. Settings toggle `potm`.
+- **Scouting fog:** `scoutConf(p)` (rises with pro games + age; amateurs foggy), `scoutedOvr/Pot` apply a
+  deterministic per-id lean × (1−conf). `ScoutOvrPill`/`ScoutPotPill`/`ScoutPot` used in Draft board, AAA
+  Prospects, IFA list, player-card header. AI/sim still use TRUE ratings — display only.
+- **Trade block + shop:** `p.onBlock` (drives `makeAITradeOffer` ~75%); `shopPlayer(G,target)` returns
+  fair-value offers from needy clubs; "Shop a Player" card in Trades.
+- **Attendance/revenue:** `t.ballpark.capacity` (market size); `computeAttendance(t)` → fill% from win% +
+  recent momentum; the rollover budget evolves from fill (re-centered) → regresses to ~160. Finances shows it.
+- **Morale / trade demands / no-trade:** `playerMorale`/`updateMoraleAndStatus` (in `enterPlayoffs`); unhappy
+  star (morale≤35, ovr≥76) requests a trade (😤), cornerstone (ovr≥80, 31+, 4+ yr, content) gets a no-trade
+  clause (🔒, blocked in Trades). `extensionTerms` factors morale. Pill on the player card.
+- **International FA:** `makeIFAClass`/`signIFA`/`aiSignIFAs`; `G.ifaClass` + `t.ifaPool` built in `buildDraft`;
+  user signs from the pool (Free Agency "International FAs" card, scouting-fogged) → AAA; AI signs at the
+  rollover, unsigned expire.
+- **Pitcher types:** `p.gb` (0.30 FB ↔ 0.66 GB, mean ~0.48; migrate backfills). In `paOutcome` sets the
+  ground/air split and scales HR (centered → league HR unchanged). `pitcherType(gb)` label on the card.
+- **Spring training:** `springTraining(G)` (end of `startNewSeason`) = net-neutral OVR variance for ≤26;
+  Hub shows risers/fallers + position battles early each season (`G._springReport`).
+- **Manager Mode (opt-in):** `G.managerMode` + `G.tactics{steal,hook}` (Hub card). `simGame(...,tactics)`
+  (threaded only into the user's games via simDay) scales his steal rate + starter leash (incl. the
+  scoreless cap). AI + run environment untouched.
+- **Earned/unearned, accurate R, OBP(HBP/SF), splits, handedness parks, game log, pennant race, franchise
+  all-time leaders, jersey/retired numbers** — see the prior batch notes above.
