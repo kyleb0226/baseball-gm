@@ -856,18 +856,30 @@ function simGame(home, away, players, idx){
         if(chance(0.018)){ pit.stats.WP=(pit.stats.WP||0)+1; const r=wpAdvance(); bumpScore(batId,pitId,r); logScore("WP",null,r); cur[pitId].er+=r; pit.stats.ER+=r; }
         else if(chance(0.004)){ pit.stats.BK=(pit.stats.BK||0)+1; const r=wpAdvance(); bumpScore(batId,pitId,r); logScore("BK",null,r); cur[pitId].er+=r; pit.stats.ER+=r; }
       }
-      // stolen-base attempt: runner on first with second base open
-      if(bases[0] && !bases[1]){
+      // stolen-base attempts (before the pitch). Steals of 2nd (runner on 1st) are most common;
+      // steals of 3rd (runner on 2nd) are rarer; a double steal moves runners from 1st AND 2nd.
+      const stealRate = (sp, third) => chance(clamp((third?0.020:0.05) + (third?0.10:0.28)*(sp-0.5), 0, third?0.07:0.22));
+      const stealSafe = (sp, third) => chance(clamp((third?0.70:0.66) + 0.28*(sp-0.5), third?0.5:0.45, 0.94));
+      if(bases[0] && bases[1] && !bases[2]){
+        // double steal (runners on 1st & 2nd, 3rd open) — paced by the lead runner
+        const lead=bases[1], trail=bases[0], sp=n01(lead.spd);
+        if(chance(clamp(0.012 + 0.06*(sp-0.5), 0, 0.04))){
+          if(stealSafe(sp,true)){ bases[2]=lead; bases[1]=trail; bases[0]=null; lead.stats.SB++; trail.stats.SB++; }   // both safe
+          else { lead.stats.CS=(lead.stats.CS||0)+1; bases[1]=trail; bases[0]=null; recOut(cur[pitId].p); if(outs>=3) break; }   // lead out at 3rd, trail takes 2nd
+        }
+      } else if(bases[1] && !bases[2] && !bases[0]){
+        // steal of 3rd (runner on 2nd only, 3rd open)
+        const sp=n01(bases[1].spd);
+        if(stealRate(sp,true)){
+          if(stealSafe(sp,true)){ bases[2]=bases[1]; bases[1]=null; bases[2].stats.SB++; }
+          else { bases[1].stats.CS=(bases[1].stats.CS||0)+1; bases[1]=null; recOut(cur[pitId].p); if(outs>=3) break; }
+        }
+      } else if(bases[0] && !bases[1]){
+        // steal of 2nd (runner on 1st, 2nd open)
         const sp = n01(bases[0].spd);
-        if(chance(clamp(0.05 + 0.28*(sp-0.5), 0, 0.22))){
-          const pit = cur[pitId].p;
-          if(chance(clamp(0.66 + 0.28*(sp-0.5), 0.45, 0.92))){
-            bases[1]=bases[0]; bases[0]=null; bases[1].stats.SB++;      // safe
-          } else {
-            bases[0].stats.CS=(bases[0].stats.CS||0)+1;                // caught stealing
-            bases[0]=null; recOut(cur[pitId].p);
-            if(outs>=3) break;
-          }
+        if(stealRate(sp,false)){
+          if(stealSafe(sp,false)){ bases[1]=bases[0]; bases[0]=null; bases[1].stats.SB++; }
+          else { bases[0].stats.CS=(bases[0].stats.CS||0)+1; bases[0]=null; recOut(cur[pitId].p); if(outs>=3) break; }
         }
       }
       const pitcher = cur[pitId].p;
