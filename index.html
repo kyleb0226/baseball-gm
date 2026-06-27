@@ -317,7 +317,19 @@ function ballparkHand(name){
   const lAvg=lc?lS/lc:0, rAvg=rc?rS/rc:0;
   return clamp(Math.round((lAvg-rAvg)/90*100)/100, -1, 1);   // RF shorter → + (favors LHB)
 }
-function makeBallpark(idx){ const name=BALLPARK_NAMES[idx%BALLPARK_NAMES.length]; return { name, pf: parkFactorFor(idx), hand: ballparkHand(name) }; }
+function makeBallpark(idx){ const name=BALLPARK_NAMES[idx%BALLPARK_NAMES.length]; return { name, pf: parkFactorFor(idx), hand: ballparkHand(name), capacity: rint(33,47)*1000 }; }
+// average home attendance from a club's success + ballpark capacity (the market size). Winning fills
+// seats; a sustained winner draws more. Returns {att, fill}. Drives revenue/budget at the rollover.
+function computeAttendance(t){
+  const cap=(t.ballpark&&t.ballpark.capacity)||40000;
+  const wp=(t.w+t.l)? t.w/(t.w+t.l) : 0.5;
+  const hist=(t.history||[]).slice(-3);
+  const recentWp = hist.length ? hist.reduce((a,h)=>a+((h.w+h.l)?h.w/(h.w+h.l):0.5),0)/hist.length : wp;
+  const made = hist.length && hist[hist.length-1].made;
+  const champ = hist.length && hist[hist.length-1].champ;
+  const fill = clamp(0.52 + (wp-0.5)*1.5 + (recentWp-0.5)*0.4 + (made?0.05:0) + (champ?0.05:0), 0.28, 1.0);
+  return { att: Math.round(cap*fill/100)*100, fill };
+}
 function parkLabel(pf){ const d=Math.round((pf-1)*100); return d>=2?`Hitter-friendly (+${d}%)`:d<=-2?`Pitcher-friendly (${d}%)`:"Neutral park"; }
 function parkHandLabel(hand){ return hand>=0.12?"Short RF porch — favors LHB":hand<=-0.12?"Short LF porch — favors RHB":"Balanced field — no platoon lean"; }
 function pitcherType(gb){ return gb>=0.55?"Groundball":gb<=0.42?"Flyball":"Balanced"; }
@@ -1575,7 +1587,7 @@ function migrate(G){
     if(G.tradeDeadline==null) G.tradeDeadline = Math.round((G.schedule?G.schedule.length:224)*0.58);
     if(!Array.isArray(G.hof)) G.hof = [];
     if(!Array.isArray(G.hofBallot)) G.hofBallot = [];
-    (G.teams||[]).forEach((t,i)=>{ if(!t.ballpark) t.ballpark = makeBallpark(i); else if(t.ballpark.hand==null) t.ballpark.hand = ballparkHand(t.ballpark.name); });   // backfill ballparks (+ handedness bias)
+    (G.teams||[]).forEach((t,i)=>{ if(!t.ballpark) t.ballpark = makeBallpark(i); else { if(t.ballpark.hand==null) t.ballpark.hand = ballparkHand(t.ballpark.name); if(t.ballpark.capacity==null) t.ballpark.capacity = rint(33,47)*1000; } });   // backfill ballparks (handedness + capacity)
     if(!Array.isArray(G.champions)) G.champions = G.champion ? [{season:G.champion.season, id:G.champion.id}] : [];
     // de-dupe any accidental repeat champions (one entry per season; keep the winner)
     if(Array.isArray(G.champions)){
@@ -4112,6 +4124,7 @@ function Finances({G, commit, tShow}){
     <div className="space-y-4">
       <div className="grid sm:grid-cols-3 gap-3">
         <Card><div className="text-slate-400 text-xs">BUDGET</div><div className="text-2xl font-bold tnum">{money(team.budget)}</div>{team.budgetDelta?<div className={"text-xs "+(team.budgetDelta>0?"text-emerald-400":"text-red-400")}>{team.budgetDelta>0?"▲ +":"▼ "}{team.budgetDelta} vs last yr</div>:<div className="text-xs text-slate-500">revenue grows as you win</div>}</Card>
+        <Card><div className="text-slate-400 text-xs">ATTENDANCE</div><div className="text-2xl font-bold tnum">{team.attendance?(team.attendance/1000).toFixed(1)+"K":"—"}</div><div className="text-xs text-slate-500">{team.attendance?`${Math.round((team.attFill||0)*100)}% of ${((team.ballpark&&team.ballpark.capacity||0)/1000).toFixed(0)}K · winning fills seats`:"set after your first season"}</div></Card>
         <Card><div className="text-slate-400 text-xs">PAYROLL</div><div className="text-2xl font-bold tnum">{money(total)}</div>{team.incentivesPaid>0&&<div className="text-xs text-amber-400">+{money(team.incentivesPaid)} incentives paid</div>}</Card>
         <Card><div className="text-slate-400 text-xs">CAP SPACE</div><div className={"text-2xl font-bold tnum "+(space>=0?"text-emerald-400":"text-red-400")}>{money(space)}</div></Card>
       </div>
@@ -6296,15 +6309,15 @@ function startNewSeason(G){
     const made = (t.league==="Empire"?empSeeds:pioSeeds).includes(t.id);
     const champ = t.id===champId;
     t.history.push({ season:G.season, w:t.w, l:t.l, made, champ });
-    // revenue/budget evolves with success — winning fills seats — but regresses gently
-    // toward a market mean so a dynasty can't run the payroll away forever.
-    const wp=(t.w+t.l)?t.w/(t.w+t.l):0.5;
-    let delta=(wp-0.5)*0.45; if(made) delta+=0.04; if(champ) delta+=0.05;
+    // revenue/budget evolves with ATTENDANCE — winning (and a recent winner's momentum) fills seats —
+    // but regresses gently toward a market mean so a dynasty can't run the payroll away forever.
+    const a=computeAttendance(t); t.attendance=a.att; t.attFill=a.fill;
+    let delta=(a.fill-0.52)*0.55; if(champ) delta+=0.04;
     const old=t.budget;
     t.budget=clamp(round(t.budget*(1+delta) - (t.budget-160)*0.06), 95, 290);
     t.budgetDelta=t.budget-old;
     if(t.id===G.userTeamId && t.budgetDelta!==0)
-      logNews(G,"signing",`${t.abbr} ${t.budgetDelta>0?"revenue up":"budget tightens"} — payroll budget ${t.budgetDelta>0?"+":""}${t.budgetDelta} to ${money(t.budget)}`, t.id);
+      logNews(G,"signing",`${t.abbr} drew ${(t.attendance/1000).toFixed(1)}K/game (${Math.round(a.fill*100)}% full) — payroll budget ${t.budgetDelta>0?"+":""}${t.budgetDelta} to ${money(t.budget)}`, t.id);
   });
   // reset records & stats (MLB + AAA + college)
   G.teams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0;t.streak=0;t._wsMax=0; });
