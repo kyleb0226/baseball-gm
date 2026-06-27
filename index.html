@@ -656,6 +656,15 @@ function advance(bases, out, batter){
   return runs;
 }
 
+// Accumulate a batter's PA delta into a split bucket (vs LHP/RHP, home/away). Current season
+// only (reset at rollover); regular-season MLB games only (gated by simGame's recordSplits).
+const SPLIT_KEYS=["PA","AB","H","_2B","_3B","HR","BB","SO","HBP","SF","RBI"];
+function splitSnap(s){ const o={}; SPLIT_KEYS.forEach(k=>o[k]=s[k]||0); return o; }
+function bumpSplit(bat, key, snap){
+  const sp = bat._splits || (bat._splits={});
+  const b = sp[key] || (sp[key]={PA:0,AB:0,H:0,_2B:0,_3B:0,HR:0,BB:0,SO:0,HBP:0,SF:0,RBI:0});
+  SPLIT_KEYS.forEach(k=> b[k] += (bat.stats[k]||0)-snap[k]);
+}
 // Per-team roster index, built ONCE per sim-day so games don't each re-scan the
 // entire (potentially thousands-large) player dict. Hot sim helpers take an
 // optional `idx`; when absent they fall back to a full scan (fine for one-off UI).
@@ -700,7 +709,7 @@ function lineupHitters(team, players, idx){
   return hs.slice(0,9);
 }
 
-function simGame(home, away, players, idx){
+function simGame(home, away, players, idx, recordSplits){
   const out = { home, away };
   const park = (home && home.ballpark && home.ballpark.pf) || 1;   // home park nudges this game's run environment
   const parkHand = (home && home.ballpark && home.ballpark.hand) || 0;   // +RF short (favors LHB), −LF short (favors RHB)
@@ -885,6 +894,7 @@ function simGame(home, away, players, idx){
       const pitcher = cur[pitId].p;
       const bat = hitters[order[batId] % hitters.length]; order[batId]++;
       const res = paOutcome(bat, pitcher, defN[pitId], park, parkHand);
+      const _ss = recordSplits ? splitSnap(bat.stats) : null;   // snapshot for platoon/venue splits
       bat.stats.PA++;
       if(res.o==="BB"){
         bat.stats.BB++; pitcher.stats.BB++; reached[pitId]++;
@@ -928,6 +938,8 @@ function simGame(home, away, players, idx){
         bumpScore(batId,pitId,r); logScore(res.o,bat,r); bat.stats.RBI+=r;
         cur[pitId].er+=r; pitcher.stats.ER+=r;
       }
+      // platoon (vs LHP/RHP) + venue (home/away) splits — regular-season MLB only
+      if(_ss){ bumpSplit(bat, pitcher.throws==="L"?"vL":"vR", _ss); bumpSplit(bat, isBottom?"home":"away", _ss); }
     }
   }
   // play 9 innings (or until decided in bottom 9 / extras). Track runs per half-inning
@@ -2008,7 +2020,7 @@ function simDay(G){
     day.forEach(g=>{
       if(g.played) return;
       const home=teamById(G,g.home), away=teamById(G,g.away);
-      const res = simGame(home, away, G.players, idx);
+      const res = simGame(home, away, G.players, idx, isMLB);   // isMLB → record platoon/venue splits
       markGamesPlayed(home, away, G.players, idx);
       if(isMLB) updateGameRecords(G, res.gameLines, G.season);   // single-game records (MLB only)
       if(isMLB) updateHitStreaks(G, res.gameLines);              // active hitting streaks (MLB only)
@@ -2658,6 +2670,33 @@ function PlayerModal({p, team, onClose, G}){
           {["MLB","AAA","COL"].map(L=>{ const ct=careerByLevel(L); return hasGames(ct)
             ? <React.Fragment key={L}>{line(LVLFULL[L]+" Career", ct)}</React.Fragment> : null; })}
         </div>
+        {!p.isP && p._splits && (()=>{
+          const rows=[["vR","vs RHP"],["vL","vs LHP"],["home","Home"],["away","Away"]].filter(([k])=>p._splits[k]&&p._splits[k].PA>0);
+          if(!rows.length) return null;
+          return (
+            <div className="mt-3">
+              <div className="text-xs font-semibold text-slate-400 mb-1">Splits <span className="text-slate-600 font-normal">— this season</span></div>
+              <table className="w-full text-sm tnum">
+                <thead><tr className="text-slate-500 text-[11px] border-b border-[#1d2940]">
+                  <th className="text-left font-medium">Split</th><th>PA</th><th>AVG</th><th>OBP</th><th>SLG</th><th>OPS</th><th>HR</th><th>RBI</th></tr></thead>
+                <tbody>
+                  {rows.map(([k,lbl])=>{ const st=p._splits[k]; return (
+                    <tr key={k} className="border-b border-[#15203a]">
+                      <td className="text-left text-slate-300">{lbl}</td>
+                      <td className="text-center">{st.PA}</td>
+                      <td className="text-center">{f3(avg(st))}</td>
+                      <td className="text-center">{f3(obp(st))}</td>
+                      <td className="text-center">{f3(slg(st))}</td>
+                      <td className="text-center font-semibold">{f3(ops(st))}</td>
+                      <td className="text-center text-amber-300">{st.HR||""}</td>
+                      <td className="text-center">{st.RBI}</td>
+                    </tr>
+                  ); })}
+                </tbody>
+              </table>
+            </div>
+          );
+        })()}
         <YearByYear history={p.history} isP={p.isP} accolades={p.accolades} ringSeasons={p.rings} postStats={p.postStats} cupStats={p.cupStats} />
       </div>
     </div>
@@ -5925,7 +5964,7 @@ function startNewSeason(G){
   // reset records & stats (MLB + AAA + college)
   G.teams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0;t.streak=0;t._wsMax=0; });
   G.aaaTeams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
-  Object.values(G.players).forEach(p=>{ if(p.injury) delete p.injury; if(p._tired) delete p._tired; if(p._hitStreak) delete p._hitStreak; });   // offseason heals everyone; hitting streaks reset (career best kept)
+  Object.values(G.players).forEach(p=>{ if(p.injury) delete p.injury; if(p._tired) delete p._tired; if(p._hitStreak) delete p._hitStreak; if(p._splits) delete p._splits; });   // offseason heals everyone; hitting streaks + splits reset (career best kept)
   (G.collegeTeams||[]).forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
   G.schedule = buildSchedule(G.teams);
   G.aaaSchedule = buildSchedule(G.aaaTeams);
