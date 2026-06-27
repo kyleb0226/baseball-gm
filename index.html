@@ -6495,7 +6495,53 @@ function NewsFeed({G}){
 /* ----------------------------- Awards UI ------------------------------- */
 function Awards({G}){
   const a=G.awards; const hist=G.awardHistory||[];
-  if(!a) return <Card>Awards are handed out at the end of each regular season. Finish a season to crown your <b>Players of the Year</b>, <b>Cy Young</b> winners, and <b>All-Star</b> teams.</Card>;
+  // live mid-season award races (computed from current MLB stats, a few weeks in)
+  const racePhase = G.phase==="regular" && G.day>Math.floor(G.schedule.length*0.15);
+  const raceBlock = (()=>{
+    if(!racePhase) return null;
+    const pool=Object.values(G.players).filter(p=>!isCollegeId(p.teamId));
+    const ml=new Map(); pool.forEach(p=>ml.set(p.id, levelStats(p,"MLB"))); const S=p=>ml.get(p.id)||p.stats;
+    const warCtx=leagueWarCtx(G,"MLB");
+    const inLg=(p,lg)=>{ const t=teamById(G,p.teamId); return t && !t.aaa && !t.college && t.league===lg; };
+    const top3=(list,key)=>[...list].sort((x,y)=>key(y)-key(x)).slice(0,3);
+    const tn=p=>{ const t=teamById(G,p.teamId); return t?t.abbr:""; };
+    const col=(title, list, line)=>(
+      <div>
+        <div className="text-xs font-semibold text-amber-300 mb-1">{title}</div>
+        {list.length?list.map((p,i)=>(
+          <div key={p.id} className="flex items-center gap-1.5 text-sm py-0.5">
+            <span className={"text-[11px] w-3 "+(i===0?"text-amber-300 font-bold":"text-slate-600")}>{i+1}</span>
+            <span className="flex-1 truncate"><PlayerLink p={p} className={i===0?"font-semibold":""}/> <span className="text-slate-600 text-xs">{tn(p)}</span></span>
+            <span className="text-slate-500 text-xs tnum">{line(p, S(p))}</span>
+          </div>
+        )):<div className="text-xs text-slate-600">—</div>}
+      </div>
+    );
+    return (
+      <Card>
+        <h3 className="font-bold mb-1">📊 {G.season} Award Watch <span className="text-slate-500 text-sm font-normal">— mid-season races</span></h3>
+        <div className="grid md:grid-cols-2 gap-4 mt-2">
+          {["Empire","Pioneer"].map(lg=>{
+            const hitters=pool.filter(p=>!p.isP && inLg(p,lg) && S(p).PA>=80);
+            const pitchers=pool.filter(p=>p.isP && inLg(p,lg) && S(p).OUT>=60);
+            const rookies=hitters.concat(pitchers).filter(p=>!(p.history||[]).some(h=>h.level==="MLB"));
+            return (
+              <div key={lg}>
+                <div className="font-bold text-emerald-300 text-sm mb-2">{lg} League</div>
+                <div className="space-y-2">
+                  {col("MVP", top3(hitters,p=>mvpScore(S(p))), (p,s)=>`${f3(avg(s))}, ${s.HR} HR, ${s.RBI} RBI`)}
+                  {col("Cy Young", top3(pitchers,p=>cyScore(S(p))), (p,s)=>`${s.W}-${s.L}, ${f2(era(s))}, ${s.SO} K`)}
+                  {col("Rookie", top3(rookies,p=>warOf(p,warCtx,S(p))), (p,s)=>`${f1w(warOf(p,warCtx,s))} WAR`)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="text-[11px] text-slate-600 mt-2">Frontrunners by current MVP / Cy Young scores and rookie WAR — final hardware is awarded at season's end.</div>
+      </Card>
+    );
+  })();
+  if(!a) return <div className="space-y-4">{raceBlock || <Card>Awards are handed out at the end of each regular season. Finish a season to crown your <b>Players of the Year</b>, <b>Cy Young</b> winners, and <b>All-Star</b> teams.</Card>}</div>;
   const Person=({r,tag})=> r?(
     <div className="flex items-center gap-2">
       {tag && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500 text-slate-900 font-bold w-9 text-center">{tag}</span>}
