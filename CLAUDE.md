@@ -474,3 +474,35 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   box). The `BoxScore` modal renders a **Game Log** card (inning arrows ▲/▼, batting club, play description,
   running score, 🎉 walk-off badge) under the line score. Plays live on `box.plays` so all existing
   `setBoxGame(g.box)` call sites just work.
+- **Accurate runs scored (R):** `advance()` (+ the SF and WP/BK branches) now credits R to the actual
+  runner who crosses the plate (batter on a HR); the old random `distributeRuns` is gone. R now follows
+  lineup logic (leadoff/2-hole score most). Verified team R === team runs, league R === league runs.
+- **Earned vs unearned runs:** pitchers track `R` (runs allowed) separately from `ER`. `chargeRuns` (in
+  `halfInning`) tags a small DEFENSE-dependent share of runs unearned (`ueRate` from `defN[pitId]`, ~6%
+  league-wide) — tagging only, so total runs / the run environment are unchanged. ERA & QS now use earned
+  runs; the box score shows R and ER as distinct columns. `FIP_CONST` recalibrated 3.51→3.40.
+- **Platoon + venue splits:** `simGame(...,recordSplits)` (true only for regular-season MLB in `simDay`)
+  accrues each batter's PA into `p._splits` buckets `vL/vR` (pitcher hand) + `home/away`; reset at rollover,
+  shown as a table in `PlayerModal`. `obp` now includes HBP/SF.
+- **Handedness parks + platoon engine:** `ballparkHand(name)` derives a platoon bias from the drawn
+  geometry (RF-short → +favors LHB, LF-short → −favors RHB); `paOutcome`'s `hside` nudges HR by the
+  batter's pull side (switch-hitters always get the favorable side). NOTE: an engine-wide platoon HIT bonus
+  was tried and REVERTED — platoon-optimized lineups broke the net-neutral calibration and inflated HR. So
+  there is intentionally no batter-vs-pitcher-hand hit bonus.
+- **Platoon starts (bench usage):** `platoonLineup(team,players,idx,oppStarter)` spells a NON-STAR (ovr<72)
+  regular at a platoon disadvantage with a comparable bench bat that holds the edge (≤2 swaps). Gives bench
+  bats ~150 PA instead of 0; stars always play so leaderboards are untouched; no engine offense bonus.
+- **Steals of 3rd + double steals** added to the steal phase (runner on 2nd; runners on 1st&2nd). Tuned
+  conservative — SB leader ~25-35, ~68% success, run env unchanged.
+- **Pennant race (Hub):** a Playoff Picture card (from ~45% of the schedule) shows division rank/GB, wild-
+  card position, magic numbers, games left, and an in-the-field/outside/clinched badge.
+- **Franchise all-time leaders:** `accumulateAllTime(G)` (in `enterPlayoffs`) grows each club's career
+  leaderboards (HR/H/RBI/R/SB; W/SO/SV/IP) on `team.allTime`, keyed by player id, capped 25/cat, persistent
+  past pruning. Shown on a HOF-tab card (team selector).
+- **Jersey numbers + retired numbers:** players carry `p.num` (1-99; migrate backfills). `hofSnapshot` records
+  `num` + `primaryTeam` (most MLB seasons); `runHofVote` retires the number with that franchise (`team.retired`).
+  HOF tab shows a Retired Numbers wall; the player card shows `#num`.
+- **All-Star Game** now also keeps the scoring-play log on its box (`res.box.plays`).
+- **Season recap:** `buildSeasonRecap(G)` (in `enterPlayoffs`) snapshots the year to `G.seasonRecap` (user
+  record/finish, top hitter/pitcher by WAR, their awards, league leaders, longest hit streak, best record);
+  the Offseason Hub renders a recap card. Pitcher leaders use OUT≥300 (starter-level).
