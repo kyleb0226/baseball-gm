@@ -2237,6 +2237,21 @@ function Hub({G, commit, tShow, setTab}){
         <Card><div className="text-slate-400 text-xs">PAYROLL</div><div className="text-2xl font-bold tnum">{money(payroll(G,user.id))}</div><div className="text-xs text-slate-500">Budget {money(user.budget)}</div></Card>
       </div>
 
+      {G._springReport && G._springReport.season===G.season && G.day<25 && (()=>{
+        const r=G._springReport;
+        if(!r.risers.length && !r.fallers.length && !r.battles.length) return null;
+        return (
+          <Card>
+            <h3 className="font-bold text-sm mb-2">🌱 Spring Training <span className="text-slate-500 font-normal">— camp report</span></h3>
+            {r.battles.length>0 && <div className="mb-2"><div className="text-xs font-semibold text-amber-300 mb-1">Position Battles</div>{r.battles.map((b,i)=><div key={i} className="text-sm text-slate-300">{b}</div>)}</div>}
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div><div className="text-xs font-semibold text-emerald-300 mb-1">📈 Camp risers</div>{r.risers.length?r.risers.map((x,i)=><div key={i} className="text-sm"><PlayerLink p={G.players[x.id]} text={x.name}/> <span className="text-slate-500 text-xs">{x.pos}</span> <span className="text-emerald-400 text-xs">+{x.d}</span> <span className="text-slate-500 text-xs">→{x.ovr}</span></div>):<div className="text-xs text-slate-600">—</div>}</div>
+              <div><div className="text-xs font-semibold text-red-300 mb-1">📉 Rough camps</div>{r.fallers.length?r.fallers.map((x,i)=><div key={i} className="text-sm"><PlayerLink p={G.players[x.id]} text={x.name}/> <span className="text-slate-500 text-xs">{x.pos}</span> <span className="text-red-400 text-xs">{x.d}</span> <span className="text-slate-500 text-xs">→{x.ovr}</span></div>):<div className="text-xs text-slate-600">—</div>}</div>
+            </div>
+          </Card>
+        );
+      })()}
+
       {G.day>=Math.floor(G.schedule.length*0.45) && (()=>{
         const TG=162, gbf=n=>n===0?"Tied":(n>0?"+":"")+n.toFixed(1);
         const gbBetween=(a,b)=>((a.w-b.w)+(b.l-a.l))/2;            // a ahead of b → positive
@@ -6409,8 +6424,40 @@ function startNewSeason(G){
   G._rumorRecent = [];                                     // reset the rumor-mill dedup ring
   (G.waivers||[]).forEach(w=>{ const p=G.players[w.id]; if(p&&p.teamId==null&&!G.freeAgents.includes(p.id)) G.freeAgents.push(p.id); });
   G.waivers = [];                                          // anyone still on the wire clears to FA
+  springTraining(G);                                       // preseason camp: shuffles the young, surfaces battles
   setOwnerMandate(G);                                      // owner sets this season's mandate from the new roster
   trimHistories(G);                                        // cap per-player history so the save stays under quota
+}
+// Preseason camp: net-neutral OVR VARIANCE for young players (a strong/weak spring), surfacing
+// standouts and position battles. Net-neutral on average so it doesn't inflate league talent.
+function springTraining(G){
+  const risers=[], fallers=[];
+  Object.values(G.players).forEach(p=>{
+    if(p.teamId==null || isCollegeId(p.teamId) || p.age>26) return;
+    const before=p.ovr;
+    const attrs = p.isP?["stu","ctl","stm"]:["con","pow","eye","spd","def"];
+    attrs.forEach(a=>{ if(p[a]!=null) p[a]=clamp(round(p[a]+gauss(0,1.3)),20,99); });   // a hot/cold camp (mean 0)
+    computeOvr(p); if(p.ovr>(p.peakOvr||0)) p.peakOvr=p.ovr;
+    const d=p.ovr-before;
+    if(d>=3) risers.push({id:p.id, name:p.name, pos:p.pos, d, team:p.teamId, ovr:p.ovr});
+    else if(d<=-3) fallers.push({id:p.id, name:p.name, pos:p.pos, d, team:p.teamId, ovr:p.ovr});
+  });
+  risers.sort((a,b)=>b.d-a.d); fallers.sort((a,b)=>a.d-b.d);
+  const inUserOrg = tid => tid===G.userTeamId || (isAAAId(tid)&&parentIdOf(tid)===G.userTeamId);
+  // position battles in the USER's org: a young riser now within 3 OVR of a starter at his spot
+  const me=G.teams[G.userTeamId], battles=[];
+  rosterOf(G, me.id).filter(p=>!p.isP).forEach(()=>{});
+  const starters = (me.lineup||[]).map(id=>G.players[id]).filter(Boolean);
+  risers.filter(r=>inUserOrg(r.team)).forEach(r=>{ const p=G.players[r.id]; if(!p||p.isP) return;
+    const incumbent = starters.find(s=>s.pos===p.pos);
+    if(incumbent && !me.lineup.includes(p.id) && p.ovr>=incumbent.ovr-3) battles.push(`${p.pos}: ${p.name} (${p.ovr}) pushing ${incumbent.name} (${incumbent.ovr})`);
+  });
+  G._springReport = { season:G.season,
+    risers: risers.filter(r=>inUserOrg(r.team)).slice(0,5),
+    fallers: fallers.filter(r=>inUserOrg(r.team)).slice(0,4),
+    battles: battles.slice(0,4),
+    leagueStandout: risers[0]||null };
+  risers.filter(r=>inUserOrg(r.team)).slice(0,3).forEach(r=>logNews(G,"roster",`🌱 Spring: ${r.name} turned heads in camp (+${r.d} OVR, now ${r.ovr})`, r.team));
 }
 
 /* ----------------------------- Hall of Fame UI ------------------------- */
