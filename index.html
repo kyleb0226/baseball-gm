@@ -4381,6 +4381,7 @@ function playAllStarGame(G){
     logNews(G,"award",`⭐ ${mvp.name} (${(teamById(G,mvp.teamId)||{}).abbr||""}) is the ${G.season} All-Star Game MVP`, mvp.teamId); }
   // label the box so the generic BoxScore shows the All-Star team names (teamById can't resolve ad-hoc ids)
   res.box.homeT={abbr:home.abbr, nick:home.nick}; res.box.awayT={abbr:away.abbr, nick:away.nick};
+  res.box.plays=res.plays; res.box.walkoff=res.walkoff; res.box.finalInning=res.finalInning;   // scoring-play game log
   G.allStarGame={ season:G.season, day:G.day,
                   empireScore: res.as, pioneerScore: res.hs,   // away=Empire, home=Pioneer
                   winner: homeWon?"Pioneer":"Empire",
