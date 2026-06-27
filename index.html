@@ -1851,6 +1851,19 @@ function PotPill({v}){
 function OvrPot({p}){
   return <span className="inline-flex items-center gap-1"><OvrPill v={p.ovr}/><span className="text-slate-600 text-[10px]">→</span><PotPill v={p.pot}/></span>;
 }
+// ---- Scouting fog: unproven players (draft prospects, raw youngsters) show a SCOUTED rating that
+// can be off; it converges to the true value as they accumulate pro games. Deterministic per id.
+function scoutGames(p){ let g=(p&&p.stats&&p.stats.G)||0; ((p&&p.history)||[]).forEach(h=>{ if((h.level==="MLB"||h.level==="AAA")&&h.stats) g+=h.stats.G||0; }); return g; }
+function scoutConf(p){ if(!p||p.isP===undefined) return 1; let c=clamp(scoutGames(p)/170,0,1); if(p.amateur) c=Math.min(c,0.30); c=clamp(c+(p.age-18)*0.02,0,1); return c; }
+function scoutBias(p){ return (mulberry32((p.id>>>0)||1)()*2-1)*9; }                 // a scout's fixed lean, ±9
+function scoutedOvr(p){ const c=scoutConf(p); return clamp(Math.round(p.ovr + scoutBias(p)*(1-c)),20,99); }
+function scoutedPot(p){ const c=scoutConf(p); return clamp(Math.round(p.pot + scoutBias(p)*(1-c)*1.1),20,99); }
+function ScoutOvrPill({p}){ const c=scoutConf(p); if(c>=0.85) return <OvrPill v={p.ovr}/>;
+  return <span className="inline-flex items-center" title={`Scouted estimate · ${Math.round(c*100)}% confidence — firms up with pro games`}><OvrPill v={scoutedOvr(p)}/><span className="text-slate-500 text-[9px] ml-0.5">~</span></span>; }
+function ScoutPotPill({p}){ const c=scoutConf(p); if(c>=0.85) return <PotPill v={p.pot}/>;
+  return <span className="inline-flex items-center" title={`Scouted ceiling · ${Math.round(c*100)}% confidence`}><PotPill v={scoutedPot(p)}/><span className="text-amber-500/60 text-[9px] ml-0.5">~</span></span>; }
+function ScoutPot({p}){ const c=scoutConf(p); if(c>=0.85) return <OvrPot p={p}/>;
+  return <span className="inline-flex items-center gap-1"><ScoutOvrPill p={p}/><span className="text-slate-600 text-[10px]">→</span><ScoutPotPill p={p}/></span>; }
 function StatusPill({s}){
   const st = s==="ST";
   return <span className={"inline-block w-7 text-center rounded font-bold text-[10px] py-0.5 "+(st?"bg-emerald-600 text-white":"bg-slate-600 text-slate-200")}>{s}</span>;
@@ -2800,10 +2813,10 @@ function PlayerModal({p, team, onClose, G}){
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-[#101a30] border border-[#1d2940] rounded-xl p-4 max-w-2xl w-full max-h-[85vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
         <div className="flex items-center gap-3 mb-3">
-          <OvrPill v={p.ovr}/>
+          <ScoutOvrPill p={p}/>
           <div>
-            <div className="font-bold text-lg">{p.name}</div>
-            <div className="text-xs text-slate-400">{p.num!=null?`#${p.num} · `:""}{p.pos}{p.isP&&p.gb!=null?` · ${pitcherType(p.gb)}`:""} · Age {p.age} · POT {p.pot} · {contractLabel(p)}{incentivesPerYear(p)>0?` +${money(incentivesPerYear(p))}/yr inc`:""} · {team?team.name:"Free Agent"}</div>
+            <div className="font-bold text-lg">{p.name}{scoutConf(p)<0.85&&<span className="text-[10px] text-slate-500 font-normal ml-2">scouted ~{Math.round(scoutConf(p)*100)}%</span>}</div>
+            <div className="text-xs text-slate-400">{p.num!=null?`#${p.num} · `:""}{p.pos}{p.isP&&p.gb!=null?` · ${pitcherType(p.gb)}`:""} · Age {p.age} · POT {scoutConf(p)>=0.85?p.pot:scoutedPot(p)+"~"} · {contractLabel(p)}{incentivesPerYear(p)>0?` +${money(incentivesPerYear(p))}/yr inc`:""} · {team?team.name:"Free Agent"}</div>
             {(p.incentives||[]).length>0 && <div className="text-xs text-slate-500 mt-0.5">Incentives: {p.incentives.map((x,i)=><span key={i}>{x.label||x.stat}≥{x.need}→+{money(x.amount)}{i<p.incentives.length-1?", ":""}</span>)}</div>}
             {p.draftInfo && <div className="text-[11px] text-slate-500">Drafted {p.draftInfo.year} · Rd {p.draftInfo.round} (#{p.draftInfo.overall}) by {p.draftInfo.by}{p.draftInfo.from?` · out of ${p.draftInfo.from}`:""}</div>}
             {isInjured(p) && <div className="text-xs text-red-300 mt-0.5">🤕 {p.injury.desc} — out ~{p.injury.days} days</div>}
@@ -3478,8 +3491,8 @@ function AAALeague({G}){
                 <td className="text-center text-slate-400">{orgAbbr(p)}</td>
                 <td className="text-center text-slate-500 text-xs">{isAAAId(p.teamId)?"AAA":"MLB"}</td>
                 <td className="text-center">{p.age}</td>
-                <td className="text-center"><OvrPill v={p.ovr}/></td>
-                <td className="text-center text-amber-300 font-semibold">{p.pot}</td>
+                <td className="text-center"><ScoutOvrPill p={p}/></td>
+                <td className="text-center"><ScoutPotPill p={p}/></td>
                 <td className="text-center text-slate-300">{Math.round(prospectGrade(p))}</td>
                 <td className="text-center text-xs text-emerald-300">{prospectETA(p)}</td>
               </tr>
@@ -6184,8 +6197,8 @@ function Draft({G, commit, tShow, setTab}){
                   <tr key={p.id} className="border-b border-[#15203a]">
                     <td className="text-slate-400">{p.pos}</td><td className="text-left"><PlayerLink p={p} className="font-medium"/></td>
                     <td className={"text-left text-xs "+(p.fromHS?"text-rose-300":"text-violet-300")}>{prospectSchool(p)}</td>
-                    <td className="text-center">{p.age}</td><td className="text-center"><OvrPill v={p.ovr}/></td>
-                    <td className="text-center text-amber-300 font-semibold">{p.pot}</td>
+                    <td className="text-center">{p.age}</td><td className="text-center"><ScoutOvrPill p={p}/></td>
+                    <td className="text-center"><ScoutPotPill p={p}/></td>
                     {isUser&&<td className="text-right"><button onClick={()=>draftPlayer(p.id)} className="px-2 py-0.5 bg-emerald-600 rounded text-xs hover:bg-emerald-500">Draft</button></td>}
                   </tr>
                 ))}
