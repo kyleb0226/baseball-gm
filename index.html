@@ -738,15 +738,16 @@ function simGame(home, away, players, idx, recordSplits){
   const park = (home && home.ballpark && home.ballpark.pf) || 1;   // home park nudges this game's run environment
   const parkHand = (home && home.ballpark && home.ballpark.hand) || 0;   // +RF short (favors LHB), −LF short (favors RHB)
   const arms = { [home.id]: getPitchers(home,players,idx), [away.id]: getPitchers(away,players,idx) };
-  // platoon-aware batting orders (each club set vs the OPPOSING starter's hand)
-  const lineups = { [home.id]: platoonLineup(home,players,idx,arms[away.id].starter),
-                    [away.id]: platoonLineup(away,players,idx,arms[home.id].starter) };
+  // platoon-aware batting orders (each club set vs the OPPOSING starter's hand; a user vs-LHP lineup wins)
+  const oppStart = { [home.id]: arms[away.id].starter, [away.id]: arms[home.id].starter };
+  const lineups = { [home.id]: dayLineup(home,players,idx,oppStart[home.id]),
+                    [away.id]: dayLineup(away,players,idx,oppStart[away.id]) };
   const order = { [home.id]:0, [away.id]:0 };
   const defN = { [home.id]: n01(teamDefRating(home,players)), [away.id]: n01(teamDefRating(away,players)) };
   // position -> fielder for each club, so balls in play can be charged to a fielder
   // (a fielding chance, and sometimes an error). Built from the assigned defense (team.pos),
   // falling back to a player's natural position. The DH never fields.
-  const fielderMap = t => { const m={}, pm=t.pos||{};
+  const fielderMap = t => { const m={}, pm=posMapFor(t, oppStart[t.id]);
     lineups[t.id].forEach(h=>{ const pos=pm[h.id]||h.pos; if(pos!=="DH" && !m[pos]) m[pos]=h; }); return m; };
   const fielders = { [home.id]: fielderMap(home), [away.id]: fielderMap(away) };
   // realistic distribution of where balls in play are handled (sums to 1)
@@ -2944,11 +2945,12 @@ function PitcherTable({players, onRelease, onSend, onCallUp, badge, slots, onNam
 // glued to players. If he's already batting, swap defensive spots with whoever
 // holds the target slot; if he's on the bench, he takes over that fielder's
 // batting-order slot (the displaced man goes to the bench).
-function placeAtPosition(team, players, playerId, position){
+function placeAtPosition(team, players, playerId, position, lk, pk){
+  lk=lk||"lineup"; pk=pk||"pos";
   const ALL = FIELD_POS.concat(["DH"]);
   if(!ALL.includes(position)) return;
-  const lineup = (team.lineup||[]).slice();
-  const pos = {...(team.pos||{})};
+  const lineup = (team[lk]||[]).slice();
+  const pos = {...(team[pk]||{})};
   const occupant = lineup.find(id=>id!==playerId && pos[id]===position);
   if(lineup.includes(playerId)){
     if(occupant!=null) pos[occupant]=pos[playerId];   // swap the two players' positions
@@ -2963,7 +2965,19 @@ function placeAtPosition(team, players, playerId, position){
     }
     pos[playerId]=position;
   }
-  team.lineup=lineup; team.pos=pos;
+  team[lk]=lineup; team[pk]=pos;
+}
+// the day's batting order: vs a LHP starter use the user-set `lineupVsL` if valid, else the
+// auto platoon lineup; AI clubs never set lineupVsL so they always auto-platoon.
+function dayLineup(team, players, idx, oppStarter){
+  if(oppStarter && oppStarter.throws==="L" && team.lineupVsL && team.lineupVsL.length){
+    const hs=team.lineupVsL.map(id=>players[id]).filter(p=>p&&!p.isP&&!isInjured(p));
+    if(hs.length>=9) return hs.slice(0,9);
+  }
+  return platoonLineup(team, players, idx, oppStarter);
+}
+function posMapFor(team, oppStarter){
+  return (oppStarter && oppStarter.throws==="L" && team.lineupVsL && team.lineupVsL.length && team.posVsL) ? team.posVsL : (team.pos||{});
 }
 // pixel-ish coordinates (% of the field box) for each spot on the diamond
 const FIELD_COORD = { CF:[50,11], LF:[20,26], RF:[80,26], SS:[37,45], "2B":[63,45],
@@ -2971,6 +2985,12 @@ const FIELD_COORD = { CF:[50,11], LF:[20,26], RF:[80,26], SS:[37,45], "2B":[63,4
 
 function LineupEditor({G, commit, tShow}){
   const team = G.teams[G.userTeamId];
+  // which lineup is being edited: vs RHP (the default `lineup`/`pos`) or vs LHP (`lineupVsL`/`posVsL`)
+  const [vsHand, setVsHand] = useState("R");
+  const lk = vsHand==="L" ? "lineupVsL" : "lineup";
+  const pk = vsHand==="L" ? "posVsL" : "pos";
+  const switchHand = h => { if(h==="L" && !(team.lineupVsL&&team.lineupVsL.length)){ team.lineupVsL=[...(team.lineup||[])]; team.posVsL={...(team.pos||{})}; commit(G); } setVsHand(h); };
+  const clearVsL = ()=>{ delete team.lineupVsL; delete team.posVsL; commit(G); setVsHand("R"); tShow("vs-LHP lineup cleared — auto-platoon vs lefties"); };
   const ros = rosterOf(G, team.id);
   const hitters = ros.filter(p=>!p.isP);
   const allPitchers = ros.filter(p=>p.isP).sort((a,b)=>b.ovr-a.ovr); // any arm can be a starter
@@ -2985,7 +3005,7 @@ function LineupEditor({G, commit, tShow}){
     commit(G);
   };
   const [picked, setPicked] = useState(null);   // player "in hand" (click or drag)
-  const place = (pid, position)=>{ if(pid==null) return; placeAtPosition(team, G.players, Number(pid), position); setPicked(null); commit(G); };
+  const place = (pid, position)=>{ if(pid==null) return; placeAtPosition(team, G.players, Number(pid), position, lk, pk); setPicked(null); commit(G); };
   const clickSlot = (position, id)=>{ if(picked!=null) place(picked, position); else if(id!=null) setPicked(id); };
   const clickPlayer = id=>setPicked(picked===id?null:id);
   const onDragStart = (e,id)=>{ e.dataTransfer.setData("text/plain", String(id)); e.dataTransfer.effectAllowed="move"; setPicked(id); };
@@ -2993,11 +3013,11 @@ function LineupEditor({G, commit, tShow}){
   const allow = e=>e.preventDefault();
 
   const ALLPOS = FIELD_POS.concat(["DH"]);
-  const assignedCounts = {}; team.lineup.forEach(id=>{ const a=(team.pos||{})[id]; if(a) assignedCounts[a]=(assignedCounts[a]||0)+1; });
+  const assignedCounts = {}; (team[lk]||[]).forEach(id=>{ const a=(team[pk]||{})[id]; if(a) assignedCounts[a]=(assignedCounts[a]||0)+1; });
   const missing = ALLPOS.filter(x=>!assignedCounts[x]);
   const dupes = ALLPOS.filter(x=>assignedCounts[x]>1);
   const valid = missing.length===0 && dupes.length===0;
-  const benchHitters = hitters.filter(h=>!team.lineup.includes(h.id));
+  const benchHitters = hitters.filter(h=>!(team[lk]||[]).includes(h.id));
   const todayStarter = G.players[(team.rotation||[])[(team.w+team.l)%Math.max(1,(team.rotation||[]).length)]];
 
   // a player chip used on the field, the DH box, and the bench
@@ -3027,13 +3047,23 @@ function LineupEditor({G, commit, tShow}){
       </div>
     );
   };
-  const fielderAt = position => { const id=team.lineup.find(x=>(team.pos||{})[x]===position); return id!=null?G.players[id]:null; };
+  const fielderAt = position => { const id=(team[lk]||[]).find(x=>(team[pk]||{})[x]===position); return id!=null?G.players[id]:null; };
 
   return (
     <div className="space-y-4">
       <Card>
-        <div className="flex items-baseline justify-between mb-1">
+        <div className="flex items-center gap-2 mb-2 flex-wrap">
           <h3 className="font-bold">Set Your Defense</h3>
+          <div className="flex rounded-md overflow-hidden border border-[#27375c] text-xs">
+            {[["R","vs RHP"],["L","vs LHP"]].map(([h,lbl])=>(
+              <button key={h} onClick={()=>switchHand(h)} className={"px-2.5 py-1 "+(vsHand===h?"bg-emerald-500 text-slate-900 font-semibold":"bg-[#13203a] text-slate-300")}>{lbl}</button>
+            ))}
+          </div>
+          {vsHand==="L" && <button onClick={clearVsL} className="text-xs text-slate-500 hover:text-red-300">clear (auto-platoon)</button>}
+          {vsHand==="L" && !(team.lineupVsL&&team.lineupVsL.length) && <span className="text-[11px] text-slate-500">— set a lineup to use vs lefty starters</span>}
+        </div>
+        <div className="flex items-baseline justify-between mb-1">
+          <span className="text-[11px] text-slate-500">{vsHand==="L"?"This lineup is used only when the opposing starter is a LHP.":"Your everyday lineup (used vs RHP and as the platoon base)."}</span>
           <span className={"text-xs "+(valid?"text-emerald-400":"text-amber-400")}>
             {valid ? "✓ all 8 positions + DH set"
                    : `⚠ ${missing.length?`missing ${missing.join(", ")}`:""}${missing.length&&dupes.length?" · ":""}${dupes.length?`dup ${dupes.join(", ")}`:""}`}
@@ -3069,8 +3099,8 @@ function LineupEditor({G, commit, tShow}){
           <div>
             <div className="text-xs text-slate-400 mb-1 font-semibold">Batting Order</div>
             <div className="space-y-1">
-              {team.lineup.map((id,i)=>{
-                const p=G.players[id]; const ap=(team.pos||{})[id]||"—";
+              {(team[lk]||[]).map((id,i)=>{
+                const p=G.players[id]; const ap=(team[pk]||{})[id]||"—";
                 const oop = p && ap!==p.pos && ap!=="DH";
                 return (
                   <div key={i} className={"flex items-center gap-1.5 rounded px-1.5 py-1 "+(picked===id?"ring-1 ring-emerald-400 ":"")+"bg-[#13203a]"}>
@@ -3079,8 +3109,8 @@ function LineupEditor({G, commit, tShow}){
                     <span className="flex-1 text-xs truncate cursor-pointer" onClick={()=>p&&clickPlayer(id)}>{p?p.name.split(" ").slice(-1)[0]:"—"}</span>
                     <span className={"text-[10px] w-7 text-center "+(oop?"text-amber-400":"text-slate-500")}>{ap}</span>
                     <div className="flex flex-col">
-                      <button onClick={()=>move(team.lineup,i,-1)} className="text-[10px] text-slate-400 leading-none">▲</button>
-                      <button onClick={()=>move(team.lineup,i,1)} className="text-[10px] text-slate-400 leading-none">▼</button>
+                      <button onClick={()=>move(team[lk],i,-1)} className="text-[10px] text-slate-400 leading-none">▲</button>
+                      <button onClick={()=>move(team[lk],i,1)} className="text-[10px] text-slate-400 leading-none">▼</button>
                     </div>
                   </div>
                 );
