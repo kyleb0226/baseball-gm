@@ -4547,6 +4547,24 @@ function recordFranchiseRecords(G){
   });
 }
 
+// Franchise ALL-TIME leaders: each club's career leaderboard (HR/H/RBI/R/SB; W/SO/SV/IP),
+// accumulated each season from the MLB stat line of whoever's currently on the club. Persistent
+// on team.allTime (survives player pruning/retirement), keyed by player id so a long-tenured
+// player's total grows year over year. Capped at 25/category so a club's board stays bounded.
+function accumulateAllTime(G){
+  G.teams.forEach(t=>{
+    const at = t.allTime = t.allTime || {};
+    const ros = Object.values(G.players).filter(p=>p.teamId===t.id);
+    const add = (cat, p, v) => { if(!v||v<=0) return; const arr=at[cat]=at[cat]||[];
+      let e=arr.find(x=>x.id===p.id); if(!e){ e={id:p.id, name:p.name, value:0}; arr.push(e); }
+      e.value+=v; e.name=p.name; };
+    ros.forEach(p=>{ const s=levelStats(p,"MLB");
+      if(p.isP){ add("W",p,s.W); add("SO",p,s.SO); add("SV",p,s.SV); add("OUT",p,s.OUT); }
+      else { add("HR",p,s.HR); add("H",p,s.H); add("RBI",p,s.RBI); add("R",p,s.R); add("SB",p,s.SB); } });
+    Object.keys(at).forEach(cat=>{ at[cat].sort((a,b)=>b.value-a.value); if(at[cat].length>25) at[cat].length=25; });
+  });
+}
+
 // All-time, league-wide records in three tiers: single-GAME, single-SEASON, and CAREER
 // bests (best mark by ANYONE, ever). Kept on G.records = {game,season,career}. Each entry
 // is {value, holder, team, season}. Game records are fed live from the sim (see
@@ -4671,6 +4689,7 @@ function enterPlayoffs(G){
   evalOwnerMandate(G);   // grade the user's owner mandate while standings are final
   computeAwards(G);   // hand out hardware while season stats are still live
   recordFranchiseRecords(G);   // update each club's all-time record book before stats reset
+  accumulateAllTime(G);        // grow each club's career all-time leaderboards (before stats reset)
   recordSeasonRecords(G);      // league-wide single-season records
   recordCareerRecords(G);      // league-wide career records (high-water mark)
   recordMinorRecords(G,"AAA"); recordMinorRecords(G,"COL");   // AAA/college season + career bests (before playoff stats)
@@ -6174,6 +6193,38 @@ function HallOfFame({G}){
             })}
           </div>
         ) : <div className="text-sm text-slate-500">No records yet — finish a season and this club's single-season bests are saved here.</div>}
+      </Card>
+
+      <Card>
+        <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+          <h3 className="font-bold">🗿 Franchise All-Time Leaders <span className="text-slate-500 text-sm font-normal">— {G.teams[recTeam]?G.teams[recTeam].abbr:""} career</span></h3>
+          <select value={recTeam} onChange={e=>setRecTeam(Number(e.target.value))} className="bg-[#0b1220] border border-[#1d2940] rounded px-2 py-1 text-sm">
+            {G.teams.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </div>
+        {(()=>{
+          const at=(G.teams[recTeam]||{}).allTime||{};
+          const cats=[["HR","Home Runs"],["H","Hits"],["RBI","RBI"],["R","Runs"],["SB","Steals"],["W","Pitcher Wins"],["SO","Strikeouts"],["SV","Saves"],["OUT","Innings"]];
+          const fmt=(cat,v)=> cat==="OUT" ? Math.floor(v/3) : v;
+          const present=cats.filter(([k])=>at[k]&&at[k].length);
+          if(!present.length) return <div className="text-sm text-slate-500">No history yet — finish a season and this club's career leaders fill in (carries on past retirement).</div>;
+          return (
+            <div className="grid sm:grid-cols-3 gap-3">
+              {present.map(([k,label])=>(
+                <div key={k}>
+                  <div className="text-xs font-semibold text-slate-400 mb-1">{label}</div>
+                  {at[k].slice(0,5).map((e,i)=>(
+                    <div key={e.id} className="flex items-center gap-1.5 text-sm py-0.5">
+                      <span className="text-slate-600 text-[11px] w-3">{i+1}</span>
+                      <span className="flex-1 truncate"><PlayerLink p={G.players[e.id]} text={e.name}/></span>
+                      <span className="tnum text-amber-300 font-semibold">{fmt(k,e.value)}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          );
+        })()}
       </Card>
 
       <Card>
