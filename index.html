@@ -4480,9 +4480,42 @@ function FreeAgency({G, commit, tShow}){
     logNews(G,"roster",`${me.abbr} claimed ${p.pos} ${p.name} (${p.ovr}) off waivers`, me.id);
     commit(G); tShow(`✅ Claimed ${p.name}`);
   };
-  if(!G.freeAgents.length && !waived.length) return <Card>No free agents or waiver players available right now. They appear when teams make cuts mid-season, or after the season when contracts expire.</Card>;
+  const ifas = (G.ifaClass||[]).map(id=>G.players[id]).filter(Boolean).sort((a,b)=>b.ifaBonus-a.ifaBonus);
+  const ifaPool = me.ifaPool||0;
+  const signInt=(p)=>{
+    if(ifaPool < p.ifaBonus){ tShow(`Bonus pool too small (need ${p.ifaBonus.toFixed(1)})`); return; }
+    signIFA(G, me.id, p.id);
+    logNews(G,"signing",`${me.abbr} signed international prospect ${p.pos} ${p.name} for ${p.ifaBonus.toFixed(1)} pool`, me.id);
+    autoSetLineups(G.aaaTeams[me.id], G.players); commit(G); tShow(`✅ Signed ${p.name} (→ AAA)`);
+  };
+  if(!G.freeAgents.length && !waived.length && !ifas.length) return <Card>No free agents or waiver players available right now. They appear when teams make cuts mid-season, or after the season when contracts expire.</Card>;
   return (
     <div className="space-y-3">
+      {ifas.length>0 && <Card className="border-violet-700/40">
+        <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+          <div className="text-sm font-semibold text-violet-300">🌎 International Free Agents <span className="text-slate-500 text-xs font-normal">({ifas.length})</span></div>
+          <div className="text-xs text-slate-400">Bonus pool: <b className="text-violet-300 tnum">{ifaPool.toFixed(1)}</b></div>
+        </div>
+        <p className="text-xs text-slate-400 mb-2">Raw 16–19yo international amateurs — sign with your bonus pool (they report to AAA). Ratings are lightly scouted; unsigned prospects sign elsewhere once the season starts.</p>
+        <div className="overflow-x-auto max-h-72 overflow-y-auto">
+          <table className="w-full text-sm tnum">
+            <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Pos</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th><th className="text-right">Bonus</th><th></th></tr></thead>
+            <tbody>
+              {ifas.map(p=>(
+                <tr key={p.id} className="border-b border-[#15203a]">
+                  <td className="text-slate-400">{p.pos}</td>
+                  <td className="text-left"><PlayerLink p={p} className="font-medium"/></td>
+                  <td className="text-center">{p.age}</td>
+                  <td className="text-center"><ScoutOvrPill p={p}/></td>
+                  <td className="text-center"><ScoutPotPill p={p}/></td>
+                  <td className="text-right text-violet-300">{p.ifaBonus.toFixed(1)}</td>
+                  <td className="text-right"><button disabled={ifaPool<p.ifaBonus} onClick={()=>signInt(p)} className={"px-2 py-0.5 rounded text-xs font-semibold "+(ifaPool>=p.ifaBonus?"bg-violet-600 hover:bg-violet-500":"bg-[#16213a] text-slate-600")}>Sign</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>}
       <Card>
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm text-slate-400">Cap space:</span>
@@ -6110,6 +6143,47 @@ function buildDraft(G){
   G.draftPicks=G.picks.filter(p=>p.season===draftYear).sort((a,b)=> a.round-b.round || slotOf(a.orig)-slotOf(b.orig));
   G.draftPick=0;
   G.draftClass=cls.sort((a,b)=>G.players[b].pot-G.players[a].pot);
+  // international FA class + each club's fresh signing-bonus pool (the user gets first crack all
+  // offseason; AI clubs sign at the rollover, then the unsigned expire)
+  G.ifaClass = makeIFAClass(G, rint(22,30));
+  G.teams.forEach(t=>{ t.ifaPool = rint(6,14); });
+}
+
+/* ---- International FA: a second young-talent pipeline (signing-bonus pool, not a draft) ---- */
+function makeIFAClass(G, n){
+  const ids=[];
+  for(let i=0;i<n;i++){
+    const p = chance(0.45) ? makePitcher(chance(0.6)?"SP":"RP",[16,19],-15)
+                           : makeHitter(pick(INF_OF.concat(["DH"])),[16,19],-15);
+    p.pot = clamp(Math.max(p.pot, p.ovr+rint(16,34)), p.ovr, 99); setPotential(p); p.pot=clamp(Math.max(p.pot,p.ovr+rint(16,34)),p.ovr,99);
+    p.teamId=null; p.amateur=true; p.intl=true; p.salary=0; p.contract=[]; p.years=0;
+    p.ifaBonus = +clamp((prospectGrade(p)-55)/16, 0.3, 7).toFixed(1);   // signing-bonus ask (budget units)
+    G.players[p.id]=p; ids.push(p.id);
+  }
+  return ids.sort((a,b)=>G.players[b].ifaBonus-G.players[a].ifaBonus);
+}
+function signIFA(G, teamId, pid){
+  const t=teamById(G,teamId), p=G.players[pid]; if(!t||!p||!p.intl) return false;
+  if((t.ifaPool||0) < p.ifaBonus) return false;
+  t.ifaPool = +(t.ifaPool - p.ifaBonus).toFixed(1);
+  p.amateur=false; p.intl=false; p.teamId=aaaIdOf(teamId);              // report to AAA, like a draftee
+  setContract(p, 0.7, rint(3,5), []);
+  p.draftInfo={ year:G.season, round:0, overall:0, by:t.abbr, from:"Intl" };
+  G.ifaClass=(G.ifaClass||[]).filter(id=>id!==pid);
+  return true;
+}
+function aiSignIFAs(G){
+  G.teams.forEach(t=>{
+    if(t.id===G.userTeamId) return;
+    let avail=(G.ifaClass||[]).map(id=>G.players[id]).filter(Boolean).sort((a,b)=>prospectGrade(b)-prospectGrade(a));
+    let guard=0;
+    while((t.ifaPool||0)>=0.3 && guard++<40){
+      const tgt=avail.find(p=>p.ifaBonus<=t.ifaPool);
+      if(!tgt) break;
+      signIFA(G, t.id, tgt.id);
+      avail=avail.filter(p=>p!==tgt);
+    }
+  });
 }
 
 const MODE_STYLE = { "Win-now":"text-emerald-300 bg-emerald-900/30", "Contender":"text-sky-300 bg-sky-900/30", "Retool":"text-amber-300 bg-amber-900/30", "Rebuild":"text-rose-300 bg-rose-900/30" };
@@ -6377,6 +6451,9 @@ function startNewSeason(G){
   // to a fieldable, prospect-developing minimum, then refresh lineups
   G.aaaTeams.forEach(t=>{ trimRoster(G, t, AAA_CAP); refillRoster(G, t.id, 12, 9, [19,26], -6); });
   G.aaaTeams.forEach(t=>autoSetLineups(t, G.players));
+  aiSignIFAs(G);   // AI clubs spend their international pools (user already had the offseason to sign)
+  (G.ifaClass||[]).forEach(id=>{ const p=G.players[id]; if(p) delete G.players[id]; });   // unsigned IFAs expire
+  G.ifaClass=[];
   // sweep any orphaned teamless players (e.g. leftover draft class, stray cuts) into
   // the FA pool, then prune — keeps the player dict bounded so sim speed stays flat.
   Object.values(G.players).forEach(p=>{ if(p.teamId==null && !G.freeAgents.includes(p.id)) G.freeAgents.push(p.id); });
