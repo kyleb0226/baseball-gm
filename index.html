@@ -160,7 +160,7 @@ function teamById(G, id){ return id==null?null
 
 /* ----------------------------- player gen ------------------------------ */
 function emptyHitStats(){return{G:0,PA:0,AB:0,H:0,_2B:0,_3B:0,HR:0,R:0,RBI:0,BB:0,SO:0,SB:0,CS:0,SF:0,HBP:0,GIDP:0,TC:0,E:0};}
-function emptyPitStats(){return{G:0,GS:0,OUT:0,H:0,ER:0,BB:0,SO:0,W:0,L:0,SV:0,HRA:0,QS:0,HLD:0,HBP:0,WP:0,BK:0,GO:0,AO:0,TC:0,E:0,CG:0,SHO:0};}
+function emptyPitStats(){return{G:0,GS:0,OUT:0,H:0,R:0,ER:0,BB:0,SO:0,W:0,L:0,SV:0,HRA:0,QS:0,HLD:0,HBP:0,WP:0,BK:0,GO:0,AO:0,TC:0,E:0,CG:0,SHO:0};}
 // Per-level (MLB vs AAA) stat splitting for the year-by-year history. The sim
 // pools everything into p.stats; we snapshot at each level change (call-up / send-down)
 // and at season end, attributing the delta since the last snapshot to the level the
@@ -755,13 +755,14 @@ function simGame(home, away, players, idx, recordSplits){
     for(const [ps,w] of FIELD_DIST){ if(r<w){ pos=ps; break; } r-=w; }
     if(!pos) pos="SS";
     const f = pos==="P" ? pitcher : fielders[fieldTeamId][pos];
-    if(!f) return;
+    if(!f) return false;
     f.stats.TC=(f.stats.TC||0)+1;
     if(canErr){
       const dv = f.isP ? 0.5 : n01(f.def);
       const errP = clamp(0.040*(1-dv)+0.009, 0.005, 0.06);
-      if(chance(errP)) f.stats.E=(f.stats.E||0)+1;
+      if(chance(errP)){ f.stats.E=(f.stats.E||0)+1; return true; }   // booted it → an error this inning
     }
+    return false;
   }
   const cur = { [home.id]:{p:arms[home.id].starter, outs:0, er:0, idx:0, gs:true},
                 [away.id]:{p:arms[away.id].starter, outs:0, er:0, idx:0, gs:true} };
@@ -791,7 +792,7 @@ function simGame(home, away, players, idx, recordSplits){
   // full start-of-game line for every player who appears, so we can diff out a complete
   // box-score line afterward (keys include HR/H/RBI/SO/OUT used by the single-game records).
   const snapH = h => ({AB:h.stats.AB,R:h.stats.R,H:h.stats.H,RBI:h.stats.RBI,BB:h.stats.BB,SO:h.stats.SO,HR:h.stats.HR});
-  const snapP = p => ({OUT:p.stats.OUT,H:p.stats.H,ER:p.stats.ER,BB:p.stats.BB,SO:p.stats.SO,HRA:p.stats.HRA});
+  const snapP = p => ({OUT:p.stats.OUT,H:p.stats.H,R:p.stats.R||0,ER:p.stats.ER,BB:p.stats.BB,SO:p.stats.SO,HRA:p.stats.HRA});
   const gSnap = {};
   [home.id,away.id].forEach(tid=>{ lineups[tid].forEach(h=>{ gSnap[h.id]=snapH(h); });
     const sp=cur[tid].p; gSnap[sp.id]=snapP(sp); });
@@ -879,6 +880,14 @@ function simGame(home, away, players, idx, recordSplits){
     const wpAdvance = ()=>{ let r=0; if(bases[2]){r++; if(bases[2].stats) bases[2].stats.R++; bases[2]=null;} if(bases[1]){bases[2]=bases[1];bases[1]=null;} if(bases[0]){bases[1]=bases[0];bases[0]=null;} return r; };
     // record a run-scoring play (post-bump score) for the game log
     const logScore = (kind, batter, r) => { if(!r) return; plays.push({ i:inning, btm:isBottom?1:0, o:outs, b:batter?batter.id:null, p:cur[pitId].p?cur[pitId].p.id:null, k:kind, r, hs:score[home.id], as:score[away.id] }); };
+    // charge runs to the current pitcher, splitting earned vs unearned. A small, DEFENSE-dependent
+    // fraction of runs are unearned (sloppy clubs give up more) — so ERA < RA realistically. This is
+    // a tagging-only abstraction (errors don't add baserunners here), so total runs / the tuned run
+    // environment are completely unchanged; only the earned/unearned split moves.
+    const ueRate = clamp(0.03 + 0.06*(1-(defN[pitId]||0.5)), 0.02, 0.12);
+    const chargeRuns = r => { if(!r) return; const p=cur[pitId].p; p.stats.R=(p.stats.R||0)+r;
+      let er=0; for(let i=0;i<r;i++){ if(!chance(ueRate)) er++; }
+      p.stats.ER+=er; cur[pitId].er+=er; };
     while(outs<3){
       // walk-off: home (bottom half, 9th+) just took the lead → game over, end the half here
       if(isBottom && inning>=9 && score[batId] > score[pitId]){ walkoff=true; break; }
@@ -886,8 +895,8 @@ function simGame(home, away, players, idx, recordSplits){
       // wild pitch / balk (only with a runner aboard) — credited to the pitcher
       if(bases[0]||bases[1]||bases[2]){
         const pit=cur[pitId].p;
-        if(chance(0.018)){ pit.stats.WP=(pit.stats.WP||0)+1; const r=wpAdvance(); bumpScore(batId,pitId,r); logScore("WP",null,r); cur[pitId].er+=r; pit.stats.ER+=r; }
-        else if(chance(0.004)){ pit.stats.BK=(pit.stats.BK||0)+1; const r=wpAdvance(); bumpScore(batId,pitId,r); logScore("BK",null,r); cur[pitId].er+=r; pit.stats.ER+=r; }
+        if(chance(0.018)){ pit.stats.WP=(pit.stats.WP||0)+1; const r=wpAdvance(); bumpScore(batId,pitId,r); logScore("WP",null,r); chargeRuns(r); }
+        else if(chance(0.004)){ pit.stats.BK=(pit.stats.BK||0)+1; const r=wpAdvance(); bumpScore(batId,pitId,r); logScore("BK",null,r); chargeRuns(r); }
       }
       // stolen-base attempts (before the pitch). Steals of 2nd (runner on 1st) are most common;
       // steals of 3rd (runner on 2nd) are rarer; a double steal moves runners from 1st AND 2nd.
@@ -924,12 +933,12 @@ function simGame(home, away, players, idx, recordSplits){
         bat.stats.BB++; pitcher.stats.BB++; reached[pitId]++;
         const r = advance(bases,"BB",bat);
         bumpScore(batId,pitId,r); logScore("BB",bat,r); bat.stats.RBI+=r;
-        cur[pitId].er+=r; pitcher.stats.ER+=r;
+        chargeRuns(r);
       } else if(res.o==="HBP"){
         bat.stats.HBP=(bat.stats.HBP||0)+1; pitcher.stats.HBP=(pitcher.stats.HBP||0)+1; reached[pitId]++;
         const r = advance(bases,"BB",bat);   // hit-by-pitch advances like a walk
         bumpScore(batId,pitId,r); logScore("HBP",bat,r); bat.stats.RBI+=r;
-        cur[pitId].er+=r; pitcher.stats.ER+=r;
+        chargeRuns(r);
       } else if(res.o==="K"){
         bat.stats.AB++; bat.stats.SO++; pitcher.stats.SO++;
         recOut(pitcher);
@@ -944,7 +953,7 @@ function simGame(home, away, players, idx, recordSplits){
           // sacrifice fly — runner on third scores, batter charged no AB
           bat.stats.SF=(bat.stats.SF||0)+1; pitcher.stats.AO=(pitcher.stats.AO||0)+1;
           if(bases[2]&&bases[2].stats) bases[2].stats.R++;   // runner on third scores on the sac fly
-          bases[2]=null; bumpScore(batId,pitId,1); logScore("SF",bat,1); bat.stats.RBI+=1; cur[pitId].er+=1; pitcher.stats.ER+=1;
+          bases[2]=null; bumpScore(batId,pitId,1); logScore("SF",bat,1); bat.stats.RBI+=1; chargeRuns(1);
           recOut(pitcher); fieldChance(pitId, pitcher, true);
         } else {
           bat.stats.AB++;
@@ -960,7 +969,7 @@ function simGame(home, away, players, idx, recordSplits){
         else fieldChance(pitId, pitcher, false);   // a fielder handled it cleanly (no error)
         const r = advance(bases, res.o, bat);
         bumpScore(batId,pitId,r); logScore(res.o,bat,r); bat.stats.RBI+=r;
-        cur[pitId].er+=r; pitcher.stats.ER+=r;
+        chargeRuns(r);
       }
       // platoon (vs LHP/RHP) + venue (home/away) splits — regular-season MLB only
       if(_ss){ bumpSplit(bat, pitcher.throws==="L"?"vL":"vR", _ss); bumpSplit(bat, isBottom?"home":"away", _ss); }
@@ -1035,8 +1044,8 @@ function simGame(home, away, players, idx, recordSplits){
     return [h.id, h.stats.AB-(sn.AB||0), h.stats.R-(sn.R||0), h.stats.H-(sn.H||0),
             h.stats.RBI-(sn.RBI||0), h.stats.BB-(sn.BB||0), h.stats.SO-(sn.SO||0), h.stats.HR-(sn.HR||0)]; });
   const pitLine = tid => [arms[tid].starter.id, ...usedPen[tid]].map(pid=>{ const p=players[pid], sn=gSnap[pid]||{};
-    const er=p.stats.ER-(sn.ER||0);
-    return [pid, p.stats.OUT-(sn.OUT||0), p.stats.H-(sn.H||0), er, er, p.stats.BB-(sn.BB||0), p.stats.SO-(sn.SO||0), p.stats.HRA-(sn.HRA||0)]; });
+    const er=p.stats.ER-(sn.ER||0), ra=(p.stats.R||0)-(sn.R||0);
+    return [pid, p.stats.OUT-(sn.OUT||0), p.stats.H-(sn.H||0), ra, er, p.stats.BB-(sn.BB||0), p.stats.SO-(sn.SO||0), p.stats.HRA-(sn.HRA||0)]; });
   out.box = {
      h:home.id, a:away.id, hs:out.hs, as:out.as,
     ls:{ h:lineScore[home.id], a:lineScore[away.id] },
@@ -1136,7 +1145,7 @@ const woba = s => { const pa=s.AB+s.BB+(s.SF||0)+(s.HBP||0); if(!pa) return 0;  
 const kp9 = s => s.OUT? (s.SO*27/s.OUT) : 0;
 const bb9 = s => s.OUT? (s.BB*27/s.OUT) : 0;
 const kbb = s => s.BB? (s.SO/s.BB) : (s.SO||0);
-const FIP_CONST = 3.51;   // calibrated so league FIP centers on this league's ERA (~3.9 env)
+const FIP_CONST = 3.40;   // calibrated so league FIP centers on league ERA (earned-run basis since unearned runs were split out)
 const fip  = s => s.OUT? (((13*(s.HRA||0) + 3*(s.BB+(s.HBP||0)) - 2*s.SO)/(s.OUT/3)) + FIP_CONST) : 0;
 // ---- WAR (simplified, calibrated to this league's run environment) ----
 // Position WAR = batting runs above avg (wOBA-based) + positional adj + a light defensive
