@@ -2154,6 +2154,58 @@ function Hub({G, commit, tShow, setTab}){
         <Card><div className="text-slate-400 text-xs">PAYROLL</div><div className="text-2xl font-bold tnum">{money(payroll(G,user.id))}</div><div className="text-xs text-slate-500">Budget {money(user.budget)}</div></Card>
       </div>
 
+      {G.day>=Math.floor(G.schedule.length*0.45) && (()=>{
+        const TG=162, gbf=n=>n===0?"Tied":(n>0?"+":"")+n.toFixed(1);
+        const gbBetween=(a,b)=>((a.w-b.w)+(b.l-a.l))/2;            // a ahead of b → positive
+        const magic=(me,them)=>Math.max(0,(TG+1)-me.w-them.l);     // games to clinch over `them`
+        const userGL=Math.max(0, TG-user.w-user.l);
+        const divTeams=standings(G.teams)[user.league+" "+user.division];
+        const divRank=divTeams.findIndex(t=>t.id===user.id);
+        const leagueTeams=G.teams.filter(t=>t.league===user.league);
+        const byDiv={}; leagueTeams.forEach(t=>(byDiv[t.division]=byDiv[t.division]||[]).push(t));
+        const divLeaders=new Set(); Object.values(byDiv).forEach(arr=>{arr.sort((a,b)=>pct(b)-pct(a)); divLeaders.add(arr[0].id);});
+        const isDivLeader=divLeaders.has(user.id);
+        const wcPool=leagueTeams.filter(t=>!divLeaders.has(t.id)).sort((a,b)=>pct(b)-pct(a));
+        const wcRank=wcPool.findIndex(t=>t.id===user.id);
+        const inWC = wcRank>=0 && wcRank<=1;
+        const clinched = isDivLeader && magic(user,divTeams[1]||user)===0;
+        // division line
+        const second=divTeams[1], leader=divTeams[0];
+        const divInfo = divRank===0
+          ? {txt:`1st · ${second?gbf(gbBetween(user,second))+" GB":"leading"}`, magic: second?magic(user,second):0, good:true}
+          : {txt:`${divRank+1}${["","st","nd","rd"][divRank+1]||"th"} · ${gbBetween(leader,user).toFixed(1)} GB back`, magic:null, good:false};
+        // wild-card line (only if not a division leader)
+        let wcInfo=null;
+        if(!isDivLeader){
+          if(inWC){ const firstOut=wcPool[2]; wcInfo={txt:`WC #${wcRank+1} — in the field`, magic: firstOut?magic(user,firstOut):0, good:true}; }
+          else { const cut=wcPool[1]; wcInfo={txt:`${gbBetween(cut,user).toFixed(1)} GB back of the 2nd wild card`, magic:null, good:false}; }
+        }
+        const inField = isDivLeader || inWC;
+        return (
+          <Card className={inField?"border-emerald-700/40":"border-[#1d2940]"}>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="font-bold text-sm">🏁 Playoff Picture <span className="text-slate-500 font-normal">— {userGL} to play</span></h3>
+              {clinched ? <span className="text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 rounded px-2 py-0.5">✓ Division clinched</span>
+                : inField ? <span className="text-xs bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 rounded px-2 py-0.5">In the field</span>
+                : <span className="text-xs bg-amber-500/15 text-amber-300 border border-amber-500/30 rounded px-2 py-0.5">On the outside</span>}
+            </div>
+            <div className="space-y-1 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="text-slate-400 text-xs w-20">{user.division}</span>
+                <span className={divInfo.good?"text-emerald-300":"text-slate-300"}>{divInfo.txt}</span>
+                {divInfo.magic!=null && divInfo.magic>0 && <span className="text-xs text-slate-500">· magic {divInfo.magic}</span>}
+              </div>
+              {wcInfo && <div className="flex items-center gap-2">
+                <span className="text-slate-400 text-xs w-20">Wild Card</span>
+                <span className={wcInfo.good?"text-emerald-300":"text-amber-300"}>{wcInfo.txt}</span>
+                {wcInfo.magic!=null && wcInfo.magic>0 && <span className="text-xs text-slate-500">· magic {wcInfo.magic}</span>}
+              </div>}
+            </div>
+            <button onClick={()=>setTab("standings")} className="text-xs text-emerald-400 hover:text-emerald-300 mt-2">Full standings →</button>
+          </Card>
+        );
+      })()}
+
       {(G.tradeOffers&&G.tradeOffers.length>0) && <Card className="border-sky-700/50">
         <div className="text-xs font-semibold text-sky-300 mb-2">📨 Trade Offers ({G.tradeOffers.length})</div>
         <div className="space-y-2">
