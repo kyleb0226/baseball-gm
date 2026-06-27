@@ -622,33 +622,35 @@ function paOutcome(bat, pit, defN, park, parkHand){
   return {o:"1B"};
 }
 
-// advance runners; bases = [r1,r2,r3] holding batter objects or null. returns runs scored
+// advance runners; bases = [r1,r2,r3] holding batter objects or null. returns runs scored.
+// Each runner who crosses the plate is credited an R (accurate runs-scored — the runner who
+// actually scored, not a random hitter). The batter scores his own run on a HR.
 function advance(bases, out, batter){
   let runs=0;
-  const score = ()=>{ runs++; };
+  const score = runner => { runs++; if(runner && runner.stats) runner.stats.R++; };
   if(out==="BB"){
-    if(bases[0]){ if(bases[1]){ if(bases[2]){ score(); } bases[2]=bases[1]; } bases[1]=bases[0]; }
+    if(bases[0]){ if(bases[1]){ if(bases[2]){ score(bases[2]); } bases[2]=bases[1]; } bases[1]=bases[0]; }
     bases[0]=batter;
   } else if(out==="1B"){
-    if(bases[2]){score(); bases[2]=null;}
-    if(bases[1]){score(); bases[1]=null;}
+    if(bases[2]){score(bases[2]); bases[2]=null;}
+    if(bases[1]){score(bases[1]); bases[1]=null;}
     if(bases[0]){ bases[1]=bases[0]; bases[0]=null; }
     bases[0]=batter;
   } else if(out==="2B"){
-    if(bases[2]){score();bases[2]=null;}
-    if(bases[1]){score();bases[1]=null;}
+    if(bases[2]){score(bases[2]);bases[2]=null;}
+    if(bases[1]){score(bases[1]);bases[1]=null;}
     if(bases[0]){ bases[2]=bases[0]; bases[0]=null; }
     bases[1]=batter;
   } else if(out==="3B"){
-    if(bases[2]){score();bases[2]=null;}
-    if(bases[1]){score();bases[1]=null;}
-    if(bases[0]){score();bases[0]=null;}
+    if(bases[2]){score(bases[2]);bases[2]=null;}
+    if(bases[1]){score(bases[1]);bases[1]=null;}
+    if(bases[0]){score(bases[0]);bases[0]=null;}
     bases[2]=batter;
   } else if(out==="HR"){
-    if(bases[2]){score();bases[2]=null;}
-    if(bases[1]){score();bases[1]=null;}
-    if(bases[0]){score();bases[0]=null;}
-    score();
+    if(bases[2]){score(bases[2]);bases[2]=null;}
+    if(bases[1]){score(bases[1]);bases[1]=null;}
+    if(bases[0]){score(bases[0]);bases[0]=null;}
+    score(batter);
   }
   return runs;
 }
@@ -840,7 +842,7 @@ function simGame(home, away, players, idx){
     const hitters = lineups[batId];
     const recOut = pitcher => { outs++; cur[pitId].outs++; cur[pitId].segOuts=(cur[pitId].segOuts||0)+1; pitcher.stats.OUT++; gOuts[pitcher.id]=(gOuts[pitcher.id]||0)+1; };
     // wild pitch / balk: bump every runner up a base, scoring from third
-    const wpAdvance = ()=>{ let r=0; if(bases[2]){r++;bases[2]=null;} if(bases[1]){bases[2]=bases[1];bases[1]=null;} if(bases[0]){bases[1]=bases[0];bases[0]=null;} return r; };
+    const wpAdvance = ()=>{ let r=0; if(bases[2]){r++; if(bases[2].stats) bases[2].stats.R++; bases[2]=null;} if(bases[1]){bases[2]=bases[1];bases[1]=null;} if(bases[0]){bases[1]=bases[0];bases[0]=null;} return r; };
     // record a run-scoring play (post-bump score) for the game log
     const logScore = (kind, batter, r) => { if(!r) return; plays.push({ i:inning, btm:isBottom?1:0, o:outs, b:batter?batter.id:null, p:cur[pitId].p?cur[pitId].p.id:null, k:kind, r, hs:score[home.id], as:score[away.id] }); };
     while(outs<3){
@@ -894,6 +896,7 @@ function simGame(home, away, players, idx){
         } else if(!ground && bases[2] && outs<2 && chance(0.42)){
           // sacrifice fly — runner on third scores, batter charged no AB
           bat.stats.SF=(bat.stats.SF||0)+1; pitcher.stats.AO=(pitcher.stats.AO||0)+1;
+          if(bases[2]&&bases[2].stats) bases[2].stats.R++;   // runner on third scores on the sac fly
           bases[2]=null; bumpScore(batId,pitId,1); logScore("SF",bat,1); bat.stats.RBI+=1; cur[pitId].er+=1; pitcher.stats.ER+=1;
           recOut(pitcher); fieldChance(pitId, pitcher, true);
         } else {
@@ -914,9 +917,6 @@ function simGame(home, away, players, idx){
       }
     }
   }
-  // helper to credit runs scored to runners (R stat) — approximate: credit batters who score
-  function addRuns(){ /* R for scorers approximated below */ }
-
   // play 9 innings (or until decided in bottom 9 / extras). Track runs per half-inning
   // for the box-score line score (away = top of each inning, home = bottom; null = didn't bat).
   const lineScore = { [home.id]:[], [away.id]:[] };
@@ -930,10 +930,8 @@ function simGame(home, away, players, idx){
     if(inning>20) break; // safety
   }
   score[home.id] = Math.max(score[home.id], 0);
-  // approximate R (runs scored) by team: distribute = runs among hitters via RBI proportion (simplified)
-  distributeRuns(home, players, score[home.id], idx);
-  distributeRuns(away, players, score[away.id], idx);
-
+  // R (runs scored) is credited live to each runner who actually crossed the plate (see advance()
+  // / the SF + WP/BK branches) — no more random distribution.
   out.hs = score[home.id]; out.as = score[away.id];
   out.plays = plays; out.walkoff = walkoff; out.finalInning = inning;   // scoring-play log for the game-log view
   // decisions
@@ -1000,17 +998,6 @@ function simGame(home, away, players, idx){
   return out;
 }
 
-function distributeRuns(team, players, runs, idx){
-  // give R to hitters roughly weighted by OBP-ish (con+eye); simplistic but keeps totals sane
-  const hs = teamRoster(players, team.id, idx).filter(p=>!p.isP && p.stats.PA>0);
-  let remaining = runs;
-  // HR already credited a run to batter; subtract those from pool
-  const hrRuns = hs.reduce((s,h)=>s+(h._hrThisGame||0),0);
-  for(let i=0;i<remaining;i++){
-    const h = pick(hs.length?hs:[null]);
-    if(h) h.stats.R++;
-  }
-}
 
 function awardDecision(winnerId, loserId, arms, usedPen, players, ctx){
   const wStarter = arms[winnerId].starter;
