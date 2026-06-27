@@ -709,14 +709,38 @@ function lineupHitters(team, players, idx){
   return hs.slice(0,9);
 }
 
+// Day's batting order with the occasional platoon start: if a club HAS bench bats, spell a
+// NON-STAR regular who's at a platoon DISadvantage vs the opposing starter with a comparable bench
+// bat who holds the edge. Gives backups real playing time (they'd otherwise never bat). Stars
+// (ovr>=72) always play, so it never dents the leaderboards; the engine run-environment is
+// untouched (no platoon hit bonus), so it's balance-safe. The sub bats in the regular's order slot.
+function platoonLineup(team, players, idx, oppStarter){
+  const base = lineupHitters(team, players, idx);
+  const used = new Set(base.map(p=>p.id));
+  const bench = teamRoster(players, team.id, idx).filter(p=>!p.isP && !isInjured(p) && !used.has(p.id));
+  if(!bench.length) return base;
+  const oppHand = (oppStarter && oppStarter.throws) || "R";
+  const hasEdge = h => h.bats==="S" || h.bats!==oppHand;   // platoon advantage vs this starter
+  const out = base.slice(); let swaps=0;
+  for(let i=0;i<out.length && swaps<2;i++){
+    const s=out[i]; if(s.ovr>=72 || hasEdge(s)) continue;  // stars always play; skip if regular holds the edge
+    let best=null;
+    bench.forEach(b=>{ if(used.has(b.id) || !hasEdge(b) || b.ovr < s.ovr-3) return; if(!best || b.ovr>best.ovr) best=b; });
+    if(best && chance(0.5)){ out[i]=best; used.add(best.id); swaps++; }
+  }
+  return out;
+}
+
 function simGame(home, away, players, idx, recordSplits){
   const out = { home, away };
   const park = (home && home.ballpark && home.ballpark.pf) || 1;   // home park nudges this game's run environment
   const parkHand = (home && home.ballpark && home.ballpark.hand) || 0;   // +RF short (favors LHB), −LF short (favors RHB)
-  const lineups = { [home.id]: lineupHitters(home,players,idx), [away.id]: lineupHitters(away,players,idx) };
+  const arms = { [home.id]: getPitchers(home,players,idx), [away.id]: getPitchers(away,players,idx) };
+  // platoon-aware batting orders (each club set vs the OPPOSING starter's hand)
+  const lineups = { [home.id]: platoonLineup(home,players,idx,arms[away.id].starter),
+                    [away.id]: platoonLineup(away,players,idx,arms[home.id].starter) };
   const order = { [home.id]:0, [away.id]:0 };
   const defN = { [home.id]: n01(teamDefRating(home,players)), [away.id]: n01(teamDefRating(away,players)) };
-  const arms = { [home.id]: getPitchers(home,players,idx), [away.id]: getPitchers(away,players,idx) };
   // position -> fielder for each club, so balls in play can be charged to a fielder
   // (a fielding chance, and sometimes an error). Built from the assigned defense (team.pos),
   // falling back to a player's natural position. The DH never fields.
