@@ -603,7 +603,8 @@ function paOutcome(bat, pit, defN, park, parkHand){
   // park factor nudges power most, contact a touch (both clubs share the park → balance kept).
   // handedness: a short porch helps a PULL hitter of the matching hand (RF short → LHB, LF short
   // → RHB) and mildly suppresses the opposite hand; switch hitters neutral. parkHand: +RF short.
-  const hside = bat.bats==="L" ? parkHand : bat.bats==="R" ? -parkHand : 0;
+  // switch-hitters bat from whichever side the porch favors → always the favorable nudge
+  const hside = bat.bats==="S" ? Math.abs(parkHand) : bat.bats==="L" ? parkHand : -parkHand;
   let hrP = clamp((0.019 + 0.074*(bp-0.5) + 0.040*(bc-0.5) - 0.030*(ps-0.5)) * (1+(park-1)*1.6) * (1+hside*0.20), 0.002, 0.14);
   const hbpP = 0.009;  // hit by pitch — small, roughly real-life ~1% of PAs
   const r = Math.random();
@@ -1070,7 +1071,7 @@ function playoffSeeds(teams, league){
 
 /* ----------------------------- derived stat display -------------------- */
 const avg = s => s.AB? (s.H/s.AB) : 0;
-const obp = s => (s.AB+s.BB)? (s.H+s.BB)/(s.AB+s.BB) : 0;
+const obp = s => { const d=s.AB+s.BB+(s.HBP||0)+(s.SF||0); return d? (s.H+s.BB+(s.HBP||0))/d : 0; };   // (H+BB+HBP)/(AB+BB+HBP+SF)
 const slg = s => { const tb=(s.H-s._2B-s._3B-s.HR)+2*s._2B+3*s._3B+4*s.HR; return s.AB? tb/s.AB:0; };
 const ops = s => obp(s)+slg(s);
 const ip  = s => Math.floor(s.OUT/3) + (s.OUT%3)/10;
