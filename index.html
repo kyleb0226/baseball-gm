@@ -1859,6 +1859,9 @@ function SettingsModal({G, commit, tShow, onClose}){
         <Toggle on={s.injuries!==false} label="Injuries"
           desc="Players can get hurt and miss time (IL stints). Turn off for an injury-free league — current injuries clear immediately."
           set={()=>{ s.injuries = !(s.injuries!==false); if(s.injuries===false){ Object.values(G.players).forEach(p=>{ if(p.injury) delete p.injury; }); } force(x=>x+1); commit(G); tShow(s.injuries?"Injuries ON":"Injuries OFF — everyone healthy"); }} />
+        <Toggle on={s.potm!==false} label="Player of the Month"
+          desc="Hand out monthly Player/Pitcher of the Month awards and track month-by-month splits."
+          set={()=>{ s.potm = !(s.potm!==false); force(x=>x+1); commit(G); tShow(s.potm?"Monthly awards ON":"Monthly awards OFF"); }} />
         <div className="text-[11px] text-slate-500 mt-3">Settings are saved per franchise.</div>
       </div>
     </div>
@@ -2055,6 +2058,38 @@ function tickTradeRumors(G){
   logNews(G,"rumor",msg,tid);
 }
 
+/* ---- Player of the Month + monthly splits (the season is split into 6 "months") ---- */
+const MONTH_NAMES=["April","May","June","July","August","September"];
+const MHKEYS=["G","PA","AB","H","_2B","_3B","HR","R","RBI","BB","SO","SB","HBP","SF"];
+const MPKEYS=["G","OUT","H","ER","BB","SO","W","L","SV","HRA"];
+function monthIdx(G){ return Math.min(5, Math.floor(G.day / Math.max(1, G.schedule.length/6))); }
+function snapshotMonth(G){ Object.values(G.players).forEach(p=>{ if(isMlbId(p.teamId)) p._monthSnap=Object.assign({}, p.stats); }); }
+function finishMonth(G, m){
+  const lg={Empire:{h:[],p:[]}, Pioneer:{h:[],p:[]}};
+  Object.values(G.players).forEach(p=>{
+    if(!isMlbId(p.teamId)) return; const t=teamById(G,p.teamId); if(!t||!lg[t.league]) return;
+    const keys=p.isP?MPKEYS:MHKEYS, snap=p._monthSnap||{}, line={}; keys.forEach(k=>line[k]=(p.stats[k]||0)-(snap[k]||0));
+    const played = p.isP ? line.OUT>0 : line.PA>0; if(!played) return;
+    (p._monthly=p._monthly||[]).push({m, isP:p.isP, line}); if(p._monthly.length>6) p._monthly.shift();
+    if(p.isP) lg[t.league].p.push({p,line}); else lg[t.league].h.push({p,line});
+  });
+  ["Empire","Pioneer"].forEach(L=>{
+    const b=lg[L];
+    // weight by playing time (mvpScore/cyScore scale with PA/IP) so a full-month regular/starter wins,
+    // not a small-sample hot reliever or part-timer
+    const bestH=b.h.filter(x=>x.line.PA>=40).reduce((a,c)=>(!a||mvpScore(c.line)>mvpScore(a.line))?c:a,null);
+    const bestP=b.p.filter(x=>x.line.OUT>=30).reduce((a,c)=>(!a||cyScore(c.line)>cyScore(a.line))?c:a,null);
+    if(bestH){ bestH.p.potm=(bestH.p.potm||0)+1; logNews(G,"award",`📅 ${MONTH_NAMES[m]} ${L} Player of the Month: ${bestH.p.name} (${f3(avg(bestH.line))}, ${bestH.line.HR} HR, ${bestH.line.RBI} RBI)`, bestH.p.teamId); }
+    if(bestP){ bestP.p.potmP=(bestP.p.potmP||0)+1; logNews(G,"award",`📅 ${MONTH_NAMES[m]} ${L} Pitcher of the Month: ${bestP.p.name} (${bestP.line.W}-${bestP.line.L}, ${f2(era(bestP.line))} ERA, ${bestP.line.SO} K)`, bestP.p.teamId); }
+  });
+}
+function tickMonthly(G){
+  if(G.settings && G.settings.potm===false) return;
+  const m=monthIdx(G);
+  if(G._curMonth==null){ G._curMonth=m; snapshotMonth(G); return; }
+  if(m!==G._curMonth){ finishMonth(G, G._curMonth); G._curMonth=m; snapshotMonth(G); }
+}
+
 function simDay(G){
   let idx = rosterIndex(G.players);             // build the team→players index ONCE for the whole day
   // safety net: a team that can't field a lineup/staff would crash simGame and hang the
@@ -2095,6 +2130,7 @@ function simDay(G){
   for(const id in G.players){ const p=G.players[id]; if(p._tired){ p._tired=Math.max(0,p._tired-0.34); if(p._tired<0.05) delete p._tired; } }
   tickInjuries(G);                                // heal/return players, then roll new injuries
   G.day++;
+  tickMonthly(G);   // Player/Pitcher of the Month + monthly splits at each "month" boundary
   // Mid-season All-Star Game (exhibition, ~season midpoint) — banked separately, no stat impact
   if((!G.allStarGame || G.allStarGame.season!==G.season) && G.day>=Math.floor(G.schedule.length*0.5)){
     try{ playAllStarGame(G); }catch(e){ /* never let the exhibition block the sim */ }
@@ -2765,7 +2801,7 @@ function PlayerModal({p, team, onClose, G}){
           {wrcP!=null && <span className="text-xs bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 rounded px-2 py-1" title="wRC+ — park & league adjusted runs created (100 = league average)">wRC+ <b>{wrcP}</b></span>}
           {eraP!=null && <span className="text-xs bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 rounded px-2 py-1" title="ERA+ — park & league adjusted (100 = league average, higher is better)">ERA+ <b>{eraP}</b></span>}
         </div>
-        {((p.accolades&&p.accolades.length>0) || (p.rings&&p.rings.length>0)) && (()=>{
+        {((p.accolades&&p.accolades.length>0) || (p.rings&&p.rings.length>0) || p.potm || p.potmP) && (()=>{
           const ct={}; (p.accolades||[]).forEach(a=>{ct[a.award]=(ct[a.award]||0)+1;});
           const order=["MVP","Cy Young","All-Star","All-Star MVP","Rookie of the Year","Gold Glove","Silver Slugger","Reliever of the Year","Comeback Player"];
           const feats=[["Perfect Game","💎","bg-fuchsia-500/20 text-fuchsia-200 border-fuchsia-500/40"],["No-Hitter","🚫","bg-rose-500/20 text-rose-200 border-rose-500/40"],["Cycle","🔄","bg-emerald-500/20 text-emerald-200 border-emerald-500/40"],["4-HR Game","💣","bg-orange-500/20 text-orange-200 border-orange-500/40"],["3-HR Game","💥","bg-orange-500/20 text-orange-200 border-orange-500/40"]];
@@ -2774,6 +2810,8 @@ function PlayerModal({p, team, onClose, G}){
             {rings>0 && <span className="text-xs bg-sky-500/20 text-sky-300 border border-sky-500/40 rounded px-2 py-1" title={"Champion: "+p.rings.join(", ")}>💍 {rings}× Ring{rings>1?"s":""}</span>}
             {order.filter(k=>ct[k]).map(k=><span key={k} className="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded px-2 py-1">🏆 {ct[k]}× {k}</span>)}
             {feats.filter(([k])=>ct[k]).map(([k,ico,cls])=><span key={k} className={"text-xs rounded px-2 py-1 border "+cls}>{ico} {ct[k]>1?ct[k]+"× ":""}{k}</span>)}
+            {p.potm>0 && <span className="text-xs bg-teal-500/15 text-teal-300 border border-teal-500/30 rounded px-2 py-1">📅 {p.potm}× Player of Month</span>}
+            {p.potmP>0 && <span className="text-xs bg-teal-500/15 text-teal-300 border border-teal-500/30 rounded px-2 py-1">📅 {p.potmP}× Pitcher of Month</span>}
           </div>;
         })()}
         <div className="space-y-3">
@@ -2801,6 +2839,30 @@ function PlayerModal({p, team, onClose, G}){
                       <td className="text-center font-semibold">{f3(ops(st))}</td>
                       <td className="text-center text-amber-300">{st.HR||""}</td>
                       <td className="text-center">{st.RBI}</td>
+                    </tr>
+                  ); })}
+                </tbody>
+              </table>
+            </div>
+          );
+        })()}
+        {p._monthly && p._monthly.length>0 && (()=>{
+          const rows=p._monthly.filter(r=>r.isP===p.isP);
+          if(!rows.length) return null;
+          return (
+            <div className="mt-3">
+              <div className="text-xs font-semibold text-slate-400 mb-1">By Month <span className="text-slate-600 font-normal">— this season</span></div>
+              <table className="w-full text-sm tnum">
+                <thead><tr className="text-slate-500 text-[11px] border-b border-[#1d2940]">
+                  <th className="text-left font-medium">Month</th>
+                  {p.isP?<><th>IP</th><th>W-L</th><th>ERA</th><th>SO</th><th>SV</th></>:<><th>PA</th><th>AVG</th><th>OPS</th><th>HR</th><th>RBI</th></>}
+                </tr></thead>
+                <tbody>
+                  {rows.map((r,i)=>{ const st=r.line; return (
+                    <tr key={i} className="border-b border-[#15203a]">
+                      <td className="text-left text-slate-300">{MONTH_NAMES[r.m]}</td>
+                      {p.isP?<><td className="text-center">{f1(ip(st))}</td><td className="text-center">{st.W}-{st.L}</td><td className="text-center">{st.OUT?f2(era(st)):"—"}</td><td className="text-center">{st.SO}</td><td className="text-center">{st.SV||""}</td></>
+                            :<><td className="text-center">{st.PA}</td><td className="text-center">{st.AB?f3(avg(st)):"—"}</td><td className="text-center font-semibold">{f3(ops(st))}</td><td className="text-center text-amber-300">{st.HR||""}</td><td className="text-center">{st.RBI}</td></>}
                     </tr>
                   ); })}
                 </tbody>
@@ -4791,6 +4853,7 @@ function enterPlayoffs(G){
   recordSeasonRecords(G);      // league-wide single-season records
   recordCareerRecords(G);      // league-wide career records (high-water mark)
   recordMinorRecords(G,"AAA"); recordMinorRecords(G,"COL");   // AAA/college season + career bests (before playoff stats)
+  if(!(G.settings&&G.settings.potm===false) && G._curMonth!=null) finishMonth(G, G._curMonth);   // award the final month
   checkMilestones(G);   // 🎉 career milestone news (500 HR, 3000 K, 300 W, ...)
   buildSeasonRecap(G);  // snapshot the year's highlights (while stats are live) for the offseason recap
   payIncentives(G);   // settle stat-based contract bonuses (off-cap)
@@ -6203,7 +6266,8 @@ function startNewSeason(G){
   // reset records & stats (MLB + AAA + college)
   G.teams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0;t.streak=0;t._wsMax=0; });
   G.aaaTeams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
-  Object.values(G.players).forEach(p=>{ if(p.injury) delete p.injury; if(p._tired) delete p._tired; if(p._hitStreak) delete p._hitStreak; if(p._splits) delete p._splits; });   // offseason heals everyone; hitting streaks + splits reset (career best kept)
+  Object.values(G.players).forEach(p=>{ if(p.injury) delete p.injury; if(p._tired) delete p._tired; if(p._hitStreak) delete p._hitStreak; if(p._splits) delete p._splits; if(p._monthly) delete p._monthly; if(p._monthSnap) delete p._monthSnap; });   // offseason heals everyone; streaks/splits/monthly reset (career best kept)
+  G._curMonth=null;
   (G.collegeTeams||[]).forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
   G.schedule = buildSchedule(G.teams);
   G.aaaSchedule = buildSchedule(G.aaaTeams);
