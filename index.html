@@ -334,11 +334,31 @@ function parkLabel(pf){ const d=Math.round((pf-1)*100); return d>=2?`Hitter-frie
 function parkHandLabel(hand){ return hand>=0.12?"Short RF porch — favors LHB":hand<=-0.12?"Short LF porch — favors RHB":"Balanced field — no platoon lean"; }
 function pitcherType(gb){ return gb>=0.55?"Groundball":gb<=0.42?"Flyball":"Balanced"; }
 
+// Development academy: a facility the user upgrades; each offseason it may "graduate" a young
+// prospect straight into his AAA team. Higher level → more often + better. AI clubs unaffected.
+const ACADEMY_MAX = 5;
+function academyCost(level){ return 12 + level*7; }   // budget cost to go from `level` → level+1
+function academyGraduate(G){
+  const t=G.teams[G.userTeamId]; if(!t||!t.academy) return;
+  const lvl=t.academy.level||1;
+  if(!chance(0.08 + lvl*0.10)) return;                 // lvl1 ~18% → lvl5 ~58% chance per offseason
+  const p = chance(0.45) ? makePitcher(chance(0.6)?"SP":"RP",[17,20],-12+lvl*1.6)
+                         : makeHitter(pick(INF_OF.concat(["DH"])),[17,20],-12+lvl*1.6);
+  const room=()=>rint(12, 16+lvl*2);
+  p.pot = clamp(Math.max(p.pot, p.ovr+room()), p.ovr, 99); setPotential(p); p.pot=clamp(Math.max(p.pot,p.ovr+room()),p.ovr,99);
+  p.teamId=aaaIdOf(t.id); p.amateur=false; setContract(p, 0.7, rint(3,5), []);
+  p.draftInfo={ year:G.season, round:0, overall:0, by:t.abbr, from:"Academy" };
+  G.players[p.id]=p;
+  t.academy.lastGrad={ season:G.season, name:p.name, pos:p.pos, ovr:p.ovr, pot:p.pot, id:p.id };
+  logNews(G,"roster",`🎓 Your academy produced ${p.pos} ${p.name} (${p.ovr}→${p.pot}) — assigned to AAA`, t.id);
+  autoSetLineups(G.aaaTeams[t.id], G.players);
+}
+
 function makeTeam(def, idx){
   const [city,nick,abbr,league,division] = def;
   const t = { id: idx, city, nick, abbr, league, division,
     name: city+" "+nick, w:0, l:0, rs:0, ra:0, ballpark: makeBallpark(idx),
-    budget: rint(120,225), lineup:[], rotation:[], userControlled:false };
+    budget: rint(120,225), lineup:[], rotation:[], userControlled:false, academy:{level:1} };
   const players = [];
   // position players: 1 starter each (9) + 7 bench/reserve = 16 hitters
   HIT_POS.forEach(pos => players.push(makeHitter(pos,[23,33])));
@@ -1594,7 +1614,7 @@ function migrate(G){
     if(G.tradeDeadline==null) G.tradeDeadline = Math.round((G.schedule?G.schedule.length:224)*0.58);
     if(!Array.isArray(G.hof)) G.hof = [];
     if(!Array.isArray(G.hofBallot)) G.hofBallot = [];
-    (G.teams||[]).forEach((t,i)=>{ if(!t.ballpark) t.ballpark = makeBallpark(i); else { if(t.ballpark.hand==null) t.ballpark.hand = ballparkHand(t.ballpark.name); if(t.ballpark.capacity==null) t.ballpark.capacity = rint(33,47)*1000; } });   // backfill ballparks (handedness + capacity)
+    (G.teams||[]).forEach((t,i)=>{ if(!t.ballpark) t.ballpark = makeBallpark(i); else { if(t.ballpark.hand==null) t.ballpark.hand = ballparkHand(t.ballpark.name); if(t.ballpark.capacity==null) t.ballpark.capacity = rint(33,47)*1000; } if(!t.academy) t.academy={level:1}; });   // backfill ballparks + academy
     if(!Array.isArray(G.champions)) G.champions = G.champion ? [{season:G.champion.season, id:G.champion.id}] : [];
     // de-dupe any accidental repeat champions (one entry per season; keep the winner)
     if(Array.isArray(G.champions)){
@@ -4213,6 +4233,14 @@ function Finances({G, commit, tShow}){
     logNews(G,"signing",`${team.abbr} restructured ${p.name}'s deal — ${money(sched[0])} cap hit this year`, team.id);
     setRestructT(null); commit(G); tShow(`✅ Restructured ${p.name}`);
   };
+  if(!team.academy) team.academy={level:1};
+  const upgradeAcademy=()=>{
+    const lvl=team.academy.level||1; if(lvl>=ACADEMY_MAX){ tShow("Academy is at max level"); return; }
+    const cost=academyCost(lvl);
+    if(space<cost){ tShow(`Not enough budget room — the upgrade costs ${money(cost)}`); return; }
+    team.budget=+(team.budget-cost).toFixed(1); team.academy.level=lvl+1;
+    commit(G); tShow(`✅ Academy upgraded to Level ${lvl+1}`);
+  };
   return (
     <div className="space-y-4">
       <div className="grid sm:grid-cols-3 gap-3">
@@ -4221,6 +4249,20 @@ function Finances({G, commit, tShow}){
         <Card><div className="text-slate-400 text-xs">PAYROLL</div><div className="text-2xl font-bold tnum">{money(total)}</div>{team.incentivesPaid>0&&<div className="text-xs text-amber-400">+{money(team.incentivesPaid)} incentives paid</div>}</Card>
         <Card><div className="text-slate-400 text-xs">CAP SPACE</div><div className={"text-2xl font-bold tnum "+(space>=0?"text-emerald-400":"text-red-400")}>{money(space)}</div></Card>
       </div>
+
+      {(()=>{ const lvl=(team.academy&&team.academy.level)||1, cost=academyCost(lvl), maxed=lvl>=ACADEMY_MAX, lg=team.academy&&team.academy.lastGrad, gradPct=Math.round((0.08+lvl*0.10)*100);
+        return (
+          <Card>
+            <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+              <h3 className="font-bold text-sm">🎓 Development Academy <span className="text-slate-500 font-normal">— Level {lvl}/{ACADEMY_MAX}</span></h3>
+              {maxed ? <span className="text-xs text-emerald-300 font-semibold">★ Max level</span>
+                : <button onClick={upgradeAcademy} disabled={space<cost} className={"px-3 py-1 rounded text-xs font-semibold "+(space>=cost?"bg-emerald-500 text-slate-900 hover:bg-emerald-400":"bg-[#16213a] text-slate-600")}>Upgrade → L{lvl+1} ({money(cost)})</button>}
+            </div>
+            <p className="text-xs text-slate-400">Each offseason your academy has a <b className="text-slate-300">~{gradPct}%</b> chance to graduate a young prospect straight to your AAA team — higher levels graduate more often and with bigger ceilings. The upgrade comes out of this year's budget.</p>
+            {lg && <div className="text-xs text-slate-300 mt-2">🎓 Last graduate ({lg.season}): <PlayerLink p={G.players[lg.id]} text={`${lg.pos} ${lg.name}`}/> <span className="text-slate-500">({lg.ovr}→{lg.pot})</span></div>}
+          </Card>
+        );
+      })()}
       <Card>
         <div className="flex items-baseline justify-between mb-2">
           <h3 className="font-bold">Contracts</h3>
@@ -6601,6 +6643,7 @@ function startNewSeason(G){
   G._rumorRecent = [];                                     // reset the rumor-mill dedup ring
   (G.waivers||[]).forEach(w=>{ const p=G.players[w.id]; if(p&&p.teamId==null&&!G.freeAgents.includes(p.id)) G.freeAgents.push(p.id); });
   G.waivers = [];                                          // anyone still on the wire clears to FA
+  academyGraduate(G);                                      // the user's academy may send a prospect to AAA
   springTraining(G);                                       // preseason camp: shuffles the young, surfaces battles
   setOwnerMandate(G);                                      // owner sets this season's mandate from the new roster
   trimHistories(G);                                        // cap per-player history so the save stays under quota
