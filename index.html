@@ -2120,11 +2120,49 @@ function finishMonth(G, m){
     if(bestP){ bestP.p.potmP=(bestP.p.potmP||0)+1; logNews(G,"award",`📅 ${MONTH_NAMES[m]} ${L} Pitcher of the Month: ${bestP.p.name} (${bestP.line.W}-${bestP.line.L}, ${f2(era(bestP.line))} ERA, ${bestP.line.SO} K)`, bestP.p.teamId); }
   });
 }
+// how well a player performed over a month line, ~[-1, +1] (above/below an average month)
+function monthPerfScore(line, isP){
+  if(isP){ if(!line.OUT) return 0; return clamp((4.0-era(line))*0.28, -1, 1); }
+  if(!line.AB) return 0; return clamp((ops(line)-0.72)*1.3, -1, 1);
+}
+// In-season player development: a small, age-curved + PERFORMANCE-driven nudge each "month" so
+// players progress THROUGH the season (a hot prospect climbs as he rakes), not only at the rollover.
+// Small per-month magnitude; the offseason jump is reduced to compensate (no net inflation).
+function inSeasonDev(G){
+  Object.values(G.players).forEach(p=>{
+    if(p.teamId==null || isCollegeId(p.teamId)) return;
+    const snap=p._monthSnap||{};
+    const enough = p.isP ? ((p.stats.OUT||0)-(snap.OUT||0))>=12 : ((p.stats.PA||0)-(snap.PA||0))>=25;
+    if(!enough) return;
+    const keys=p.isP?MPKEYS:MHKEYS, line={}; keys.forEach(k=>line[k]=(p.stats[k]||0)-(snap[k]||0));
+    const perf=monthPerfScore(line, p.isP), gap=Math.max(0,p.pot-p.ovr);
+    let center;
+    if(p.age<=23)      center = 0.14 + gap*0.013;
+    else if(p.age<=26) center = 0.05 + gap*0.009;
+    else if(p.age<=28) center = 0.0;
+    else if(p.age<=30) center = -0.05;
+    else if(p.age<=33) center = -0.12;
+    else               center = -0.22;
+    if(isAAAId(p.teamId) && p.age<=25) center += 0.10;
+    // performance MODULATES growth — a young player who's raking realizes his ceiling much faster,
+    // one who's scuffling stalls (multiplicative for risers; small additive for declining vets)
+    if(p.age<=27 && center>0) center *= clamp(1 + perf*0.9, 0.2, 1.9);
+    else center += perf * 0.12;
+    center = clamp(center, -0.5, 0.7);
+    const before=p.ovr;
+    (p.isP?["stu","ctl","stm"]:["con","pow","eye","spd","def"]).forEach(a=>{ if(p[a]!=null && chance(0.55)) p[a]=clamp(round(p[a]+gauss(center,0.6)),20,99); });
+    computeOvr(p); if(p.ovr>(p.peakOvr||0)) p.peakOvr=p.ovr;
+    if(p.ovr!==before) p._seasonDev=(p._seasonDev||0)+(p.ovr-before);   // mid-season movement (for display)
+  });
+}
 function tickMonthly(G){
-  if(G.settings && G.settings.potm===false) return;
   const m=monthIdx(G);
   if(G._curMonth==null){ G._curMonth=m; snapshotMonth(G); return; }
-  if(m!==G._curMonth){ finishMonth(G, G._curMonth); G._curMonth=m; snapshotMonth(G); }
+  if(m!==G._curMonth){
+    inSeasonDev(G);                                                       // gradual in-season progression (always)
+    if(!(G.settings && G.settings.potm===false)) finishMonth(G, G._curMonth);   // POTM + monthly splits (toggle)
+    G._curMonth=m; snapshotMonth(G);
+  }
 }
 
 function simDay(G){
@@ -2857,7 +2895,7 @@ function PlayerModal({p, team, onClose, G}){
         <div className="flex items-center gap-3 mb-3">
           <ScoutOvrPill p={p}/>
           <div>
-            <div className="font-bold text-lg">{p.name}{scoutConf(p)<0.85&&<span className="text-[10px] text-slate-500 font-normal ml-2">scouted ~{Math.round(scoutConf(p)*100)}%</span>}</div>
+            <div className="font-bold text-lg">{p.name}{scoutConf(p)<0.85&&<span className="text-[10px] text-slate-500 font-normal ml-2">scouted ~{Math.round(scoutConf(p)*100)}%</span>}{p._seasonDev?<span className={"text-[11px] font-semibold ml-2 "+(p._seasonDev>0?"text-emerald-400":"text-red-400")} title="OVR change so far this season">{p._seasonDev>0?"↗ +":"↘ "}{p._seasonDev} this yr</span>:null}</div>
             <div className="text-xs text-slate-400">{p.num!=null?`#${p.num} · `:""}{p.pos}{p.isP&&p.gb!=null?` · ${pitcherType(p.gb)}`:""} · Age {p.age} · POT {scoutConf(p)>=0.85?p.pot:scoutedPot(p)+"~"} · {contractLabel(p)}{incentivesPerYear(p)>0?` +${money(incentivesPerYear(p))}/yr inc`:""} · {team?team.name:"Free Agent"}</div>
             {(p.incentives||[]).length>0 && <div className="text-xs text-slate-500 mt-0.5">Incentives: {p.incentives.map((x,i)=><span key={i}>{x.label||x.stat}≥{x.need}→+{money(x.amount)}{i<p.incentives.length-1?", ":""}</span>)}</div>}
             {p.draftInfo && <div className="text-[11px] text-slate-500">Drafted {p.draftInfo.year} · Rd {p.draftInfo.round} (#{p.draftInfo.overall}) by {p.draftInfo.by}{p.draftInfo.from?` · out of ${p.draftInfo.from}`:""}</div>}
@@ -5571,7 +5609,7 @@ function OffseasonHub({G, commit, tShow, setTab}){
       // performance: young producers develop faster, vets who rake age gracefully, busts stall
       if(p.age<=27) center += perf.score * perf.weight * 1.6;
       else          center += perf.score * perf.weight * 0.7;
-      center = clamp(center, -5, 4.5);
+      center = clamp(center*0.6, -3.5, 3.0);   // reduced — most development now happens IN-SEASON (inSeasonDev)
       const each = r=>{ if(p[r]!==undefined) p[r]=clamp(round(p[r]+gauss(center,1.2)),20,99); };
       (p.isP?["stu","ctl","stm"]:["con","pow","eye","spd","def"]).forEach(each);
       computeOvr(p);
@@ -6542,7 +6580,7 @@ function startNewSeason(G){
   // reset records & stats (MLB + AAA + college)
   G.teams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0;t.streak=0;t._wsMax=0; });
   G.aaaTeams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
-  Object.values(G.players).forEach(p=>{ if(p.injury) delete p.injury; if(p._tired) delete p._tired; if(p._hitStreak) delete p._hitStreak; if(p._splits) delete p._splits; if(p._monthly) delete p._monthly; if(p._monthSnap) delete p._monthSnap; });   // offseason heals everyone; streaks/splits/monthly reset (career best kept)
+  Object.values(G.players).forEach(p=>{ if(p.injury) delete p.injury; if(p._tired) delete p._tired; if(p._hitStreak) delete p._hitStreak; if(p._splits) delete p._splits; if(p._monthly) delete p._monthly; if(p._monthSnap) delete p._monthSnap; if(p._seasonDev) delete p._seasonDev; });   // offseason heals everyone; streaks/splits/monthly/in-season-dev reset (career best kept)
   G._curMonth=null;
   (G.collegeTeams||[]).forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
   G.schedule = buildSchedule(G.teams);
