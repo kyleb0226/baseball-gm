@@ -4496,7 +4496,10 @@ function FreeAgency({G, commit, tShow}){
   // let the market move: rival clubs sign their best-fit targets (they may steal a guy you wanted)
   const advanceMarket=()=>{
     const n=processFAWave(G, 0.5);
-    commit(G); tShow(n>0?`📝 ${n} free agent${n>1?"s":""} signed elsewhere`:"Market quiet — no one signed");
+    const ni=(G.ifaClass&&G.ifaClass.length)?processIFAWave(G, 0.2):0;
+    commit(G);
+    const parts=[]; if(n>0) parts.push(`${n} free agent${n>1?"s":""}`); if(ni>0) parts.push(`${ni} int'l prospect${ni>1?"s":""}`);
+    tShow(parts.length?`📝 ${parts.join(" + ")} signed elsewhere`:"Market quiet — no one signed");
   };
   const waived = (G.waivers||[]).map(w=>({w, p:G.players[w.id]})).filter(x=>x.p && x.p.teamId==null);
   const claim=(p)=>{
@@ -4523,22 +4526,26 @@ function FreeAgency({G, commit, tShow}){
           <div className="text-sm font-semibold text-violet-300">🌎 International Free Agents <span className="text-slate-500 text-xs font-normal">({ifas.length})</span></div>
           <div className="text-xs text-slate-400">Bonus pool: <b className="text-violet-300 tnum">{ifaPool.toFixed(1)}</b></div>
         </div>
-        <p className="text-xs text-slate-400 mb-2">Raw 16–19yo international amateurs — sign with your bonus pool (they report to AAA). Ratings are lightly scouted; unsigned prospects sign elsewhere once the season starts.</p>
+        <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+          <p className="text-xs text-slate-400">Raw 16–19yo international amateurs — sign with your bonus pool (they report to AAA). Rivals are bidding too: 🔥 = competing interest. Sign a coveted kid before he's gone.</p>
+          <button onClick={advanceMarket} className="px-2 py-1 rounded text-xs bg-amber-600/80 hover:bg-amber-500 text-slate-900 font-semibold" title="Rival clubs sign their targets — international prospects included">⏵ Let rivals sign</button>
+        </div>
         <div className="overflow-x-auto max-h-72 overflow-y-auto">
           <table className="w-full text-sm tnum">
-            <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Pos</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th><th className="text-right">Bonus</th><th></th></tr></thead>
+            <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]"><th className="text-left">Pos</th><th className="text-left">Name</th><th>Age</th><th>OVR</th><th>POT</th><th>Interest</th><th className="text-right">Bonus</th><th></th></tr></thead>
             <tbody>
-              {ifas.map(p=>(
+              {ifas.map(p=>{ const intr=ifaInterest(G,p); return (
                 <tr key={p.id} className="border-b border-[#15203a]">
                   <td className="text-slate-400">{p.pos}</td>
                   <td className="text-left"><PlayerLink p={p} className="font-medium"/></td>
                   <td className="text-center">{p.age}</td>
                   <td className="text-center"><ScoutOvrPill p={p}/></td>
                   <td className="text-center"><ScoutPotPill p={p}/></td>
+                  <td className="text-center text-xs" title={`${intr} rival club${intr===1?"":"s"} interested`}>{intr>0?<span className="text-amber-400">🔥{intr>2?` ${intr}`:""}</span>:<span className="text-slate-600">—</span>}</td>
                   <td className="text-right text-violet-300">{p.ifaBonus.toFixed(1)}</td>
                   <td className="text-right"><button disabled={ifaPool<p.ifaBonus} onClick={()=>signInt(p)} className={"px-2 py-0.5 rounded text-xs font-semibold "+(ifaPool>=p.ifaBonus?"bg-violet-600 hover:bg-violet-500":"bg-[#16213a] text-slate-600")}>Sign</button></td>
                 </tr>
-              ))}
+              ); })}
             </tbody>
           </table>
         </div>
@@ -5676,6 +5683,7 @@ function OffseasonHub({G, commit, tShow, setTab}){
     // open the free-agent market: rival clubs bid first (and a few early signings happen
     // before you even look — act fast or lose targets), then leave fresh offers on the board.
     processFAWave(G, 0.10); refreshFAMarket(G);
+    processIFAWave(G, 0.08);   // a few international prospects are already off the board when you look
     commit(G);
     tShow("Players aged & contracts processed");
   };
@@ -6199,10 +6207,37 @@ function signIFA(G, teamId, pid){
   G.ifaClass=(G.ifaClass||[]).filter(id=>id!==pid);
   return true;
 }
+// How much a club covets an IFA: grade + a positional-need bonus.
+function ifaScore(G, t, p){ const sit=teamSituation(G,t.id), needs=sit.needs||[];
+  const need = p.isP ? (needs.includes("SP")||needs.includes("RP")) : needs.includes(p.pos);
+  return prospectGrade(p) + (need?12:0); }
+// How many RIVAL clubs are realistically in on a given IFA (pool can cover his bonus + he fits a need
+// or is a blue-chipper) — shown to the user as competing interest, so coveted kids must be signed fast.
+function ifaInterest(G, p){ let n=0;
+  G.teams.forEach(t=>{ if(t.id===G.userTeamId) return; if((t.ifaPool||0) < p.ifaBonus) return;
+    const sit=teamSituation(G,t.id), needs=sit.needs||[];
+    const need = p.isP ? (needs.includes("SP")||needs.includes("RP")) : needs.includes(p.pos);
+    if(need || prospectGrade(p)>=92) n++; });
+  return n; }
+// One competitive wave: some rival clubs each sign their top affordable IFA target. Runs during the
+// offseason (with the FA waves), so a coveted international kid gets snapped up if the user waits.
+function processIFAWave(G, intensity){
+  let signed=0;
+  G.teams.forEach(t=>{
+    if(t.id===G.userTeamId || !chance(intensity)) return;
+    const avail=(G.ifaClass||[]).map(id=>G.players[id]).filter(p=>p&&p.ifaBonus<=(t.ifaPool||0));
+    if(!avail.length) return;
+    const tgt=avail.sort((a,b)=>ifaScore(G,t,b)-ifaScore(G,t,a))[0];
+    signIFA(G, t.id, tgt.id); signed++;
+    if(prospectGrade(tgt)>=95) logNews(G,"signing",`🌎 ${t.abbr} signed international prospect ${tgt.pos} ${tgt.name}`, null);
+  });
+  return signed;
+}
+// Final mop-up at the rollover: AI clubs spend whatever's left of their pools.
 function aiSignIFAs(G){
   G.teams.forEach(t=>{
     if(t.id===G.userTeamId) return;
-    let avail=(G.ifaClass||[]).map(id=>G.players[id]).filter(Boolean).sort((a,b)=>prospectGrade(b)-prospectGrade(a));
+    let avail=(G.ifaClass||[]).map(id=>G.players[id]).filter(Boolean).sort((a,b)=>ifaScore(G,t,b)-ifaScore(G,t,a));
     let guard=0;
     while((t.ifaPool||0)>=0.3 && guard++<40){
       const tgt=avail.find(p=>p.ifaBonus<=t.ifaPool);
