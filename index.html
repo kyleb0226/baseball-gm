@@ -1919,6 +1919,13 @@ function SettingsModal({G, commit, tShow, onClose}){
         <Toggle on={s.potm!==false} label="Player of the Month"
           desc="Hand out monthly Player/Pitcher of the Month awards and track month-by-month splits."
           set={()=>{ s.potm = !(s.potm!==false); force(x=>x+1); commit(G); tShow(s.potm?"Monthly awards ON":"Monthly awards OFF"); }} />
+        <Toggle on={!!s.cupCollege} label="College clubs in the BA Cup"
+          desc="Add the 24 college clubs to the BA Cup (84 entrants, a Round of 128). Underdog amateurs vs the pros — cup stats span college/AAA/MLB."
+          set={()=>{ s.cupCollege = !s.cupCollege;
+            const c=G.baCup;
+            if(c && c.roundIdx===0 && !c.matches.some(m=>m.b!=null && m.done)){ startBACup(G); tShow(s.cupCollege?"College clubs added to the Cup":"College clubs removed from the Cup"); }
+            else tShow(s.cupCollege?"College clubs join the Cup next season":"College clubs leave the Cup next season");
+            force(x=>x+1); commit(G); }} />
         <div className="text-[11px] text-slate-500 mt-3">Settings are saved per franchise.</div>
       </div>
     </div>
@@ -5377,6 +5384,8 @@ function Playoffs({G, commit, tShow}){
 // of the league season. Games are scored by a lightweight strength model so cup play
 // never pollutes league stats/records.
 const BACUP_ROUND_NAMES = ["Round of 64","Round of 32","Round of 16","Quarterfinals","Semifinals","Final"];
+// full ladder incl. the 128 round used when college clubs join (84 entrants); sliced to the bracket size
+const CUP_NAMES_ALL = ["Round of 128","Round of 64","Round of 32","Round of 16","Quarterfinals","Semifinals","Final"];
 function cupPower(G, tid){
   const ros = rosterOf(G, tid);
   const hits = ros.filter(p=>!p.isP).sort((a,b)=>b.ovr-a.ovr).slice(0,9);
@@ -5411,17 +5420,22 @@ function cupGameSim(G, aId, bId){
 }
 function mkCupMatch(a, b){ return { a, b, as:null, bs:null, winner: b==null?a:null, done: b==null }; }
 function startBACup(G){
-  const ids = [...G.teams.map(t=>t.id), ...G.aaaTeams.map(t=>t.id)];   // 30 MLB + 30 AAA = 60
+  // 30 MLB + 30 AAA = 60; optionally + the 24 college clubs (settings.cupCollege) → 84
+  const useCollege = !!(G.settings && G.settings.cupCollege) && G.collegeTeams && G.collegeTeams.length;
+  const ids = [...G.teams.map(t=>t.id), ...G.aaaTeams.map(t=>t.id)];
+  if(useCollege) ids.push(...G.collegeTeams.map(t=>t.id));
   for(let i=ids.length-1;i>0;i--){ const j=rint(0,i); [ids[i],ids[j]]=[ids[j],ids[i]]; }   // shuffle the draw
-  let size=1; while(size<ids.length) size*=2;          // 64
-  const byes = size - ids.length;                      // 4 lucky clubs sit out round 1
+  let size=1; while(size<ids.length) size*=2;          // 64 (60 clubs) or 128 (84 clubs)
+  const byes = size - ids.length;                      // lucky clubs sit out round 1
   const matches=[]; let i=0;
   for(let b=0;b<byes;b++) matches.push(mkCupMatch(ids[i++], null));
   while(i<ids.length){ matches.push(mkCupMatch(ids[i], ids[i+1]!=null?ids[i+1]:null)); i+=2; }
-  // spread the 6 rounds across the regular season so cup days are sprinkled through it
+  // spread the rounds across the regular season so cup days are sprinkled through it
+  const rounds = Math.round(Math.log2(size));
   const len = (G.schedule && G.schedule.length) || 224;
-  const roundDays = [0.05,0.20,0.36,0.52,0.70,0.88].map(f=>Math.round(len*f));
-  G.baCup = { season:G.season, roundIdx:0, matches, past:[], champion:null, roundDays };
+  const roundDays = Array.from({length:rounds}, (_,k)=> Math.round(len*(0.05 + 0.83*(rounds>1?k/(rounds-1):0))));
+  const roundNames = CUP_NAMES_ALL.slice(CUP_NAMES_ALL.length-rounds);
+  G.baCup = { season:G.season, roundIdx:0, matches, past:[], champion:null, roundDays, roundNames, college:useCollege };
 }
 // Make sure the current regular season has a live cup (auto-starts each year).
 function ensureSeasonCup(G){
@@ -5449,7 +5463,7 @@ function simBACupRound(G){
 function advanceBACup(G){
   const c=G.baCup; if(!c||c.champion!=null||c.matches.some(m=>!m.done)) return;
   const winners=c.matches.map(m=>m.winner);
-  c.past.push({ name: BACUP_ROUND_NAMES[c.roundIdx]||`Round ${c.roundIdx+1}`, matches:c.matches });
+  c.past.push({ name: (c.roundNames||BACUP_ROUND_NAMES)[c.roundIdx]||`Round ${c.roundIdx+1}`, matches:c.matches });
   if(winners.length===1){
     c.champion=winners[0];
     (G.baCupChampions=G.baCupChampions||[]).push({ season:c.season, id:winners[0] });
@@ -5503,7 +5517,7 @@ function BACup({G, commit, tShow}){
   ) : null;
 
   // every round (completed + the live one) so all fixtures are browsable
-  const roundName=c?(BACUP_ROUND_NAMES[c.roundIdx]||`Round ${c.roundIdx+1}`):"";
+  const roundName=c?((c.roundNames||BACUP_ROUND_NAMES)[c.roundIdx]||`Round ${c.roundIdx+1}`):"";
   const liveUnplayed=c&&c.champion==null&&c.matches?c.matches.some(m=>!m.done):false;
   const allRounds = c ? [
     ...(c.past||[]),
