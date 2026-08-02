@@ -26,7 +26,8 @@ const EXPORTS = [
   "rules", "setRule", "ruleValue", "applyPendingRules",
   "RULES_DEFAULT", "SEASON_LENGTHS", "SEASON_PRESETS", "countScheduledGames",
   "enterPlayoffs", "activeSeriesList", "playoffSeriesGame", "buildNextRound", "seriesLenFor",
-  "payroll", "capSpaceFor", "ROSTER_CAP",
+  "payroll", "capSpaceFor", "ROSTER_CAP", "rosterOf",
+  "startFantasyDraft", "fantasyOnClock", "fantasyAIPick", "fantasyPick", "DIFFICULTIES",
 ];
 
 /* ------------------------------- load the app ---------------------------- */
@@ -220,6 +221,57 @@ const CHECKS = {
         ok(back.teams.length === G.teams.length, `  round-trips (${(json.length / 1024 / 1024).toFixed(1)}MB)`);
       }
     });
+  },
+
+  // A fantasy draft must leave every club with a playable roster and lose nobody.
+  fantasy(A) {
+    section("Fantasy draft");
+    const G = A.newGame(0, { seed: 4, rules: { seasonLen: 54 } });
+    const beforeMlb = G.teams.reduce((s, t) => s + A.rosterOf(G, t.id).length, 0);
+    A.startFantasyDraft(G);
+    ok(G.fantasyDraft != null, `draft started with ${G.fantasyDraft.pool.length} players pooled`);
+    ok(G.teams.every(t => A.rosterOf(G, t.id).length === 0), "every big-league roster emptied");
+
+    let guard = 0;
+    while (G.fantasyDraft && !G.fantasyDraft.done && guard++ < 3000) {
+      const c = A.fantasyOnClock(G.fantasyDraft);
+      const pick = A.fantasyAIPick(G, c.teamId);
+      if (pick == null) break;
+      A.fantasyPick(G, pick);
+    }
+    ok(G.fantasyDraft == null, "draft ran to completion");
+
+    const sizes = G.teams.map(t => A.rosterOf(G, t.id).length);
+    ok(Math.min(...sizes) >= 20, `every club ended with a real roster (min ${Math.min(...sizes)})`);
+    const short = G.teams.filter(t => {
+      const r = A.rosterOf(G, t.id);
+      return r.filter(p => !p.isP).length < 9 || r.filter(p => p.isP).length < 5;
+    });
+    ok(short.length === 0, "every club can field 9 hitters and 5 arms",
+      short.length ? `${short.length} clubs came up short` : "");
+
+    // nobody may be lost: drafted + free agents must account for the original pool
+    const afterMlb = G.teams.reduce((s, t) => s + A.rosterOf(G, t.id).length, 0);
+    ok(afterMlb + G.freeAgents.length >= beforeMlb, `no players vanished (${afterMlb} rostered + ${G.freeAgents.length} FA vs ${beforeMlb})`);
+
+    // and the resulting league must actually play
+    simRegularSeason(A, G);
+    const w = G.teams.reduce((s, t) => s + t.w, 0), l = G.teams.reduce((s, t) => s + t.l, 0);
+    ok(w === l && w > 0, `post-draft season plays out balanced (${w}/${l})`);
+  },
+
+  // Difficulty must actually move the dial it advertises.
+  difficulty(A) {
+    section("Difficulty presets");
+    const run = d => {
+      const G = A.newGame(0, { seed: 8, difficulty: d, rules: { seasonLen: 54 } });
+      simRegularSeason(A, G);
+      const injured = Object.values(G.players).filter(p => p.injury).length;
+      return { G, injured };
+    };
+    const casual = run("casual"), hard = run("hardball");
+    ok(casual.G.difficulty === "casual", "difficulty persists on the save");
+    ok(hard.injured >= casual.injured, `hardball injures more (${hard.injured} vs ${casual.injured})`);
   },
 
   // A rule change staged mid-season must apply at the rollover, not before.
