@@ -70,6 +70,92 @@ const money = m => (m >= 1 ? "$" + m.toFixed(1) + "M" : "$" + round(m * 1000) + 
 // disappearing every season" bug (your oldest = lowest-id starters got clobbered first).
 const uid = (() => { let i = 1; const f = () => i++; f.atLeast = n => { if(Number.isFinite(n) && n >= i) i = n + 1; }; return f; })();
 
+/* ----------------------------- league rules ----------------------------- */
+// Every rule the commissioner can bend, in one place. `G.rules` holds the active
+// set for a franchise; `rules(G)` reads it with defaults filled in, so any code
+// path (including old saves that predate a knob) always sees a complete object.
+//
+// STRUCTURAL rules (season length, playoff shape) reshape the calendar/bracket and
+// therefore only take effect at the next season rollover — `pendingRules` stages
+// them and `applyPendingRules` promotes them in startNewSeason. IN-GAME rules (DH,
+// extras, mercy) and ROSTER/MONEY rules apply immediately.
+const RULES_DEFAULT = {
+  // --- structural (next season) ---
+  seasonLen:   162,        // 162 | 120 | 82 | 54 — scales every matchup count
+  playoffTeams: 5,         // per league: 3 | 4 | 5 | 6 | 8 (5 = 3 div winners + 2 WC)
+  lenWC:        1,         // best-of for rounds before the League Championship
+  lenDS:        5,
+  lenCS:        7,         // League Championship
+  lenWS:        7,         // World Series
+  reseed:      true,       // re-seed each round so the top survivor draws the worst
+  // --- in-game ---
+  dh:          "universal",// "universal" | "empire" (Empire league only) | "none" (pitchers hit)
+  extras:      "standard", // "standard" | "ghost" (free runner on 2nd each extra half)
+  mercy:       0,          // 0 = off; otherwise end the game at this run margin after 7 innings
+  // --- roster & money ---
+  rosterCap:   32,
+  capMode:     "none",     // "none" | "soft" (tax over the line) | "hard" (cannot exceed)
+  capAmount:   200,        // $M — the cap / tax line (matches the classic LUX_LINE)
+  taxRate:     0.3,        // soft-cap penalty per $M over the line
+  floorAmount: 0,          // 0 = off; otherwise a payroll floor in $M
+  tradeDeadlineOn: true,
+  draftLottery: false,     // false = strict reverse standings
+};
+// Read the active rule set. Always returns every key.
+function rules(G){
+  const r = (G && G.rules) || {};
+  const out = {};
+  for(const k in RULES_DEFAULT) out[k] = (r[k]==null ? RULES_DEFAULT[k] : r[k]);
+  return out;
+}
+// Structural knobs can't change mid-season without invalidating the schedule/bracket.
+const STRUCTURAL_RULES = ["seasonLen","playoffTeams","lenWC","lenDS","lenCS","lenWS","reseed","draftLottery"];
+const isStructural = k => STRUCTURAL_RULES.indexOf(k) >= 0;
+// Stage a structural change for the next rollover (or apply it now if we're between
+// seasons and the calendar is about to be rebuilt anyway).
+function setRule(G, k, v){
+  G.rules = G.rules || {};
+  if(isStructural(k) && G.phase!=="offseason"){ (G.pendingRules = G.pendingRules || {})[k] = v; }
+  else G.rules[k] = v;
+}
+// The value the UI should show for a knob: a staged change if there is one, else live.
+function ruleValue(G, k){
+  if(G && G.pendingRules && G.pendingRules[k]!=null) return G.pendingRules[k];
+  return rules(G)[k];
+}
+// Promote staged structural rules — called from startNewSeason before the calendar
+// and bracket are rebuilt, so the new season is built under the new rules.
+function applyPendingRules(G){
+  if(!G.pendingRules) return;
+  G.rules = G.rules || {};
+  const changed = [];
+  for(const k in G.pendingRules){
+    if(G.rules[k]!==G.pendingRules[k]){ G.rules[k]=G.pendingRules[k]; changed.push(k); }
+  }
+  G.pendingRules = null;
+  if(changed.length) logNews(G,"event",`📋 Rule changes take effect this season: ${changed.map(k=>RULE_LABEL[k]||k).join(", ")}.`, null);
+}
+// Human labels for the rule keys (news copy + the rules screen).
+const RULE_LABEL = {
+  seasonLen:"season length", playoffTeams:"playoff field", lenWC:"early-round length",
+  lenDS:"Division Series length", lenCS:"League Championship length", lenWS:"World Series length",
+  reseed:"re-seeding", dh:"designated hitter", extras:"extra innings",
+  mercy:"mercy rule", rosterCap:"roster limit", capMode:"salary cap", capAmount:"cap number",
+  taxRate:"luxury tax rate", floorAmount:"payroll floor", tradeDeadlineOn:"trade deadline",
+  draftLottery:"draft lottery",
+};
+// Scale a matchup count so a full slate lands near the chosen season length. The
+// 162-game slate is 18/8/2 per opponent; shorter seasons divide it down and re-plan
+// the series splits (seriesPlan handles any count via its generic fallback).
+function seasonScale(G){ return rules(G).seasonLen / 162; }
+// Does this club use a DH in its home park under the current rule?
+function dhFor(G, team){
+  const d = rules(G).dh;
+  if(d==="universal") return true;
+  if(d==="none") return false;
+  return !team || team.league==="Empire";     // "empire" — DH only in the Empire league
+}
+
 /* ----------------------------- name pools ------------------------------ */
 const FIRST = ["Jake","Marcus","Tyler","Diego","Carlos","Aaron","Liam","Noah","Mason","Ethan","Wyatt","Cole","Hunter","Owen","Luca","Mateo","Andre","Brett","Chase","Dax","Eli","Felix","Gavin","Hugo","Isaac","Jaylen","Kai","Logan","Miles","Nash","Omar","Parker","Quinn","Reed","Sawyer","Trent","Victor","Wade","Xander","Zane","Beau","Caleb","Drew","Emmett","Grant","Jonah","Kyle","Lane","Max","Reid","Shane","Tate","Vince","Wesley","Yusuf","Brody","Dane","Finn","Garrett","Heath",
   "Adrian","Alex","Angel","Anthony","Austin","Blake","Brandon","Brennan","Bryce","Cameron","Carson","Cedric","Cesar","Clayton","Connor","Cooper","Dallas","Damon","Darius","Davis","Dennis","Derek","Devin","Dominic","Dustin","Elias","Enrique","Ezra","Fernando","Gabriel","Gerald","Gideon","Graham","Hayden","Hector","Ian","Ivan","Jace","Jared","Jasper","Javier","Jaxon","Jensen","Joaquin","Jordan","Jose","Josiah","Julian","Keaton","Kendrick","Kenji","Kieran","Leo","Levi","Lincoln","Lorenzo","Malik","Manuel","Marco","Mario","Martin","Maverick","Maximo","Micah","Nathan","Nelson","Nico","Nolan","Orion","Pablo","Pedro","Phoenix","Rafael","Ramon","Raul","Remy","Rhys","Ricardo","Rocco","Roman","Ronan","Rowan","Ryder","Samuel","Santiago","Sebastian","Silas","Simon","Soren","Spencer","Sterling","Talon","Theo","Tobias","Tomas","Travis","Tristan","Ty","Ulises","Walker","Weston","Zander","Zion","Cody","Colt","Dawson","Easton","Emilio","Gage","Kobe","Lucas","Marco","Preston","Quincy","Rashad","Tanner"];
@@ -436,8 +522,14 @@ function playoffPayout(G, tid){
   let pay=0;
   const inS=(s,amt)=>{ if(s && s.done && (s.hi===tid||s.lo===tid) && s.winner!==tid) pay=Math.max(pay,amt); };
   if(po.ws) inS(po.ws, PAYOUTS.wsLoser);
+  const tier = { cs:PAYOUTS.csLoser, ds:PAYOUTS.dsLoser, wc:PAYOUTS.wcLoser };
   ["Empire","Pioneer"].forEach(lg=>{ const b=po[lg]; if(!b) return;
-    inS(b.cs, PAYOUTS.csLoser); (b.ds||[]).forEach(s=>inS(s,PAYOUTS.dsLoser)); (b.wc||[]).forEach(s=>inS(s,PAYOUTS.wcLoser));
+    if(b.rounds){                                  // generic bracket: pay by round depth
+      const nR = po.nRounds || b.rounds.length;
+      b.rounds.forEach((rd,i)=>{ const amt=tier[roundKeyFor(i,nR)]; (rd||[]).forEach(s=>inS(s,amt)); });
+    } else {                                       // legacy fixed bracket (pre-rules saves)
+      inS(b.cs, PAYOUTS.csLoser); (b.ds||[]).forEach(s=>inS(s,PAYOUTS.dsLoser)); (b.wc||[]).forEach(s=>inS(s,PAYOUTS.wcLoser));
+    }
   });
   return pay;
 }
@@ -457,11 +549,22 @@ function finBonus(G, t, madePlayoffs, champ){
   const plan=t.ticketPlan||"standard";
   const ticketAdj = plan==="premium" ? +(((t.attFill||0.5)*4)-1).toFixed(1) : plan==="value" ? -1.5 : 0;
   const pr=payroll(G,t.id);
+  const R=rules(G);
+  // Luxury tax. Under the classic rule ("none") the league's standing $200M line applies
+  // with a repeat-offender rate. A SOFT cap replaces it with the commissioner's own line
+  // and rate; a HARD cap needs no tax because payroll can never cross the ceiling.
   let tax=0;
-  if(pr>LUX_LINE){ const rate=t._luxLast?LUX_RATE_REPEAT:LUX_RATE; tax=+Math.min((pr-LUX_LINE)*rate, 22).toFixed(1); t._luxLast=true; }
-  else t._luxLast=false;
-  const total=+(sponsAdj + bonuses + prize + cup + gateAdj + ticketAdj - tax).toFixed(1);
-  t.lastFin={ spons, sponsAdj:+sponsAdj.toFixed(1), bonuses, prize, cup, gateAdj:+gateAdj.toFixed(1), ticketAdj, tax, total, season:G.season };
+  if(R.capMode==="soft"){
+    if(pr>R.capAmount){ tax=+Math.min((pr-R.capAmount)*R.taxRate, 40).toFixed(1); t._luxLast=true; }
+    else t._luxLast=false;
+  } else if(R.capMode==="none"){
+    if(pr>LUX_LINE){ const rate=t._luxLast?LUX_RATE_REPEAT:LUX_RATE; tax=+Math.min((pr-LUX_LINE)*rate, 22).toFixed(1); t._luxLast=true; }
+    else t._luxLast=false;
+  } else t._luxLast=false;
+  // Payroll floor: a club that spends under the line owes the shortfall to the league.
+  const floorPay = R.floorAmount && pr<R.floorAmount ? +Math.min(R.floorAmount-pr, 25).toFixed(1) : 0;
+  const total=+(sponsAdj + bonuses + prize + cup + gateAdj + ticketAdj - tax - floorPay).toFixed(1);
+  t.lastFin={ spons, sponsAdj:+sponsAdj.toFixed(1), bonuses, prize, cup, gateAdj:+gateAdj.toFixed(1), ticketAdj, tax, floorPay, total, season:G.season };
   return total;
 }
 
@@ -663,6 +766,38 @@ function generateLeague(userTeamId, opts={}){
 function gamesBetween(a, b){
   if(a.league===b.league) return a.division===b.division ? 18 : 8;
   return a.division===b.division ? 2 : 0;          // interleague only vs the mirror division
+}
+// Season-length rule. Each preset is an explicit matchup table rather than a scaled
+// float, so every length is an EXACT total and keeps the same league shape (division
+// rivals heaviest, a little interleague). Per team:
+//   4 division rivals × div + 10 same-league × lg + 5 mirror-division × inter
+const SEASON_PRESETS = {
+  162: { div:18, lg:8, inter:2 },   // 72 + 80 + 10 — the full slate
+  108: { div:12, lg:5, inter:2 },   // 48 + 50 + 10 — two-thirds
+  72:  { div:8,  lg:3, inter:2 },   // 32 + 30 + 10 — short
+  54:  { div:6,  lg:2, inter:2 },   // 24 + 20 + 10 — sprint
+};
+const SEASON_LENGTHS = [162,108,72,54];
+// Build the `gamesBetween`-shaped function for a chosen season length.
+function gamesForLength(len){
+  const t = SEASON_PRESETS[len] || SEASON_PRESETS[162];
+  return (a,b)=>{
+    if(a.league===b.league) return a.division===b.division ? t.div : t.lg;
+    return a.division===b.division ? t.inter : 0;
+  };
+}
+// The MLB matchup function for this franchise's active season-length rule.
+function leagueGames(G){ return gamesForLength(rules(G).seasonLen); }
+// How many games a club is scheduled for across a built calendar.
+function countScheduledGames(schedule, teamId){
+  let n=0; (schedule||[]).forEach(day=>day.forEach(g=>{ if(g.home===teamId||g.away===teamId) n++; }));
+  return n;
+}
+// AAA mirrors the big-league calendar; college keeps its own lighter slate scaled to match.
+function collegeGamesFor(G){
+  const f = rules(G).seasonLen / 162;
+  if(f>=1) return collegeGamesBetween;
+  return (a,b)=>{ const n=collegeGamesBetween(a,b); return n ? Math.max(2, Math.round(n*f)) : 0; };
 }
 // lighter amateur slate (~50 games): college seasons are short
 function collegeGamesBetween(a, b){
@@ -895,7 +1030,32 @@ function platoonLineup(team, players, idx, oppStarter){
   return out;
 }
 
-function simGame(home, away, players, idx, recordSplits, tactics){
+// PITCHERS-HIT rule: a sentinel occupying the 9-hole. It resolves at plate-appearance
+// time to whoever is CURRENTLY on the mound for the batting club, so a pitching change
+// naturally changes who bats there (no fixed proxy that keeps hitting after he's pulled).
+const PITCHER_SLOT = { _pitcherSlot:true };
+// A pitcher stepping in to hit. His hitting line lives in p.batStats, kept SEPARATE from
+// p.stats — a pitcher's p.stats holds pitching counters and the keys collide (H, BB, SO, R
+// all mean the opposite thing there). Ratings are floored to a genuine automatic out.
+//
+// The proxy is cached in a per-GAME Map, never on the player: hanging it off `p` would put
+// a back-reference to `p` inside `p` itself, and the save is JSON — a cycle there throws on
+// stringify and the whole franchise fails to write.
+function pitcherAtBat(p, cache){
+  if(!p) return null;
+  const hit = cache && cache.get(p.id);
+  if(hit) return hit;
+  p.batStats = p.batStats || emptyHitStats();
+  const proxy = { id:p.id, name:p.name, isP:true, pos:"P", bats:p.bats||"R",
+    con:Math.min(p.con||20,23), pow:Math.min(p.pow||20,21), eye:Math.min(p.eye||20,22),
+    spd:Math.min(p.spd||30,45), def:p.def||40, ovr:p.ovr, stats:p.batStats };
+  if(cache) cache.set(p.id, proxy);
+  return proxy;
+}
+function simGame(home, away, players, idx, recordSplits, tactics, R){
+  R = R || RULES_DEFAULT;
+  // DESIGNATED HITTER rule — the HOME park governs, as in real baseball.
+  const useDH = R.dh==="universal" ? true : R.dh==="none" ? false : (home && home.league==="Empire");
   const out = { home, away, hbp:0 };   // hbp: combined hit-batters (brawl fuel, read by simDay)
   const park = (home && home.ballpark && home.ballpark.pf) || 1;   // home park nudges this game's run environment
   const parkHand = (home && home.ballpark && home.ballpark.hand) || 0;   // +RF short (favors LHB), −LF short (favors RHB)
@@ -904,13 +1064,30 @@ function simGame(home, away, players, idx, recordSplits, tactics){
   const oppStart = { [home.id]: arms[away.id].starter, [away.id]: arms[home.id].starter };
   const lineups = { [home.id]: dayLineup(home,players,idx,oppStart[home.id]),
                     [away.id]: dayLineup(away,players,idx,oppStart[away.id]) };
+  // No DH → the weakest bat in the order gives way to the pitcher's slot. Dropping the
+  // worst hitter (rather than a fixed index) matches what the DH actually removes.
+  if(!useDH){
+    [home,away].forEach(t=>{
+      const ln = lineups[t.id]; if(ln.length<2) return;
+      let wi=0; for(let i=1;i<ln.length;i++) if((ln[i].ovr||0) < (ln[wi].ovr||0)) wi=i;
+      ln[wi] = PITCHER_SLOT;
+    });
+  }
   const order = { [home.id]:0, [away.id]:0 };
+  let ghostRunner = false;    // set per half-inning by the extra-innings rule below
+  const batProxies = new Map();   // per-game pitcher-at-bat proxies (never stored on the player)
+  // The batting order minus the pitcher's slot. Everything that snapshots or reports a
+  // batting line works off this: the sentinel has no stats, and a pitcher who hits can't
+  // share a gSnap key with his own pitching line (same player id, different counters).
+  // His hitting still accrues to p.batStats and shows on his player card.
+  const realBatters = tid => lineups[tid].filter(h=>h!==PITCHER_SLOT);
   const defN = { [home.id]: n01(teamDefRating(home,players)), [away.id]: n01(teamDefRating(away,players)) };
   // position -> fielder for each club, so balls in play can be charged to a fielder
   // (a fielding chance, and sometimes an error). Built from the assigned defense (team.pos),
   // falling back to a player's natural position. The DH never fields.
   const fielderMap = t => { const m={}, pm=posMapFor(t, oppStart[t.id]);
-    lineups[t.id].forEach(h=>{ const pos=pm[h.id]||h.pos; if(pos!=="DH" && !m[pos]) m[pos]=h; }); return m; };
+    lineups[t.id].forEach(h=>{ if(h===PITCHER_SLOT) return;   // the pitcher's own slot: fieldChance uses the live arm
+      const pos=pm[h.id]||h.pos; if(pos!=="DH" && !m[pos]) m[pos]=h; }); return m; };
   const fielders = { [home.id]: fielderMap(home), [away.id]: fielderMap(away) };
   // realistic distribution of where balls in play are handled (sums to 1)
   const FIELD_DIST = [["SS",.17],["CF",.16],["LF",.13],["RF",.13],["2B",.13],["3B",.12],["1B",.09],["C",.04],["P",.03]];
@@ -962,7 +1139,7 @@ function simGame(home, away, players, idx, recordSplits, tactics){
   const snapH = h => ({AB:h.stats.AB,R:h.stats.R,H:h.stats.H,RBI:h.stats.RBI,BB:h.stats.BB,SO:h.stats.SO,HR:h.stats.HR});
   const snapP = p => ({OUT:p.stats.OUT,H:p.stats.H,R:p.stats.R||0,ER:p.stats.ER,BB:p.stats.BB,SO:p.stats.SO,HRA:p.stats.HRA});
   const gSnap = {};
-  [home.id,away.id].forEach(tid=>{ lineups[tid].forEach(h=>{ gSnap[h.id]=snapH(h); });
+  [home.id,away.id].forEach(tid=>{ realBatters(tid).forEach(h=>{ gSnap[h.id]=snapH(h); });
     const sp=cur[tid].p; gSnap[sp.id]=snapP(sp); });
 
   // bring an arm into the game (counts an appearance the first time only this game)
@@ -1045,6 +1222,13 @@ function simGame(home, away, players, idx, recordSplits, tactics){
   function halfInning(batId, pitId, inning, isBottom){
     let outs=0; const bases=[null,null,null];
     const hitters = lineups[batId];
+    // ghost-runner rule: each extra half starts with the previous batter on 2nd
+    if(ghostRunner && hitters.length){
+      const li = ((order[batId]-1) % hitters.length + hitters.length) % hitters.length;
+      let gr = hitters[li];
+      if(gr===PITCHER_SLOT) gr = pitcherAtBat(cur[batId].p, batProxies);
+      if(gr) bases[1] = gr;
+    }
     const recOut = pitcher => { outs++; cur[pitId].outs++; cur[pitId].segOuts=(cur[pitId].segOuts||0)+1; pitcher.stats.OUT++; gOuts[pitcher.id]=(gOuts[pitcher.id]||0)+1; };
     // wild pitch / balk: bump every runner up a base, scoring from third
     const wpAdvance = ()=>{ let r=0; if(bases[2]){r++; if(bases[2].stats) bases[2].stats.R++; bases[2]=null;} if(bases[1]){bases[2]=bases[1];bases[1]=null;} if(bases[0]){bases[1]=bases[0];bases[0]=null;} return r; };
@@ -1100,7 +1284,10 @@ function simGame(home, away, players, idx, recordSplits, tactics){
         }
       }
       const pitcher = cur[pitId].p;
-      const bat = hitters[order[batId] % hitters.length]; order[batId]++;
+      let bat = hitters[order[batId] % hitters.length]; order[batId]++;
+      // pitchers-hit rule: the 9-hole resolves to the batting club's CURRENT arm
+      if(bat===PITCHER_SLOT) bat = pitcherAtBat(cur[batId].p, batProxies) || hitters.find(h=>h!==PITCHER_SLOT);
+      if(!bat) break;
       const res = paOutcome(bat, pitcher, defN[pitId], park, parkHand, {late: inning>=8 && Math.abs(score[batId]-score[pitId])<=2});
       const _ss = recordSplits ? splitSnap(bat.stats) : null;   // snapshot for platoon/venue splits
       bat.stats.PA++;
@@ -1154,11 +1341,20 @@ function simGame(home, away, players, idx, recordSplits, tactics){
   // for the box-score line score (away = top of each inning, home = bottom; null = didn't bat).
   const lineScore = { [home.id]:[], [away.id]:[] };
   let inning=1;
+  // EXTRA-INNINGS rule: "ghost" places a free runner on 2nd to start each extra half
+  // (games end faster); "tie" stops the game level once `tieAfter` innings are done.
+  const ghostRunners = R.extras==="ghost";
+  // MERCY rule: once 7 innings are complete, a margin this big ends it early.
+  const mercy = R.mercy>0 ? R.mercy : 0;
+  const mercyHit = () => mercy && inning>=7 && Math.abs(score[home.id]-score[away.id])>=mercy;
   while(true){
+    ghostRunner = (ghostRunners && inning>9) ? true : false;   // read by halfInning when it starts
     let b=score[away.id]; halfInning(away.id, home.id, inning, false); lineScore[away.id].push(score[away.id]-b);  // top
     if(inning>=9 && score[home.id]>score[away.id]){ lineScore[home.id].push(null); break; } // home leads after top9 — no bottom
+    if(mercyHit() && score[home.id]>score[away.id]){ lineScore[home.id].push(null); out.mercy=true; break; }       // home already up big
     b=score[home.id]; halfInning(home.id, away.id, inning, true); lineScore[home.id].push(score[home.id]-b);       // bottom
     if(inning>=9 && score[home.id]!==score[away.id]) break;
+    if(mercyHit()){ out.mercy=true; break; }
     inning++;
     if(inning>20) break; // safety
   }
@@ -1207,7 +1403,7 @@ function simGame(home, away, players, idx, recordSplits, tactics){
   // per-game stat lines (diff vs the start-of-game snapshot) for single-game records
   out.gameLines = [];
   [home.id,away.id].forEach(tid=>{
-    lineups[tid].forEach(h=>{ const sn=gSnap[h.id]; if(!sn||sn.HR==null) return;
+    realBatters(tid).forEach(h=>{ const sn=gSnap[h.id]; if(!sn||sn.HR==null) return;
       out.gameLines.push({ pid:h.id, name:h.name, team:tid, isP:false, hr:h.stats.HR-sn.HR, h:h.stats.H-sn.H, rbi:h.stats.RBI-sn.RBI, ab:h.stats.AB-(sn.AB||0) }); });
     [arms[tid].starter.id, ...usedPen[tid]].forEach(pid=>{ const p=players[pid], sn=gSnap[pid]; if(!p||!sn||sn.SO==null) return;
       out.gameLines.push({ name:p.name, team:tid, isP:true, so:p.stats.SO-sn.SO, out:p.stats.OUT-sn.OUT }); });
@@ -1215,7 +1411,7 @@ function simGame(home, away, players, idx, recordSplits, tactics){
   // Full per-game box score (compact: player ids + ints, names resolved at view time) for the
   // Box Score viewer. Batting: [pid,AB,R,H,RBI,BB,SO,HR]; pitching: [pid,OUT,H,R,ER,BB,SO,HRA]
   // (R==ER — the sim treats every run as earned). Stored on the schedule/playoff game object.
-  const batLine = tid => lineups[tid].map(h=>{ const sn=gSnap[h.id]||{};
+  const batLine = tid => realBatters(tid).map(h=>{ const sn=gSnap[h.id]||{};
     return [h.id, h.stats.AB-(sn.AB||0), h.stats.R-(sn.R||0), h.stats.H-(sn.H||0),
             h.stats.RBI-(sn.RBI||0), h.stats.BB-(sn.BB||0), h.stats.SO-(sn.SO||0), h.stats.HR-(sn.HR||0)]; });
   const pitLine = tid => [arms[tid].starter.id, ...usedPen[tid]].map(pid=>{ const p=players[pid], sn=gSnap[pid]||{};
@@ -1271,11 +1467,17 @@ function awardDecision(winnerId, loserId, arms, usedPen, players, ctx){
 // record (deduped) a team label a player actually suited up for this season
 function tagTeam(p, lbl){ if(!p) return; if(!p._yrTeams) p._yrTeams=[]; if(!p._yrTeams.includes(lbl)) p._yrTeams.push(lbl); }
 const teamLabel = t => t.abbr + (t.aaa?" AAA":(t.college?" (C)":""));
-function markGamesPlayed(home, away, players, idx){
+// `idx` is the team→players roster index; `day` is the calendar day (for the
+// consecutive-games run). Keep them distinct — an earlier version stored `idx` itself
+// in `_lastD`, which put the whole roster index inside every player and made the save
+// circular (JSON.stringify threw, so Save File / the localStorage fallback both failed).
+function markGamesPlayed(home, away, players, idx, day){
   [home,away].forEach(t=>{
     const lbl=teamLabel(t);
     lineupHitters(t,players,idx).forEach(h=>{ h.stats.G++; tagTeam(h,lbl);
-      h._cg = (h._lastD===idx-1) ? (h._cg||0)+1 : 1; h._lastD=idx;   // consecutive-games run (weary legs)
+      if(typeof day === "number"){                                   // consecutive-games run (weary legs)
+        h._cg = (h._lastD===day-1) ? (h._cg||0)+1 : 1; h._lastD=day;
+      }
     });
   });
 }
@@ -1291,7 +1493,7 @@ function standings(teams){
   Object.values(byDiv).forEach(arr=>arr.sort((a,b)=>pct(b)-pct(a)||b.w-a.w));
   return byDiv;
 }
-function playoffSeeds(teams, league){
+function playoffSeeds(teams, league, n){
   const lt = teams.filter(t=>t.league===league);
   const byDiv={};
   lt.forEach(t=>(byDiv[t.division]=byDiv[t.division]||[]).push(t));
@@ -1299,8 +1501,35 @@ function playoffSeeds(teams, league){
   Object.values(byDiv).forEach(arr=>{arr.sort((a,b)=>pct(b)-pct(a)); winners.push(arr[0]);});
   winners.sort((a,b)=>pct(b)-pct(a));
   const rest = lt.filter(t=>!winners.includes(t)).sort((a,b)=>pct(b)-pct(a));
-  const wc = rest.slice(0,2);
-  return [...winners, ...wc]; // 5 seeds: 0,1,2 div winners; 3,4 wild cards (play-in)
+  // Field size is a league rule. Division winners always seed above wild cards (1-3),
+  // then the best remaining records fill out to `n`. n=5 is the classic shape.
+  const want = Math.max(2, Math.min(n==null?5:n, lt.length));
+  return [...winners, ...rest].slice(0, want);
+}
+// How many rounds a league bracket of `n` teams needs before it has a champion.
+const bracketRounds = n => Math.max(1, Math.ceil(Math.log2(Math.max(2,n))));
+// Pair one round from the still-alive teams (best seed first). When the field isn't a
+// power of two the TOP seeds sit out — exactly enough games are played to cut the field
+// down to the next power of two, so the classic 5-team field opens with one play-in.
+function pairRound(alive){
+  const n = alive.length;
+  if(n<2) return { series:[], byes:alive.slice() };
+  const pow = 1 << Math.floor(Math.log2(n));
+  const pairs = (n===pow) ? n/2 : (n-pow);       // games played this round
+  const byeCount = n - pairs*2;
+  const byes = alive.slice(0, byeCount);
+  const playing = alive.slice(byeCount);
+  const series = [];
+  for(let i=0;i<pairs;i++) series.push(mkSeries(playing[i], playing[playing.length-1-i]));
+  return { series, byes };
+}
+// Round key (drives series length + labels) by position in the league bracket: the last
+// round is always the League Championship, the one before it the Division Series.
+function roundKeyFor(i, total){ return i===total-1 ? "cs" : i===total-2 ? "ds" : "wc"; }
+// Best-of for a given round under the active rules.
+function seriesLenFor(G, roundKey){
+  const R = rules(G);
+  return roundKey==="ws" ? R.lenWS : roundKey==="cs" ? R.lenCS : roundKey==="ds" ? R.lenDS : R.lenWC;
 }
 
 /* ----------------------------- derived stat display -------------------- */
@@ -1815,6 +2044,26 @@ function migrate(G){
     // AI clubs start with their sponsor slots filled so commercial income is fair from day one
     G.teams.forEach(t=>{ if(t.id!==G.userTeamId) SPONSOR_SLOTS.forEach(s=>{ if(!t.sponsors[s]) t.sponsors[s]=mkSponsorOffer(t,s); }); });
     ensureGMs(G);   // named rival GMs for saves that predate them
+    // League rules: existing franchises adopt the classic defaults, and their real
+    // schedule length wins over the preset so an in-flight season is never reshaped.
+    if(!G.rules){
+      G.rules = Object.assign({}, RULES_DEFAULT);
+      if(G.schedule && G.schedule.length){
+        // infer which preset this save was built under from its actual game count
+        const gp = G.teams[0] ? countScheduledGames(G.schedule, G.teams[0].id) : 162;
+        let best=162, bd=Infinity;
+        SEASON_LENGTHS.forEach(L=>{ const d=Math.abs(L-gp); if(d<bd){ bd=d; best=L; } });
+        G.rules.seasonLen = best;
+      }
+    }
+    if(G.pendingRules===undefined) G.pendingRules=null;
+    // Repair saves written while markGamesPlayed stored the roster INDEX in `_lastD`
+    // instead of the day number. Those saves round-trip through IndexedDB's structured
+    // clone but are circular, so Save File (JSON) threw. Drop the poisoned values.
+    if(!G._lastDFixed){
+      Object.values(G.players||{}).forEach(p=>{ if(p._lastD!=null && typeof p._lastD!=="number"){ delete p._lastD; delete p._cg; } });
+      G._lastDFixed = true;
+    }
     if(!G.h2h) G.h2h={};
     if(!Array.isArray(G.tradeLog)) G.tradeLog=[];
     if(!Array.isArray(G.doubles)) G.doubles=[];
@@ -1903,7 +2152,10 @@ function migrate(G){
         if(typeof s.hw!=='number') s.hw = (s.done&&s.winner===s.hi)?need:0;
         if(typeof s.lw!=='number') s.lw = (s.done&&s.winner===s.lo)?need:0;
       };
-      ["Empire","Pioneer"].forEach(lg=>{ const b=po[lg]; if(b){ (b.wc||[]).forEach(s=>norm(s,1)); (b.ds||[]).forEach(s=>norm(s,3)); norm(b.cs,4); } });
+      ["Empire","Pioneer"].forEach(lg=>{ const b=po[lg]; if(!b) return;
+        if(b.rounds) b.rounds.forEach(rd=>(rd||[]).forEach(s=>norm(s,4)));
+        else { (b.wc||[]).forEach(s=>norm(s,1)); (b.ds||[]).forEach(s=>norm(s,3)); norm(b.cs,4); }
+      });
       norm(po.ws,4);
     }
     G.version = SAVE_VERSION;
@@ -1940,9 +2192,14 @@ function importSave(file, onLoad){
 function newGame(userTeamId, opts={}){
   const { teams, aaaTeams, collegeTeams, players } = generateLeague(userTeamId, opts);
   assignRivals(teams);
-  const schedule = buildSchedule(teams);
-  const aaaSchedule = buildSchedule(aaaTeams);
-  const collegeSchedule = buildSchedule(collegeTeams, collegeGamesBetween);
+  // rules chosen on the Splash screen apply to the very first calendar
+  const startRules = Object.assign({}, RULES_DEFAULT, (opts && opts.rules) || {});
+  const gb = gamesForLength(startRules.seasonLen);
+  const cgb = startRules.seasonLen>=162 ? collegeGamesBetween
+            : (a,b)=>{ const n=collegeGamesBetween(a,b); const f=startRules.seasonLen/162; return n?Math.max(2,Math.round(n*f)):0; };
+  const schedule = buildSchedule(teams, gb);
+  const aaaSchedule = buildSchedule(aaaTeams, gb);
+  const collegeSchedule = buildSchedule(collegeTeams, cgb);
   padSchedules(schedule, aaaSchedule, collegeSchedule);
   const G = {
     season: 2026, day: 0, phase: "regular", version: SAVE_VERSION,
@@ -1953,6 +2210,7 @@ function newGame(userTeamId, opts={}){
     playoffs: null, champion: null, champions: [], hof: [], log: [], news: [],
     tradeDeadline: Math.round(schedule.length*0.58), tradeOffers: [], waivers: [],
     settings: { injuries: true }, gmStrikes: 0, gmFired: null,
+    rules: startRules, pendingRules: null,
   };
   setOwnerMandate(G);   // owner sets the first-season mandate
   // commercial world starts live: AI clubs have deals, the user has offers waiting
@@ -1991,6 +2249,7 @@ function App(){
   const [toast, setToast] = useState("");
   const [globalPlayer, setGlobalPlayer] = useState(null); // player whose full stats modal is open (clickable names anywhere)
   const [showSettings, setShowSettings] = useState(false);
+  const [showRules, setShowRules] = useState(false);
   const migratedRef = useRef(false);
   if(!migratedRef.current){ migrateLegacySave(); migratedRef.current=true; }   // fold a pre-slots autosave into a slot (once, before the menu reads slots)
   // Non-blocking autosave: commit updates React state immediately and debounces the
@@ -2037,6 +2296,8 @@ function App(){
             <input type="file" accept="application/json,.json" className="hidden"
               onChange={e=>{ const f=e.target.files[0]; if(f) importSave(f, g=>{ g.slotId=null; commit(g); setTab("hub"); setScreen("play"); tShow("✅ Save loaded as a new slot"); }); e.target.value=""; }} />
           </label>
+          <button onClick={()=>setShowRules(true)}
+            className="px-2 py-1 rounded bg-[#16213a] hover:bg-[#1c2c4a] text-slate-200 text-xs" title="League rules — season length, playoffs, DH, salary cap">📋 Rules</button>
           <button onClick={()=>setShowSettings(true)}
             className="px-2 py-1 rounded bg-[#16213a] hover:bg-[#1c2c4a] text-slate-200 text-xs" title="Settings">⚙</button>
           <button onClick={toMenu}
@@ -2077,6 +2338,7 @@ function App(){
       {toast && <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-emerald-500 text-slate-900 px-4 py-2 rounded-lg font-semibold shadow-lg z-50">{toast}</div>}
       {globalPlayer && <PlayerModal p={globalPlayer} team={teamById(G, globalPlayer.teamId)} G={G} onClose={()=>setGlobalPlayer(null)} />}
       {showSettings && <SettingsModal G={G} commit={commit} tShow={tShow} onClose={()=>setShowSettings(false)} />}
+      {showRules && <LeagueRulesModal G={G} commit={commit} tShow={tShow} onClose={()=>setShowRules(false)} />}
     </div>
     </PlayerCtx.Provider>
   );
@@ -2167,6 +2429,199 @@ function SettingsModal({G, commit, tShow, onClose}){
   );
 }
 
+/* --------------------------- League Rules screen ------------------------ */
+// The commissioner's desk. Structural rules (calendar, bracket) are STAGED and take
+// effect at the next season rollover — `setRule` decides, and staged values show a
+// "next season" tag so nothing silently reshapes a season in progress.
+function RuleRow({label, desc, staged, children}){
+  return (
+    <div className="py-2.5 border-b border-[#15203a] last:border-0">
+      <div className="flex items-start gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="font-medium text-sm flex items-center gap-2 flex-wrap">
+            {label}
+            {staged && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-800/50">next season</span>}
+          </div>
+          {desc && <div className="text-xs text-slate-400 mt-0.5">{desc}</div>}
+        </div>
+        <div className="shrink-0">{children}</div>
+      </div>
+    </div>
+  );
+}
+// A row of mutually-exclusive choices.
+function RulePick({value, options, onPick}){
+  return (
+    <div className="flex flex-wrap gap-1 justify-end">
+      {options.map(([v,lab])=>(
+        <button key={String(v)} onClick={()=>onPick(v)}
+          className={"px-2.5 py-1 rounded text-xs font-semibold whitespace-nowrap "+
+            (v===value ? "bg-emerald-500 text-slate-900" : "bg-[#16213a] text-slate-300 hover:bg-[#1c2c4a]")}>
+          {lab}
+        </button>
+      ))}
+    </div>
+  );
+}
+const RULE_TABS = [["game","Game"],["season","Season"],["playoffs","Playoffs"],["money","Money"]];
+function LeagueRulesModal({G, commit, tShow, onClose}){
+  const [, force] = useState(0);
+  const [tab, setTab] = useState("game");
+  const R = rules(G);
+  const staged = G.pendingRules || {};
+  // `set` routes through setRule so structural knobs stage themselves automatically
+  const set = (k,v) => {
+    setRule(G, k, v);
+    force(x=>x+1); commit(G);
+    if(isStructural(k) && G.phase!=="offseason") tShow(`📋 ${RULE_LABEL[k]||k} changes next season`);
+  };
+  const val = k => ruleValue(G, k);
+  const resetAll = () => {
+    if(!confirm("Reset every league rule to the classic defaults?")) return;
+    G.rules = Object.assign({}, RULES_DEFAULT); G.pendingRules = null;
+    force(x=>x+1); commit(G); tShow("Rules reset to classic");
+  };
+  const anyStaged = Object.keys(staged).length>0;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
+      <div className="bg-[#101a30] border border-[#1d2940] sm:rounded-xl w-full max-w-lg max-h-[92vh] sm:max-h-[85vh] flex flex-col" onClick={e=>e.stopPropagation()}>
+        <div className="p-4 border-b border-[#1d2940] flex items-center justify-between">
+          <div>
+            <div className="font-bold text-lg">📋 League Rules</div>
+            <div className="text-xs text-slate-500">You're the commissioner. Bend the game to taste.</div>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-white text-xl leading-none px-2">×</button>
+        </div>
+
+        <div className="flex gap-1 px-3 pt-3 flex-wrap">
+          {RULE_TABS.map(([k,lab])=>(
+            <button key={k} onClick={()=>setTab(k)}
+              className={"px-3 py-1.5 rounded-lg text-xs font-semibold "+(tab===k?"bg-emerald-500 text-slate-900":"bg-[#16213a] text-slate-300 hover:bg-[#1c2c4a]")}>{lab}</button>
+          ))}
+        </div>
+
+        <div className="p-4 overflow-y-auto flex-1">
+          {tab==="game" && <>
+            <RuleRow label="Designated hitter"
+              desc={R.dh==="none" ? "Pitchers bat — the weakest bat in the order gives way to the arm."
+                  : R.dh==="empire" ? "Empire clubs use a DH at home; Pioneer parks make pitchers hit."
+                  : "Every club uses a DH in every park."}>
+              <RulePick value={R.dh} onPick={v=>set("dh",v)}
+                options={[["universal","Universal"],["empire","Empire only"],["none","Pitchers hit"]]}/>
+            </RuleRow>
+            <RuleRow label="Extra innings"
+              desc={R.extras==="ghost" ? "A free runner starts on 2nd base each extra half-inning — games end sooner."
+                  : "Play it out, as many innings as it takes."}>
+              <RulePick value={R.extras} onPick={v=>set("extras",v)}
+                options={[["standard","Classic"],["ghost","Ghost runner"]]}/>
+            </RuleRow>
+            <RuleRow label="Mercy rule"
+              desc={R.mercy ? `A lead of ${R.mercy}+ after 7 innings ends the game early.` : "Games always go the full nine."}>
+              <RulePick value={R.mercy} onPick={v=>set("mercy",v)}
+                options={[[0,"Off"],[10,"10 runs"],[15,"15 runs"]]}/>
+            </RuleRow>
+            <RuleRow label="Injuries"
+              desc="Players can get hurt and miss time. Turning this off heals everyone immediately.">
+              <RulePick value={G.settings && G.settings.injuries===false ? false : true}
+                onPick={v=>{ G.settings=G.settings||{}; G.settings.injuries=v;
+                  if(!v) Object.values(G.players).forEach(p=>{ if(p.injury) delete p.injury; });
+                  force(x=>x+1); commit(G); tShow(v?"Injuries ON":"Injuries OFF — everyone healthy"); }}
+                options={[[true,"On"],[false,"Off"]]}/>
+            </RuleRow>
+          </>}
+
+          {tab==="season" && <>
+            <RuleRow label="Season length" staged={staged.seasonLen!=null}
+              desc={`${val("seasonLen")} games — ${SEASON_PRESETS[val("seasonLen")] ? `${SEASON_PRESETS[val("seasonLen")].div} per division rival, ${SEASON_PRESETS[val("seasonLen")].lg} per league opponent` : ""}. A shorter year means a whole franchise arc in one sitting.`}>
+              <RulePick value={val("seasonLen")} onPick={v=>set("seasonLen",v)}
+                options={SEASON_LENGTHS.map(L=>[L,String(L)])}/>
+            </RuleRow>
+            <RuleRow label="Trade deadline"
+              desc={R.tradeDeadlineOn ? "The market closes partway through the season." : "Trade whenever you like, all year long."}>
+              <RulePick value={R.tradeDeadlineOn} onPick={v=>set("tradeDeadlineOn",v)}
+                options={[[true,"On"],[false,"Off"]]}/>
+            </RuleRow>
+            <RuleRow label="Draft order" staged={staged.draftLottery!=null}
+              desc={val("draftLottery") ? "The bottom 12 clubs enter a weighted lottery for the top 4 picks — tanking pays less."
+                                        : "Strict reverse standings: worst record picks first."}>
+              <RulePick value={val("draftLottery")} onPick={v=>set("draftLottery",v)}
+                options={[[false,"Reverse"],[true,"Lottery"]]}/>
+            </RuleRow>
+            <RuleRow label="Roster limit"
+              desc={`Clubs carry at most ${R.rosterCap} players on the big-league roster.`}>
+              <RulePick value={R.rosterCap} onPick={v=>set("rosterCap",v)}
+                options={[[26,"26"],[32,"32"],[40,"40"]]}/>
+            </RuleRow>
+          </>}
+
+          {tab==="playoffs" && <>
+            <RuleRow label="Playoff field" staged={staged.playoffTeams!=null}
+              desc={`${val("playoffTeams")} clubs per league (${bracketRounds(val("playoffTeams"))} rounds). Division winners always seed above wild cards; top seeds get a bye when the field isn't a power of two.`}>
+              <RulePick value={val("playoffTeams")} onPick={v=>set("playoffTeams",v)}
+                options={[[3,"3"],[4,"4"],[5,"5"],[6,"6"],[8,"8"]]}/>
+            </RuleRow>
+            <RuleRow label="Early rounds" staged={staged.lenWC!=null}
+              desc="Length of any round before the Division Series (the play-in tier).">
+              <RulePick value={val("lenWC")} onPick={v=>set("lenWC",v)}
+                options={[[1,"1 game"],[3,"Bo3"],[5,"Bo5"]]}/>
+            </RuleRow>
+            <RuleRow label="Division Series" staged={staged.lenDS!=null}>
+              <RulePick value={val("lenDS")} onPick={v=>set("lenDS",v)}
+                options={[[3,"Bo3"],[5,"Bo5"],[7,"Bo7"]]}/>
+            </RuleRow>
+            <RuleRow label="League Championship" staged={staged.lenCS!=null}>
+              <RulePick value={val("lenCS")} onPick={v=>set("lenCS",v)}
+                options={[[5,"Bo5"],[7,"Bo7"],[9,"Bo9"]]}/>
+            </RuleRow>
+            <RuleRow label="World Series" staged={staged.lenWS!=null}>
+              <RulePick value={val("lenWS")} onPick={v=>set("lenWS",v)}
+                options={[[5,"Bo5"],[7,"Bo7"],[9,"Bo9"]]}/>
+            </RuleRow>
+            <RuleRow label="Re-seed each round" staged={staged.reseed!=null}
+              desc={val("reseed") ? "The best surviving seed always draws the worst." : "Fixed bracket — win your side and the path is set."}>
+              <RulePick value={val("reseed")} onPick={v=>set("reseed",v)}
+                options={[[true,"Re-seed"],[false,"Fixed"]]}/>
+            </RuleRow>
+          </>}
+
+          {tab==="money" && <>
+            <RuleRow label="Salary cap"
+              desc={R.capMode==="hard" ? `Hard ceiling at ${money(R.capAmount)} — no club may exceed it, ever.`
+                  : R.capMode==="soft" ? `Clubs may spend past ${money(R.capAmount)} but owe ${Math.round(R.taxRate*100)}% of the overage each season.`
+                  : `Classic: each club spends up to its own budget, with the standing ${money(LUX_LINE)} luxury-tax line.`}>
+              <RulePick value={R.capMode} onPick={v=>set("capMode",v)}
+                options={[["none","Classic"],["soft","Soft cap"],["hard","Hard cap"]]}/>
+            </RuleRow>
+            {R.capMode!=="none" && <>
+              <RuleRow label="Cap number" desc="The line every club is measured against.">
+                <RulePick value={R.capAmount} onPick={v=>set("capAmount",v)}
+                  options={[[140,"$140M"],[170,"$170M"],[200,"$200M"],[240,"$240M"]]}/>
+              </RuleRow>
+              {R.capMode==="soft" && <RuleRow label="Tax rate" desc="Paid on every dollar over the line, out of next year's budget.">
+                <RulePick value={R.taxRate} onPick={v=>set("taxRate",v)}
+                  options={[[0.3,"30%"],[0.5,"50%"],[1,"100%"]]}/>
+              </RuleRow>}
+            </>}
+            <RuleRow label="Payroll floor"
+              desc={R.floorAmount ? `Clubs spending under ${money(R.floorAmount)} owe the shortfall to the league.` : "No minimum — a club can strip payroll to nothing."}>
+              <RulePick value={R.floorAmount} onPick={v=>set("floorAmount",v)}
+                options={[[0,"Off"],[80,"$80M"],[110,"$110M"]]}/>
+            </RuleRow>
+          </>}
+        </div>
+
+        <div className="p-3 border-t border-[#1d2940] flex items-center justify-between gap-2">
+          <button onClick={resetAll} className="text-xs text-slate-400 hover:text-slate-200 px-2 py-1">Reset to classic</button>
+          <div className="text-[11px] text-slate-500 text-right">
+            {anyStaged ? "⏳ Staged changes apply at the next season rollover." : "Rules are saved per franchise."}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ----------------------------- Main Menu ------------------------------- */
 // Title screen: lists every saved franchise (most-recent first = "Continue"), load/delete,
 // or start a new one. Going here from the header autosaves the active game first.
@@ -2208,11 +2663,18 @@ function Splash({onStart, onBack}){
   const [seedStr, setSeedStr] = useState("");
   const groups = {};
   TEAM_DEFS.forEach((d,i)=>{ const k=d[3]; (groups[k]=groups[k]||[]).push([d,i]); });
+  const [seasonLen, setSeasonLen] = useState(162);
+  const [dh, setDh] = useState("universal");
+  const [playoffTeams, setPlayoffTeams] = useState(5);
   const start = ()=>{
     const s = seedStr.trim();
     const seed = s==="" ? null : (/^\d+$/.test(s) ? Number(s) : hashSeed(s));
-    onStart(sel, { seed, shuffle });
+    onStart(sel, { seed, shuffle, rules: { seasonLen, dh, playoffTeams } });
   };
+  const pickBtn = (v, cur, on, lab) => (
+    <button key={String(v)} onClick={()=>on(v)}
+      className={"px-2.5 py-1 rounded text-xs font-semibold "+(v===cur?"bg-emerald-500 text-slate-900":"bg-[#16213a] text-slate-300 hover:bg-[#1c2c4a]")}>{lab}</button>
+  );
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6">
       {onBack && <button onClick={onBack} className="self-start mb-2 text-sm text-slate-400 hover:text-slate-200">← Back to menu</button>}
@@ -2246,6 +2708,24 @@ function Splash({onStart, onBack}){
               className="bg-[#0b1220] border border-[#1d2940] rounded px-2 py-1 text-sm w-36" />
           </div>
           <span className="text-xs text-slate-500">A fresh league of players is generated either way; a seed makes it reproducible.</span>
+        </div>
+        {/* Starting league rules — everything else is editable later from 📋 Rules in the header. */}
+        <div className="mt-3 pt-3 border-t border-[#1d2940] space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-slate-300 w-28">Season length</span>
+            {SEASON_LENGTHS.map(L=>pickBtn(L, seasonLen, setSeasonLen, L+" games"))}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-slate-300 w-28">Playoff field</span>
+            {[3,4,5,6,8].map(n=>pickBtn(n, playoffTeams, setPlayoffTeams, n+" per league"))}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-slate-300 w-28">Designated hitter</span>
+            {pickBtn("universal", dh, setDh, "Universal")}
+            {pickBtn("empire", dh, setDh, "Empire only")}
+            {pickBtn("none", dh, setDh, "Pitchers hit")}
+          </div>
+          <div className="text-xs text-slate-500">Full rule book — mercy rule, series lengths, salary cap and more — lives under 📋 Rules once you're in.</div>
         </div>
       </Card>
 
@@ -2441,6 +2921,7 @@ function tickMonthly(G){
 }
 
 function simDay(G){
+  const RG = rules(G);                          // active league rules for every game played today
   let idx = rosterIndex(G.players);             // build the team→players index ONCE for the whole day
   // safety net: a team that can't field a lineup/staff would crash simGame and hang the
   // whole Sim loop. Refill any depleted MLB/AAA roster to a playable minimum first.
@@ -2458,8 +2939,8 @@ function simDay(G){
       // Manager Mode: thread the user's standing tactics into HIS games only
       const userGame = isMLB && (g.home===G.userTeamId || g.away===G.userTeamId);
       const tactics = (G.managerMode && userGame && G.tactics) ? Object.assign({teamId:G.userTeamId}, G.tactics) : null;
-      const res = simGame(home, away, G.players, idx, isMLB, tactics);   // isMLB → record platoon/venue splits
-      markGamesPlayed(home, away, G.players, idx);
+      const res = simGame(home, away, G.players, idx, isMLB, tactics, RG);   // isMLB → record platoon/venue splits
+      markGamesPlayed(home, away, G.players, idx, G.day);
       if(isMLB) updateGameRecords(G, res.gameLines, G.season);   // single-game records (MLB only)
       if(isMLB) updateHitStreaks(G, res.gameLines);              // active hitting streaks (MLB only)
       recordFeats(G, res);                                       // no-hitters / perfect games / cycles / multi-HR (all levels)
@@ -2511,11 +2992,11 @@ function simDay(G){
   // trade market: drop offers once they're stale or the deadline passes; before the
   // deadline an AI club occasionally pitches the user a deal.
   if(!Array.isArray(G.tradeOffers)) G.tradeOffers=[];
-  if(G.day>G.tradeDeadline){ G.tradeOffers=[]; }
+  if(rules(G).tradeDeadlineOn && G.day>G.tradeDeadline){ G.tradeOffers=[]; }
   else {
     // bidding-war offers live one day; normal offers go stale after 12
     G.tradeOffers = G.tradeOffers.filter(o=>o._war ? (G.day-o.day)<1 : (G.day-o.day)<=12);
-    if(G.day===G.tradeDeadline && G._dlSeason!==G.season){ G._dlSeason=G.season; deadlineDayFrenzy(G); }
+    if(rules(G).tradeDeadlineOn && G.day===G.tradeDeadline && G._dlSeason!==G.season){ G._dlSeason=G.season; deadlineDayFrenzy(G); }
     else if(G.tradeOffers.length<2 && chance(0.045)){ const off=makeAITradeOffer(G); if(off) G.tradeOffers.push(off); }
     tickTradeRumors(G);   // flavor rumors building toward the deadline
   }
@@ -2815,7 +3296,9 @@ function Hub({G, commit, tShow, setTab}){
         </div>
         {busy && <div className="text-xs text-slate-400 mt-2">Simulating…</div>}
         <div className="text-xs text-slate-500 mt-2">
-          {G.day>G.tradeDeadline
+          {!rules(G).tradeDeadlineOn
+            ? "🔓 No trade deadline — the market stays open all season"
+            : G.day>G.tradeDeadline
             ? "🔒 Trade deadline has passed — the market is closed until the offseason"
             : `Trade deadline: Day ${G.tradeDeadline+1} (${G.tradeDeadline-G.day+1} days away)`}
         </div>
@@ -2844,6 +3327,30 @@ function GameLine({G, g, preview}){
 /* ----------------------------- Roster ---------------------------------- */
 function rosterOf(G, teamId){ return Object.values(G.players).filter(p=>p.teamId===teamId); }
 function payroll(G, teamId){ return rosterOf(G,teamId).reduce((s,p)=>s+p.salary,0); }
+// SALARY-CAP rule. "none" keeps the classic behaviour (a club may spend up to its own
+// budget). "hard" adds a league-wide ceiling nobody can cross. "soft" lets clubs spend
+// past the line and settles a luxury tax at the rollover instead of blocking the deal.
+function capLimitFor(G, teamId){
+  const t = teamById(G, teamId); if(!t) return 0;
+  const R = rules(G);
+  return R.capMode==="hard" ? Math.min(t.budget, R.capAmount) : t.budget;
+}
+// Room to add salary right now (what every signing/claim path should check).
+function capSpaceFor(G, teamId){ return capLimitFor(G, teamId) - payroll(G, teamId); }
+// Luxury tax owed by a club this season under a soft cap (0 otherwise).
+function luxuryTaxFor(G, teamId){
+  const R = rules(G);
+  if(R.capMode!=="soft") return 0;
+  const over = payroll(G, teamId) - R.capAmount;
+  return over>0 ? +(over * R.taxRate).toFixed(1) : 0;
+}
+// Shortfall penalty for a club under the payroll floor (0 when the floor is off).
+function floorShortfallFor(G, teamId){
+  const R = rules(G);
+  if(!R.floorAmount) return 0;
+  const under = R.floorAmount - payroll(G, teamId);
+  return under>0 ? +under.toFixed(1) : 0;
+}
 
 // Procedurally generate a ballpark's outfield wall — deterministic per park (seeded by the
 // name) so each team's stadium is stable and distinct. Most are normal/symmetric; some are
@@ -3052,8 +3559,8 @@ function processWaivers(G){
     let claimed=null;
     for(const t of order){
       if(t.id===G.userTeamId || t.id===w.fromId) continue;
-      if(rosterOf(G,t.id).length>=ROSTER_CAP) continue;
-      if(p.salary > t.budget-payroll(G,t.id)) continue;
+      if(rosterOf(G,t.id).length>=(rules(G).rosterCap||ROSTER_CAP)) continue;
+      if(p.salary > capSpaceFor(G,t.id)) continue;
       if(p.ovr<58) continue;                              // only claim useful arms/bats
       claimed=t; break;
     }
@@ -3249,6 +3756,22 @@ function PlayerModal({p, team, onClose, G}){
           {["MLB","AAA","COL"].map(L=>{ const ct=careerByLevel(L); return hasGames(ct)
             ? <React.Fragment key={L}>{line(LVLFULL[L]+" Career", ct)}</React.Fragment> : null; })}
         </div>
+        {/* Pitchers-hit rule: an arm's own batting line, kept apart from his pitching counters. */}
+        {p.isP && p.batStats && p.batStats.PA>0 && (()=>{ const b=p.batStats; return (
+          <div className="mt-3">
+            <div className="text-xs font-semibold text-slate-400 mb-1">At the plate <span className="text-slate-600 font-normal">— pitchers-hit rule</span></div>
+            <table className="w-full text-sm tnum">
+              <thead><tr className="text-slate-500 text-[11px] border-b border-[#1d2940]">
+                <th className="text-left font-medium">PA</th><th>AB</th><th>H</th><th>HR</th><th>RBI</th><th>BB</th><th>SO</th><th>AVG</th></tr></thead>
+              <tbody><tr>
+                <td className="text-left">{b.PA}</td><td className="text-center">{b.AB}</td><td className="text-center">{b.H}</td>
+                <td className="text-center text-amber-300">{b.HR||""}</td><td className="text-center">{b.RBI}</td>
+                <td className="text-center">{b.BB}</td><td className="text-center">{b.SO}</td>
+                <td className="text-center font-semibold">{f3(avg(b))}</td>
+              </tr></tbody>
+            </table>
+          </div>
+        ); })()}
         {!p.isP && p._splits && (()=>{
           const rows=[["vR","vs RHP"],["vL","vs LHP"],["home","Home"],["away","Away"]].filter(([k])=>p._splits[k]&&p._splits[k].PA>0);
           if(!rows.length) return null;
@@ -4585,7 +5108,7 @@ function Finances({G, commit, tShow}){
   // MLB + AAA org — users need to see and extend AAA players too
   const ros = rosterOf(G,team.id).concat(rosterOf(G,aaaIdOf(team.id))).sort((a,b)=>b.salary-a.salary);
   const total=payroll(G,team.id);
-  const space=team.budget-total;
+  const space=capSpaceFor(G, team.id);
   const [extendT,setExtendT]=useState(null);       // player being extended (ContractModal)
   const [restructT,setRestructT]=useState(null);   // player being restructured
   const extFactor=p=>extensionTerms(G,p);
@@ -4745,7 +5268,12 @@ function Finances({G, commit, tShow}){
             <div>
               <div className="text-xs text-slate-400 mb-1">What a run pays (added to next year's budget)</div>
               {CHART.map(([l,v])=><div key={l} className="flex justify-between text-xs py-0.5 border-b border-[#15203a]"><span className="text-slate-300">{l}</span><span className="tnum text-emerald-300">{money(v)}</span></div>)}
-              <div className="flex justify-between text-xs py-0.5"><span className="text-slate-300">Luxury tax line</span><span className="tnum text-red-300">{money(LUX_LINE)} · {Math.round(LUX_RATE*100)}% ({Math.round(LUX_RATE_REPEAT*100)}% repeat)</span></div>
+              {(()=>{ const R=rules(G);
+                if(R.capMode==="hard") return <div className="flex justify-between text-xs py-0.5"><span className="text-slate-300">Hard salary cap</span><span className="tnum text-red-300">{money(R.capAmount)} — cannot be exceeded</span></div>;
+                if(R.capMode==="soft") return <div className="flex justify-between text-xs py-0.5"><span className="text-slate-300">Soft cap / tax line</span><span className="tnum text-red-300">{money(R.capAmount)} · {Math.round(R.taxRate*100)}%</span></div>;
+                return <div className="flex justify-between text-xs py-0.5"><span className="text-slate-300">Luxury tax line</span><span className="tnum text-red-300">{money(LUX_LINE)} · {Math.round(LUX_RATE*100)}% ({Math.round(LUX_RATE_REPEAT*100)}% repeat)</span></div>;
+              })()}
+              {rules(G).floorAmount>0 && <div className="flex justify-between text-xs py-0.5"><span className="text-slate-300">Payroll floor</span><span className="tnum text-amber-300">{money(rules(G).floorAmount)} minimum</span></div>}
             </div>
             <div>
               <div className="text-xs text-slate-400 mb-1">{lf?`Your ${lf.season} money (applied at rollover)`:"Your breakdown appears after your first full season"}</div>
@@ -4845,7 +5373,7 @@ function Trades({G, commit, tShow, tradeFocus, setTradeFocus}){
   const giveVal = give.reduce((s,id)=>s+playerValue(G.players[id]),0) + givePk.reduce((s,id)=>s+pickValue(G,(G.picks||[]).find(p=>p.id===id)||{round:5,orig:me.id}),0);
   const getVal  = get.reduce((s,id)=>s+playerValue(G.players[id]),0)  + getPk.reduce((s,id)=>s+pickValue(G,(G.picks||[]).find(p=>p.id===id)||{round:5,orig:other.id}),0);
 
-  const deadlinePassed = G.phase==="regular" && G.day>G.tradeDeadline;
+  const deadlinePassed = rules(G).tradeDeadlineOn && G.phase==="regular" && G.day>G.tradeDeadline;
   const propose=()=>{
     if(deadlinePassed){ tShow("⛔ The trade deadline has passed"); return; }
     if(!give.length && !get.length && !givePk.length && !getPk.length){ tShow("Add players or picks to the trade"); return; }
@@ -5106,7 +5634,7 @@ function makeAITradeOffer(G){
   // package a touch short? a motivated club sweetens with CASH instead of walking away
   let cash=0;
   if(acc < tval*0.90){
-    if(acc >= tval*0.72){ cash=+clamp((tval-acc)*1.2, 1, 12).toFixed(1); if(other.budget-payroll(G,other.id) < cash) return null; }
+    if(acc >= tval*0.72){ cash=+clamp((tval-acc)*1.2, 1, 12).toFixed(1); if(capSpaceFor(G,other.id) < cash) return null; }
     else return null;   // too far apart even with cash
   }
   return { fromId:other.id, get:[target.id], give, givePk:[], getPk:[], cash, season:G.season, day:G.day };
@@ -5172,7 +5700,7 @@ function FreeAgency({G, commit, tShow}){
   const fas = G.freeAgents.map(id=>G.players[id]).filter(Boolean)
     .filter(p=>pos==="ALL" || (pos==="P"?p.isP:(!p.isP && p.pos===pos)))
     .sort(FA_SORTS[sort]||FA_SORTS.ovr);
-  const space = me.budget - payroll(G,me.id);
+  const space = capSpaceFor(G, me.id);
   const [negotiate, setNegotiate] = useState(null);   // FA being signed via ContractModal
   const doSign=(p, aav, years, incentives)=>{
     setContract(p, aav, years, incentives);
@@ -5319,7 +5847,7 @@ function FreeAgency({G, commit, tShow}){
 }
 
 /* ----------------------------- Playoffs -------------------------------- */
-const SERIES_LEN = { wc:1, ds:5, cs:7, ws:7 };   // wild card is a single play-in game
+// (series lengths are a league rule now — see seriesLenFor / RULES_DEFAULT)
 function mkSeries(hi, lo){ return { hi, lo, hw:0, lw:0, games:[], done:false, winner:null }; }
 
 /* ----------------------------- awards ---------------------------------- */
@@ -5510,7 +6038,7 @@ function playAllStarGame(G){
   const roster=[...homeRoster,...awayRoster];
   const winSet=new Set();   // filled after the result
   const snap={}; roster.forEach(p=>snap[p.id]=Object.assign({},p.stats));
-  const res=simGame(home,away,G.players,idx);   // REAL sim; no markGamesPlayed / records / feats (exhibition)
+  const res=simGame(home,away,G.players,idx,false,null,rules(G));   // REAL sim; no markGamesPlayed / records / feats (exhibition)
   const homeWon=res.hs>res.as;
   const winnerId=homeWon?ASG_HOME_ID:ASG_AWAY_ID;
   (homeWon?homeRoster:awayRoster).forEach(p=>winSet.add(p.id));
@@ -5772,13 +6300,17 @@ function enterPlayoffs(G){
   buildSeasonRecap(G);  // snapshot the year's highlights (while stats are live) for the offseason recap
   payIncentives(G);   // settle stat-based contract bonuses (off-cap)
   G.phase="playoffs";
+  // Bracket size is a league rule. Each league builds a generic seeded bracket with
+  // byes for the top seeds when the field isn't a power of two (see pairRound).
+  const field = rules(G).playoffTeams;
+  const nRounds = bracketRounds(field);
   const mk = league => {
-    const seeds = playoffSeeds(G.teams, league).map(t=>t.id);
-    // wild-card play-in (single game): the two wild cards (seeds 4 & 5) play once,
-    // higher seed hosts; winner becomes the 4th team. Seeds 1-3 (div winners) wait.
-    return { seeds, wc:[ mkSeries(seeds[3], seeds[4]) ], ds:null, cs:null };
+    const seeds = playoffSeeds(G.teams, league, field).map(t=>t.id);
+    const { series, byes } = pairRound(seeds);
+    return { seeds, rounds:[series], byes };     // `byes` = teams waiting for the next round
   };
-  G.playoffs = { Empire: mk("Empire"), Pioneer: mk("Pioneer"), round:"wc", wsWinner:null, ws:null };
+  G.playoffs = { Empire: mk("Empire"), Pioneer: mk("Pioneer"),
+                 ri:0, nRounds, round: roundKeyFor(0, nRounds), wsWinner:null, ws:null };
   // AAA + college postseasons auto-sim instantly and are shown as finished brackets.
   // AAA mirrors MLB (Bo5/Bo7); college is the same shape but best-of-3.
   try{
@@ -5812,7 +6344,7 @@ function seriesGame(G, hiId, loId, hiHome){
   const away = hiHome? teamById(G,loId):teamById(G,hiId);
   const roster=[...rosterOf(G,home.id), ...rosterOf(G,away.id)];
   const snap={}; roster.forEach(p=>snap[p.id]=Object.assign({},p.stats));
-  const r = simGame(home, away, G.players);
+  const r = simGame(home, away, G.players, null, false, null, rules(G));
   markGamesPlayed(home, away, G.players);
   if(isMlbId(hiId)) updateGameRecords(G, r.gameLines, G.season);   // MLB playoff games only
   recordFeats(G, r);                                        // postseason no-hitters / cycles count too
@@ -5873,27 +6405,56 @@ function playoffSeriesGame(G, s, bestOf){
 
 // the series currently being contested in this round
 function activeSeriesList(po){
-  if(po.round==="wc") return [...po.Empire.wc, ...po.Pioneer.wc];
-  if(po.round==="ds") return [...po.Empire.ds, ...po.Pioneer.ds];
-  if(po.round==="cs") return [po.Empire.cs, po.Pioneer.cs];
+  if(!po) return [];
   if(po.round==="ws") return po.ws?[po.ws]:[];
-  return [];
+  // legacy fixed bracket — a postseason already in flight when the rules update landed
+  if(!po.Empire || !po.Empire.rounds){
+    if(po.round==="wc") return [...po.Empire.wc, ...po.Pioneer.wc];
+    if(po.round==="ds") return [...po.Empire.ds, ...po.Pioneer.ds];
+    if(po.round==="cs") return [po.Empire.cs, po.Pioneer.cs];
+    return [];
+  }
+  const ri = po.ri||0;
+  return [...((po.Empire.rounds||[])[ri]||[]), ...((po.Pioneer.rounds||[])[ri]||[])];
 }
 
 // once a round's series are all decided, build the next round's matchups
 function buildNextRound(G){
   const po=G.playoffs;
-  if(po.round==="wc"){
-    ["Empire","Pioneer"].forEach(lg=>{ const b=po[lg];
-      // #1 seed draws the wild-card play-in winner; #2 and #3 meet in the other series
-      b.ds=[ mkSeries(b.seeds[0], b.wc[0].winner), mkSeries(b.seeds[1], b.seeds[2]) ];
+  // legacy fixed bracket (postseason in flight from before configurable playoffs)
+  if(po.round!=="ws" && po.Empire && !po.Empire.rounds){
+    if(po.round==="wc"){
+      ["Empire","Pioneer"].forEach(lg=>{ const b=po[lg];
+        b.ds=[ mkSeries(b.seeds[0], b.wc[0].winner), mkSeries(b.seeds[1], b.seeds[2]) ]; });
+      po.round="ds"; return;
+    }
+    if(po.round==="ds"){
+      ["Empire","Pioneer"].forEach(lg=>{ const b=po[lg]; b.cs=mkSeries(b.ds[0].winner, b.ds[1].winner); });
+      po.round="cs"; return;
+    }
+    po.ws=mkSeries(po.Empire.cs.winner, po.Pioneer.cs.winner); po.round="ws"; return;
+  }
+  const nR = po.nRounds || bracketRounds(rules(G).playoffTeams);
+  const reseed = rules(G).reseed;
+  if(po.round!=="ws" && (po.ri||0) < nR-1){
+    // Survivors + anyone who had a bye advance. Re-seeding (a rule) re-sorts them by
+    // original seed so the best remaining club always draws the worst; without it the
+    // bracket positions hold and an upset can hand a low seed an easy path.
+    ["Empire","Pioneer"].forEach(lg=>{
+      const b=po[lg];
+      const winners = (b.rounds[po.ri]||[]).map(s=>s.winner).filter(x=>x!=null);
+      let alive = [...(b.byes||[]), ...winners];
+      if(reseed) alive.sort((x,y)=>b.seeds.indexOf(x)-b.seeds.indexOf(y));
+      const { series, byes } = pairRound(alive);
+      b.rounds.push(series); b.byes = byes;
     });
-    po.round="ds";
-  } else if(po.round==="ds"){
-    ["Empire","Pioneer"].forEach(lg=>{ const b=po[lg]; b.cs=mkSeries(b.ds[0].winner, b.ds[1].winner); });
-    po.round="cs";
-  } else if(po.round==="cs"){
-    po.ws=mkSeries(po.Empire.cs.winner, po.Pioneer.cs.winner); po.round="ws";
+    po.ri = (po.ri||0)+1;
+    po.round = roundKeyFor(po.ri, nR);
+  } else if(po.round!=="ws"){
+    // both league brackets are finished — their champions meet in the World Series
+    const champOf = lg => { const b=po[lg]; const last=b.rounds[b.rounds.length-1]||[];
+      return last.length ? last[0].winner : (b.byes&&b.byes[0]) ; };
+    po.ws=mkSeries(champOf("Empire"), champOf("Pioneer")); po.round="ws";
   } else if(po.round==="ws"){
     if(po.wsWinner!=null) return;          // already crowned — guard against double-click
     po.wsWinner=po.ws.winner; G.champion={id:po.ws.winner, season:G.season};
@@ -5920,7 +6481,7 @@ function Playoffs({G, commit, tShow}){
   if(!po) return <Card>No active postseason.</Card>;
   const tn = id => G.teams[id];
   const round = po.round;
-  const bestOf = SERIES_LEN[round] || 7;
+  const bestOf = seriesLenFor(G, round);
   const active = activeSeriesList(po);
   const allDone = active.length>0 && active.every(s=>s.done);
   const roundName = {wc:"Wild Card",ds:"Division Series",cs:"League Championship",ws:"World Series"}[round];
@@ -5991,19 +6552,36 @@ function Playoffs({G, commit, tShow}){
             <Card key={lg}>
               <div className="font-bold text-emerald-300 mb-2">{lg} League</div>
               <div className="space-y-1">
-                <div className="text-xs text-slate-500">Wild Card (1-game play-in)</div>
-                {b.wc.map((m,i)=><SeriesView key={i} title="WC" s={m} len={1}/>)}
-                {b.ds && <><div className="text-xs text-slate-500 mt-2">Division Series (Bo5)</div>
-                  {b.ds.map((m,i)=><SeriesView key={i} title={"DS"+(i+1)} s={m} len={5}/>)}</>}
-                {b.cs && <><div className="text-xs text-slate-500 mt-2">League Championship (Bo7)</div>
-                  <SeriesView title="LCS" s={b.cs} len={7}/></>}
+                {(b.rounds
+                  ? b.rounds.map((rd,ri)=>{                       // generic bracket
+                      const key = roundKeyFor(ri, po.nRounds||b.rounds.length);
+                      const len = seriesLenFor(G, key);
+                      const label = {wc:"Wild Card",ds:"Division Series",cs:"League Championship"}[key];
+                      const tag = {wc:"WC",ds:"DS",cs:"LCS"}[key];
+                      return (
+                        <div key={ri}>
+                          <div className={"text-xs text-slate-500 "+(ri?"mt-2":"")}>{label} ({len===1?"1-game play-in":"Bo"+len})</div>
+                          {rd.map((m,i)=><SeriesView key={i} title={rd.length>1?tag+(i+1):tag} s={m} len={len}/>)}
+                        </div>
+                      );
+                    })
+                  : [                                              // legacy fixed bracket
+                      <div key="wc"><div className="text-xs text-slate-500">Wild Card (1-game play-in)</div>
+                        {(b.wc||[]).map((m,i)=><SeriesView key={i} title="WC" s={m} len={1}/>)}</div>,
+                      b.ds && <div key="ds"><div className="text-xs text-slate-500 mt-2">Division Series (Bo5)</div>
+                        {b.ds.map((m,i)=><SeriesView key={i} title={"DS"+(i+1)} s={m} len={5}/>)}</div>,
+                      b.cs && <div key="cs"><div className="text-xs text-slate-500 mt-2">League Championship (Bo7)</div>
+                        <SeriesView title="LCS" s={b.cs} len={7}/></div>,
+                    ])}
+                {b.byes && b.byes.length>0 && !po.wsWinner && po.round!=="ws" &&
+                  <div className="text-[11px] text-slate-500 mt-2">Bye to the next round: {b.byes.map(id=>tn(id)?tn(id).abbr:"—").join(", ")}</div>}
               </div>
             </Card>
           );
         })}
       </div>
-      {po.ws && <Card><div className="font-bold text-amber-300 mb-2">World Series (Bo7)</div>
-        <SeriesView title="WS" s={po.ws} len={7}/></Card>}
+      {po.ws && <Card><div className="font-bold text-amber-300 mb-2">World Series (Bo{seriesLenFor(G,"ws")})</div>
+        <SeriesView title="WS" s={po.ws} len={seriesLenFor(G,"ws")}/></Card>}
       {boxGame && <BoxScore G={G} box={boxGame} onClose={()=>setBoxGame(null)} />}
     </div>
   );
@@ -6044,7 +6622,7 @@ function cupGameSim(G, aId, bId){
   if(!home||!away) return cupGame(G,aId,bId);
   const roster=[...rosterOf(G,aId), ...rosterOf(G,bId)];
   const snap={}; roster.forEach(p=>snap[p.id]=Object.assign({},p.stats));
-  const r=simGame(home, away, G.players);
+  const r=simGame(home, away, G.players, null, false, null, rules(G));
   markGamesPlayed(home, away, G.players);
   bankSeparate(roster, snap, cupBucket);
   return { a:aId, b:bId, as:r.hs, bs:r.as, winner: r.hs>r.as?aId:bId, done:true };
@@ -6374,7 +6952,7 @@ function OffseasonHub({G, commit, tShow, setTab}){
         // Accept → 1yr at the QO (stays); decline → tests FA, club gets a comp pick if he signs
         // elsewhere (handled in onFreeAgentSigned).
         if(t && !t.aaa && qoEligible(p)){
-          const qo=qoAmount(G,p), space=(t.budget - payroll(G,t.id)) + (p.salary||0);
+          const qo=qoAmount(G,p), space=capSpaceFor(G,t.id) + (p.salary||0);
           if(space>=qo){
             const declineP=clamp(0.30 + (p.ovr-76)*0.05 + (30-p.age)*0.03, 0.1, 0.95);
             if(chance(declineP)){
@@ -6392,7 +6970,7 @@ function OffseasonHub({G, commit, tShow, setTab}){
         // A QO-decliner is set on testing the market, so the AI doesn't just re-up him here.
         if(p._qoFrom==null && t && !t.aaa && t.id!==G.userTeamId){
           const aav=requiredAAV(p,3,1);
-          const space=(t.budget - payroll(G,t.id)) + (p.salary||0);   // his expiring money frees up
+          const space=capSpaceFor(G,t.id) + (p.salary||0);   // his expiring money frees up
           const keep = p.ovr>=80?0.97 : p.ovr>=74?0.82 : p.ovr>=68?0.55 : p.ovr>=62?0.22 : 0.05;
           if(space>=aav && chance(keep)){
             const yrs=clamp(p.age<28?rint(3,5):p.age<32?rint(2,4):rint(1,2),1,6);
@@ -6737,7 +7315,7 @@ function refreshFAMarket(G){
     const offers=[];
     G.teams.forEach(t=>{
       if(t.id===G.userTeamId) return;
-      const space=t.budget - payroll(G,t.id);
+      const space=capSpaceFor(G,t.id);
       if(space < Math.max(0.6, ask*0.8)) return;            // can't afford → no offer
       const sit=sits[t.id]; const posKey=p.isP?p.role:p.pos;
       const needed = sit.needs.includes(posKey) || (!p.isP && sit.needs.includes(p.pos));
@@ -6762,7 +7340,7 @@ function processFAWave(G, intensity){
     const p=G.players[id]; if(!p || !p.bestOffer) return;
     if(!chance(intensity)) return;
     const off=p.bestOffer, t=G.teams[off.teamId]; if(!t) return;
-    if(off.aav > t.budget - payroll(G,t.id) + 0.001) return;     // cap moved since the bid
+    if(off.aav > capSpaceFor(G,t.id) + 0.001) return;     // cap moved since the bid
     setContract(p, off.aav, off.years, []); p.teamId=t.id;
     G.freeAgents=G.freeAgents.filter(x=>x!==p.id);
     p.bestOffer=null; p.offers=[];
@@ -6903,7 +7481,23 @@ function buildDraft(G){
   aiDraftPickTrades(G);   // AI clubs swap picks (move up / accumulate) based on their situations
   // selection order from owned picks: by round, then the ORIGINAL team's
   // reverse-standings slot (so traded picks keep their original draft value)
-  const worstFirst=[...G.teams].sort((a,b)=>pct(a)-pct(b)).map(t=>t.id);
+  // DRAFT-LOTTERY rule: off = strict reverse standings. On = the bottom 12 clubs go into
+  // a weighted lottery for the top 4 picks (worst record = best odds), and the rest of
+  // round 1 falls back to reverse order. Discourages tanking for the #1 pick.
+  let worstFirst=[...G.teams].sort((a,b)=>pct(a)-pct(b)).map(t=>t.id);
+  if(rules(G).draftLottery){
+    const pool = worstFirst.slice(0,12);
+    const weights = pool.map((id,i)=>Math.pow(12-i, 1.35));   // worst club ~5x the 12th club's odds
+    const won=[];
+    for(let n=0;n<4 && pool.length;n++){
+      let total=weights.reduce((s,w)=>s+w,0), r=Math.random()*total, k=0;
+      while(k<weights.length-1 && r>weights[k]){ r-=weights[k]; k++; }
+      won.push(pool[k]); pool.splice(k,1); weights.splice(k,1);
+    }
+    worstFirst = [...won, ...worstFirst.filter(id=>!won.includes(id))];
+    const w0=G.teams[worstFirst[0]];
+    if(w0) logNews(G,"event",`🎱 Draft lottery: ${w0.name} win the #1 overall pick.`, null);
+  }
   const slotOf=id=>worstFirst.indexOf(id);
   // only the SOONEST draft year is on the board now; later years stay tradeable in G.picks
   const draftYear = G.picks.length ? Math.min(...G.picks.map(p=>p.season)) : G.season+1;
@@ -7175,7 +7769,12 @@ function Draft({G, commit, tShow, setTab}){
 
 const ROSTER_CAP = 32;
 const AAA_CAP = 38;     // affiliates hold prospects but still need a ceiling
-function trimRoster(G, team, cap=ROSTER_CAP){
+// MLB clubs trim to the roster-limit RULE; AAA passes its own explicit cap.
+function trimRoster(G, team, cap){
+  if(cap==null) cap = rules(G).rosterCap || ROSTER_CAP;
+  return trimRosterTo(G, team, cap);
+}
+function trimRosterTo(G, team, cap){
   let ros=rosterOf(G,team.id).sort((a,b)=>b.ovr-a.ovr);
   // cap roster size (keep the best by OVR); supports the deeper 30-man rosters
   while(ros.length>cap){
@@ -7348,7 +7947,7 @@ function startNewSeason(G){
     let guard=0;
     while(ros.length<26 && G.freeAgents.length && guard<80){
       // fallback: best affordable FA at a fair price (the market may have left thin spots)
-      const space=t.budget-payroll(G,t.id);
+      const space=capSpaceFor(G,t.id);
       const cand=G.freeAgents.map(id=>G.players[id]).filter(p=>p&&p.salary<=Math.max(space,1)).sort((a,b)=>b.ovr-a.ovr)[0];
       if(!cand) break;
       cand.teamId=t.id; G.freeAgents=G.freeAgents.filter(id=>id!==cand.id);
@@ -7398,7 +7997,9 @@ function startNewSeason(G){
         logNews(G,"signing",`${t.abbr} drew ${(t.attendance/1000).toFixed(1)}K/game (${Math.round(a.fill*100)}% full) — payroll budget ${t.budgetDelta>0?"+":""}${t.budgetDelta} to ${money(t.budget)} (commercial ${comm>=0?"+":""}${comm})`, t.id);
       const lf=t.lastFin||{};
       if(lf.prize||lf.cup) logNews(G,"signing",`💰 League payouts: ${lf.prize?`postseason ${money(lf.prize)}`:""}${lf.prize&&lf.cup?" + ":""}${lf.cup?`BA Cup ${money(lf.cup)}`:""} added to the budget`, t.id);
-      if(lf.tax>0) logNews(G,"signing",`⚖️ Luxury tax: payroll over the ${money(LUX_LINE)} line — ${money(lf.tax)} tax paid${t._luxLast?" (repeat-offender rate next year)":""}`, t.id);
+      if(lf.tax>0){ const R=rules(G); const line = R.capMode==="soft" ? R.capAmount : LUX_LINE;
+        logNews(G,"signing",`⚖️ Luxury tax: payroll over the ${money(line)} line — ${money(lf.tax)} tax paid${(R.capMode==="none"&&t._luxLast)?" (repeat-offender rate next year)":""}`, t.id); }
+      if(lf.floorPay>0) logNews(G,"signing",`🧾 Payroll floor: you spent under the ${money(rules(G).floorAmount)} minimum — ${money(lf.floorPay)} owed to the league`, t.id);
       // FAN MOOD: results move it, titles spike it, premium pricing grates, and it decays toward 60
       const wp=(t.w+t.l)?t.w/(t.w+t.l):0.5;
       let fm=(t.fanMood==null?60:t.fanMood);
@@ -7418,9 +8019,10 @@ function startNewSeason(G){
   Object.values(G.players).forEach(p=>{ if(p.injury) delete p.injury; if(p._tired) delete p._tired; if(p._hitStreak) delete p._hitStreak; if(p._splits) delete p._splits; if(p._monthly) delete p._monthly; if(p._monthSnap) delete p._monthSnap; if(p._seasonDev) delete p._seasonDev; });   // offseason heals everyone; streaks/splits/monthly/in-season-dev reset (career best kept)
   G._curMonth=null;
   (G.collegeTeams||[]).forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
-  G.schedule = buildSchedule(G.teams);
-  G.aaaSchedule = buildSchedule(G.aaaTeams);
-  G.collegeSchedule = G.collegeTeams ? buildSchedule(G.collegeTeams, collegeGamesBetween) : null;
+  applyPendingRules(G);        // structural rule changes take effect on the new calendar
+  G.schedule = buildSchedule(G.teams, leagueGames(G));
+  G.aaaSchedule = buildSchedule(G.aaaTeams, leagueGames(G));
+  G.collegeSchedule = G.collegeTeams ? buildSchedule(G.collegeTeams, collegeGamesFor(G)) : null;
   (G.collegeTeams||[]).forEach(t=>autoSetLineups(t, G.players));
   padSchedules(G.schedule, G.aaaSchedule, G.collegeSchedule);
   G.day=0; G.season++; G.phase="regular";
@@ -7915,7 +8517,7 @@ function PlayersBrowser({G, commit, tShow, setTab, setTradeFocus}){
   const [signTarget,setSignTarget]=useState(null);   // FA negotiate modal
   const [extendTarget,setExtendTarget]=useState(null); // extension modal
   const me=G.teams[G.userTeamId];
-  const space=me.budget-payroll(G,me.id);
+  const space=capSpaceFor(G, me.id);
   const lvlOf=p=>levelOf(p.teamId);
   const orgOf=p=>p.teamId==null?null:(isCollegeId(p.teamId)?p.teamId:(isAAAId(p.teamId)?parentIdOf(p.teamId):p.teamId));
   const all=Object.values(G.players);
