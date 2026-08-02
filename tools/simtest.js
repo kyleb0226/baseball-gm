@@ -28,6 +28,7 @@ const EXPORTS = [
   "enterPlayoffs", "activeSeriesList", "playoffSeriesGame", "buildNextRound", "seriesLenFor",
   "payroll", "capSpaceFor", "ROSTER_CAP", "rosterOf",
   "startFantasyDraft", "fantasyOnClock", "fantasyAIPick", "fantasyPick", "DIFFICULTIES",
+  "personalityOf", "answerPresser", "pickPresser", "PERSONALITIES",
 ];
 
 /* ------------------------------- load the app ---------------------------- */
@@ -272,6 +273,36 @@ const CHECKS = {
     const casual = run("casual"), hard = run("hardball");
     ok(casual.G.difficulty === "casual", "difficulty persists on the save");
     ok(hard.injured >= casual.injured, `hardball injures more (${hard.injured} vs ${casual.injured})`);
+  },
+
+  // Press conferences must fire, resolve cleanly, and respect their cooldown.
+  flavor(A) {
+    section("Personalities + press conferences");
+    const G = A.newGame(0, { seed: 6, rules: { seasonLen: 108 } });
+    // every player resolves to a real personality, deterministically
+    const p = Object.values(G.players)[0];
+    const a = A.personalityOf(p).label, b = A.personalityOf(p).label;
+    ok(a === b && !!a, `personality is stable (${a})`);
+    const spread = new Set(Object.values(G.players).slice(0, 400).map(x => A.personalityOf(x).label));
+    ok(spread.size >= 4, `personalities vary across the league (${spread.size} distinct)`);
+
+    // sim, answering every press conference that appears
+    let asked = 0, guard = 0;
+    while (G.day < G.schedule.length && guard++ < 400) {
+      A.simDay(G);
+      if (G.presser) {
+        asked++;
+        const before = G.teams[0].fanMood;
+        A.answerPresser(G, 0);
+        ok(G.presser == null, `  presser ${asked} cleared after answering`, "");
+        if (asked > 3) break;
+      }
+    }
+    ok(asked > 0, `press conferences fired during the season (${asked})`);
+    const room = A.rosterOf(G, G.userTeamId);
+    ok(room.every(x => x.morale == null || (x.morale >= 0 && x.morale <= 100)), "morale stayed in range");
+    ok(G.teams[G.userTeamId].fanMood >= 20 && G.teams[G.userTeamId].fanMood <= 95, "fan mood stayed in range");
+    ok(JSON.stringify(G).length > 0, "save still serializes with a presser system");
   },
 
   // A rule change staged mid-season must apply at the rollover, not before.

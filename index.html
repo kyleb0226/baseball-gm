@@ -303,6 +303,34 @@ const TRAIT_DESC={ "Clutch":"Raises his game late & close", "Contact Machine":"R
   "Big-Game Arm":"Bears down late & close", "Bulldog":"Fatigue barely touches him" };
 function maybeTrait(p){ if(chance(0.30)) p.trait = pick(p.isP?PIT_TRAITS:HIT_TRAITS); return p; }
 
+/* ----------------------------- personalities ---------------------------- */
+// Every player carries a personality. It's pure character — it never touches ratings
+// or the sim — but it decides how he TALKS: the quotes he gives to the wire, and how
+// he reacts when you face the press. `moraleSwing` scales how hard a press conference
+// moves this player's clubhouse standing.
+const PERSONALITIES = {
+  leader:    { label:"Clubhouse leader", icon:"🅲", moraleSwing:1.3,
+               blurb:"Sets the tone. What he says, the room believes." },
+  gamer:     { label:"Gamer",            icon:"🔥", moraleSwing:1.0,
+               blurb:"Lives for the big moment and says so." },
+  quiet:     { label:"Quiet pro",        icon:"🤐", moraleSwing:0.6,
+               blurb:"Says little, works. Barely notices the noise." },
+  diva:      { label:"Diva",             icon:"💅", moraleSwing:1.5,
+               blurb:"Wants the spotlight, and sulks without it." },
+  jokester:  { label:"Jokester",         icon:"🃏", moraleSwing:0.9,
+               blurb:"Keeps it loose whether or not it's the moment for it." },
+  grinder:   { label:"Grinder",          icon:"⛏️", moraleSwing:0.8,
+               blurb:"Head down, lunch pail, no headlines." },
+};
+const PERSONALITY_KEYS = Object.keys(PERSONALITIES);
+// Deterministic from the player id, so a given player is always the same person
+// (and old saves get one assigned without shuffling anyone's character).
+function personalityOf(p){
+  if(!p) return PERSONALITIES.quiet;
+  if(!p.persona) p.persona = PERSONALITY_KEYS[Math.abs((p.id*2654435761)>>>0) % PERSONALITY_KEYS.length];
+  return PERSONALITIES[p.persona] || PERSONALITIES.quiet;
+}
+
 function makeHitter(pos, ageRange, meanAdj=0){
   const age = rint(ageRange[0], ageRange[1]);
   let con = rateGauss(57+meanAdj,14), pow = rateGauss(52+meanAdj,15), eye = rateGauss(53+meanAdj,13);
@@ -2683,6 +2711,13 @@ function LeagueRulesModal({G, commit, tShow, onClose}){
                   force(x=>x+1); commit(G); tShow(v?"Injuries ON":"Injuries OFF — everyone healthy"); }}
                 options={[[true,"On"],[false,"Off"]]}/>
             </RuleRow>
+            <RuleRow label="Press conferences"
+              desc="The beat writers ask you a question after a notable run. Every answer trades clubhouse morale against fan mood.">
+              <RulePick value={G.settings && G.settings.pressers===false ? false : true}
+                onPick={v=>{ G.settings=G.settings||{}; G.settings.pressers=v; if(!v) G.presser=null;
+                  force(x=>x+1); commit(G); tShow(v?"Press conferences ON":"Press conferences OFF"); }}
+                options={[[true,"On"],[false,"Off"]]}/>
+            </RuleRow>
           </>}
 
           {tab==="season" && <>
@@ -2790,6 +2825,87 @@ function LeagueRulesModal({G, commit, tShow, onClose}){
       </div>
     </div>
   );
+}
+
+/* ---------------------------- press conferences -------------------------- */
+// After a result the beat writers actually care about, you get one question and three
+// ways to answer. Every answer is a real trade-off — there is no free "correct" pick:
+// backing the room lifts morale but lets the fans down, and vice versa.
+// Fires at most once every few days so it stays an event, not a chore.
+const PRESSER_COOLDOWN = 6;
+const PRESSERS = {
+  streakBad: {
+    q: t=>`${t.abbr} have lost ${t._lossRun} straight. Is this roster good enough?`,
+    options: [
+      { label:"Back the players publicly", morale:+7, fans:-4,
+        line:"“This group is good enough. I'd run it back tomorrow.”" },
+      { label:"Say changes are coming",    morale:-8, fans:+6,
+        line:"“Nobody's job is safe. We're going to look at everything.”" },
+      { label:"Deflect — it's on me",      morale:+3, fans:+1,
+        line:"“Put it on me. They're playing hard; I built the roster.”" },
+    ],
+  },
+  streakGood: {
+    q: t=>`${t.abbr} have won ${t._winRun} in a row. Are you contenders?`,
+    options: [
+      { label:"Declare yourselves buyers", morale:+6, fans:+7,
+        line:"“We're going for it. Everyone in this room knows that.”" },
+      { label:"Stay measured",             morale:+2, fans:-2,
+        line:"“It's a long season. We've won nothing yet.”" },
+      { label:"Credit the clubhouse",      morale:+9, fans:+1,
+        line:"“That's them, not me. Best room I've been around.”" },
+    ],
+  },
+  starSlump: {
+    q: (t,p)=>`${p.name} is scuffling badly. Is he still your guy?`,
+    options: [
+      { label:"He's untouchable",       morale:+8, fans:-5,
+        line:p=>`“${p.name} is our guy. That isn't changing.”` },
+      { label:"Everyone's accountable", morale:-6, fans:+5,
+        line:p=>`“${p.name} knows the standard. So does everyone here.”` },
+      { label:"No comment",             morale:0,  fans:-1,
+        line:()=>"“I'm not going to discuss individuals.”" },
+    ],
+  },
+};
+// Should a presser fire today, and which one? Reads the club's current form.
+function pickPresser(G){
+  const t = G.teams[G.userTeamId]; if(!t) return null;
+  if(G.presser) return null;                                   // one open at a time
+  if((G.day||0) - (G._lastPresser==null?-99:G._lastPresser) < PRESSER_COOLDOWN) return null;
+  if((t.w+t.l) < 8) return null;                               // let the season breathe first
+  // t.form is a rolling list of 1 (win) / 0 (loss), newest last
+  const form = t.form || [];
+  if(!form.length) return null;
+  const last = form[form.length-1];
+  let run=0; for(let i=form.length-1;i>=0;i--){ if(form[i]===last) run++; else break; }
+  if(last===0 && run>=4){ t._lossRun=run; return { kind:"streakBad" }; }
+  if(last===1 && run>=5){ t._winRun=run;  return { kind:"streakGood" }; }
+  // a star having a genuinely bad year
+  const stars = rosterOf(G, t.id).filter(p=>!p.isP && p.ovr>=76 && p.stats.PA>=120);
+  const slumping = stars.find(p=>ops(p.stats) < 0.640);
+  if(slumping && chance(0.5)) return { kind:"starSlump", pid:slumping.id };
+  return null;
+}
+// Apply the chosen answer: clubhouse morale (scaled by that player's personality when
+// the question was about him) and fan mood both move, and the quote hits the wire.
+function answerPresser(G, optIdx){
+  const pr = G.presser; if(!pr) return;
+  const spec = PRESSERS[pr.kind]; if(!spec) { G.presser=null; return; }
+  const opt = spec.options[optIdx]; if(!opt) return;
+  const t = G.teams[G.userTeamId];
+  const subject = pr.pid!=null ? G.players[pr.pid] : null;
+  const swing = subject ? personalityOf(subject).moraleSwing : 1;
+  // morale lives per-player; nudge the big-league room
+  rosterOf(G, t.id).forEach(p=>{
+    const s = personalityOf(p).moraleSwing;
+    p.morale = clamp((p.morale==null?70:p.morale) + opt.morale * s * (subject && p.id===subject.id ? swing : 1) * 0.5, 0, 100);
+  });
+  t.fanMood = clamp((t.fanMood==null?60:t.fanMood) + opt.fans, 20, 95);
+  const line = typeof opt.line === "function" ? opt.line(subject) : opt.line;
+  logNews(G,"event",`🎤 Press conference — ${line}`, t.id);
+  G._lastPresser = G.day||0;
+  G.presser = null;
 }
 
 /* ------------------------------ navigation ------------------------------ */
@@ -3367,6 +3483,11 @@ function simDay(G){
   }
   // waiver wire: occasional AI cuts + claim processing
   maybeAIWaive(G); processWaivers(G);
+  // the beat writers want a word (regular season only, and never more than one open)
+  if(G.phase==="regular" && G.settings && G.settings.pressers!==false){
+    const pr = pickPresser(G);
+    if(pr) G.presser = pr;
+  }
   if(G.day>=G.schedule.length){ enterPlayoffs(G); }
 }
 
@@ -3532,6 +3653,35 @@ function Hub({G, commit, tShow, setTab}){
           })}
         </div>
       </Card>}
+
+      {/* Beat writers are waiting. Every answer trades clubhouse morale against fan mood. */}
+      {G.presser && (()=>{
+        const spec = PRESSERS[G.presser.kind]; if(!spec) return null;
+        const subject = G.presser.pid!=null ? G.players[G.presser.pid] : null;
+        const q = typeof spec.q === "function" ? spec.q(user, subject) : spec.q;
+        return (
+          <Card className="border-sky-700/60">
+            <div className="text-xs font-semibold text-sky-300 mb-1">🎤 Press conference</div>
+            <div className="text-sm text-slate-100 mb-2">{q}</div>
+            <div className="grid sm:grid-cols-3 gap-2">
+              {spec.options.map((o,i)=>(
+                <button key={i} onClick={()=>{ answerPresser(G,i); commit(G); tShow("🎤 Quote filed to the wire"); }}
+                  className="text-left px-3 py-2 rounded-lg bg-[#16213a] hover:bg-[#1c2c4a] border border-[#243152]">
+                  <div className="text-sm font-semibold">{o.label}</div>
+                  <div className="text-[11px] mt-0.5 flex gap-2">
+                    <span className={o.morale>0?"text-emerald-400":o.morale<0?"text-rose-400":"text-slate-500"}>
+                      clubhouse {o.morale>0?"+":""}{o.morale||0}
+                    </span>
+                    <span className={o.fans>0?"text-emerald-400":o.fans<0?"text-rose-400":"text-slate-500"}>
+                      fans {o.fans>0?"+":""}{o.fans||0}
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </Card>
+        );
+      })()}
 
       {G.ownerMandate && (()=>{
         const m=G.ownerMandate, strikes=G.gmStrikes||0;
@@ -4099,6 +4249,9 @@ function PlayerModal({p, team, onClose, G}){
             const lbl=m>=70?"😀 Happy":m>=40?"😐 Content":"😞 Unhappy";
             return <span className={"text-xs border rounded px-2 py-1 "+cls} title="Player morale">{lbl} {m}{p.noTrade?" · 🔒 NTC":""}{p.tradeRequest?" · 😤 wants out":""}</span>; })()}
           {p.trait && <span className="text-xs bg-amber-500/15 text-amber-300 border border-amber-500/30 rounded px-2 py-1" title={TRAIT_DESC[p.trait]||""}>✦ {p.trait}</span>}
+          {(()=>{ const pe=personalityOf(p); return (
+            <span className="text-xs bg-sky-500/10 text-sky-300 border border-sky-500/25 rounded px-2 py-1" title={pe.blurb}>{pe.icon} {pe.label}</span>
+          ); })()}
           {p.susp && p.susp.days>0 && <span className="text-xs bg-rose-500/15 text-rose-300 border border-rose-500/30 rounded px-2 py-1">🥊 Suspended {p.susp.days}d</span>}
           {(p._hitStreak||0)>=10 && <span className="text-xs bg-orange-500/15 text-orange-300 border border-orange-500/30 rounded px-2 py-1" title="Riding a hot streak — locked in at the plate">🔥 Hot</span>}
           {(p._cold||0)>=5 && <span className="text-xs bg-sky-500/15 text-sky-300 border border-sky-500/30 rounded px-2 py-1" title="Deep slump — pressing at the plate">🧊 Cold</span>}

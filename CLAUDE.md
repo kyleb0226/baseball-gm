@@ -538,3 +538,76 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   scoreless cap). AI + run environment untouched.
 - **Earned/unearned, accurate R, OBP(HBP/SF), splits, handedness parks, game log, pennant race, franchise
   all-time leaders, jersey/retired numbers** — see the prior batch notes above.
+
+## League rules, difficulty & flavor (2026-08 batch)
+- **League rules (`G.rules`, `RULES_DEFAULT`, `rules(G)`):** every commissioner-editable knob in
+  one object, read through `rules(G)` so a save that predates a knob always sees a complete set.
+  `setRule(G,k,v)` routes **structural** knobs (`STRUCTURAL_RULES`: season length, playoff shape,
+  draft order) into `G.pendingRules` mid-season; `applyPendingRules(G)` promotes them at the top of
+  `startNewSeason` before the calendar/bracket are rebuilt. `ruleValue(G,k)` reads staged-then-live
+  (what the UI shows). Edited from **📋 Rules** in the header (`LeagueRulesModal`, tabs
+  Game/Season/Playoffs/Money/Difficulty); starting values also picked on `Splash`.
+  - **Season length:** `SEASON_PRESETS` are explicit matchup tables (162/108/72/54), not a scaled
+    float, so every preset is an EXACT per-club game count. `gamesForLength`/`leagueGames(G)` feed
+    `buildSchedule(teams, gb)`; `collegeGamesFor(G)` scales the amateur slate to match.
+    `countScheduledGames` is used by `migrate` to infer which preset an old save was built under.
+  - **DH (`R.dh`):** `universal` / `empire` (home park governs) / `none`. With pitchers hitting,
+    the weakest bat in `lineups[tid]` is replaced by the `PITCHER_SLOT` sentinel, which resolves at
+    each PA to `cur[batId].p` — so a pitching change changes the batter. `pitcherAtBat(p, cache)`
+    returns a proxy whose `.stats` points at **`p.batStats`**, kept apart from `p.stats` (whose
+    H/BB/SO/R mean the opposite for an arm). The proxy cache is a **per-game Map**, never stored on
+    the player — hanging it off `p` made the save circular. `realBatters(tid)` filters the sentinel
+    out of every box-score path (gSnap/gameLines/batLine); a pitcher can't share a `gSnap` key with
+    his own pitching line. His hitting shows as an "At the plate" card on the player page.
+  - **Pace:** `R.extras` (`standard` / `ghost` runner on 2nd each extra half) and `R.mercy`
+    (0/10/15 run margin after 7). Both verified W/L-neutral.
+  - **Playoffs:** `playoffSeeds(teams, league, n)` takes a field size; `pairRound(alive)` builds a
+    generic seeded round giving the TOP seeds byes when the field isn't a power of two (n=5
+    reproduces the classic 3-div-winners + 2-WC bracket exactly). `bracketRounds(n)`,
+    `roundKeyFor(i,total)` (last round = cs, one before = ds, earlier = wc) and `seriesLenFor(G,key)`
+    drive labels and lengths. `G.playoffs[lg]` is now `{seeds, rounds:[[series]], byes}` with
+    `po.ri`/`po.nRounds`; `activeSeriesList`/`buildNextRound`/`Playoffs` all keep a **legacy branch**
+    for a postseason already in flight from before this change. `R.reseed` re-sorts survivors by seed.
+    AAA/college (`runAutoPlayoffs`) intentionally keep their own fixed 5-team shape.
+  - **Money:** `capLimitFor`/`capSpaceFor`/`luxuryTaxFor`/`floorShortfallFor`. `capMode` `none`
+    (classic per-club budget + the standing `LUX_LINE`), `soft` (spend past `capAmount`, pay
+    `taxRate` of the overage at the rollover via `finBonus`), `hard` (never exceed). **Every**
+    spending gate — AI FA bids, waiver claims, QO paths, user signings, trade cash — goes through
+    `capSpaceFor`. Optional `floorAmount` charges the shortfall.
+  - Also: `rosterCap` (26/32/40, read by `trimRoster`/waiver claims), `tradeDeadlineOn`,
+    `draftLottery` (weighted lottery over the bottom 12 for the top 4 picks).
+- **Difficulty (`G.difficulty`, `DIFFICULTIES`, `diff(G)`):** Casual/Normal/Hardball bundles that
+  scale the USER's payroll budget, rival FA bid aggression (`refreshFAMarket` mult), injury
+  frequency (`tickInjuries`), AI trade-offer rate, and the owner's patience (`mandateAdj` shifts the
+  `evalOwnerMandate` "badly missed" win% thresholds). It changes pressure on the user, never the
+  AI's arithmetic. The Difficulty tab lists every multiplier explicitly.
+- **Fantasy draft:** opt-in at franchise creation. `startFantasyDraft(G)` nulls every MLB `teamId`
+  into one pool (AAA/college untouched — each org keeps its farm); `fantasyOnClock` is a snake over
+  a shuffled order; `fantasyAIPick` is best-available weighted by `fantasyNeeds` with guardrails
+  (≥9 hitters / ≥5 arms); `finishFantasyDraft` sends the undrafted to FA then runs
+  `aiAlignOrg`/`autoSetLineups`. `FantasyDraftScreen` takes over `App` while `G.fantasyDraft` is live.
+- **Navigation:** `navGroups(G)` splits the old flat 18-tab strip into 5 sections
+  (Club/League/Market/Org/History); phase-only tabs (Draft, Playoffs) fold into their section.
+  `groupOf(tab)` keeps the section row in sync when something else navigates. `CommandPalette`
+  (⌘K / Ctrl-K / `?`) is a fuzzy jump-to; the key handler ignores events from inputs.
+- **Player compare:** `PlayersBrowser` has a tick column (max 4) feeding a compare card that
+  highlights the best value per row; all-hitters or all-pitchers get the full stat set.
+- **Personalities (`PERSONALITIES`, `personalityOf(p)`):** deterministic from the player id (so old
+  saves get one without reshuffling anyone). Pure character — never touches ratings or the sim —
+  shown on the player card and scaling how hard a press conference moves that player's morale.
+- **Press conferences (`PRESSERS`, `pickPresser`, `answerPresser`):** fires in `simDay` off the
+  club's rolling `t.form` (**1 = win / 0 = loss**, newest last) — a 4-game skid, a 5-game run, or a
+  slumping star — at most one open at a time and no more often than `PRESSER_COOLDOWN` days. Three
+  answers, each a real trade-off between clubhouse morale and `t.fanMood`; the quote hits the wire.
+  Toggle under Rules → Game.
+- **Bug fixed (pre-existing):** `markGamesPlayed` stored the roster **index object** in `p._lastD`
+  instead of the day number, putting a back-reference to every player inside every player.
+  IndexedDB's structured clone tolerated the cycle but `JSON.stringify` did not — **Save File and
+  the localStorage fallback both threw** on any played franchise. Signature is now
+  `markGamesPlayed(home, away, players, idx, day)`; `migrate` sweeps the poisoned values (`_lastDFixed`).
+- **`tools/simtest.js`:** headless harness — extracts the `app-src` block, transpiles with the
+  vendored Babel, runs it in a Node `vm` with minimal shims, and publishes the functions listed in
+  `EXPORTS` (top-level `const` doesn't become a vm global, hence the explicit epilogue). Checks run
+  full simulated seasons: season lengths, W/L balance, DH, pace rules, every playoff field size,
+  **save serializability**, fantasy draft, difficulty, pressers, rule staging. `node tools/simtest.js`
+  for all, or pass a check name. Add a case to `CHECKS` when you add a rule.
