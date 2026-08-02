@@ -4,10 +4,13 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Pocket GM — Baseball</title>
-<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script src="https://cdn.tailwindcss.com"></script>
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<meta name="theme-color" content="#0b1220" />
+<script src="vendor/react.production.min.js"></script>
+<script src="vendor/react-dom.production.min.js"></script>
+<script src="vendor/babel.min.js"></script>
+<script src="vendor/tailwind.js"></script>
 <style>
   body { background:#0b1220; color:#e5e7eb; }
   ::-webkit-scrollbar{width:10px;height:10px}
@@ -188,6 +191,16 @@ function levelStats(p, level){
   return out;
 }
 
+/* ------------------------------- traits --------------------------------- */
+// ~30% of players carry one sim-affecting trait, assigned at creation (and
+// backfilled once for old saves). Effects live in paOutcome / tickInjuries.
+const HIT_TRAITS=["Clutch","Contact Machine","Iron Man","Fan Favorite"];
+const PIT_TRAITS=["Big-Game Arm","Bulldog","Iron Man","Fan Favorite"];
+const TRAIT_DESC={ "Clutch":"Raises his game late & close", "Contact Machine":"Rarely strikes out",
+  "Iron Man":"Durable — rarely hurt, never needs a rest day", "Fan Favorite":"The crowd loves him — morale never craters",
+  "Big-Game Arm":"Bears down late & close", "Bulldog":"Fatigue barely touches him" };
+function maybeTrait(p){ if(chance(0.30)) p.trait = pick(p.isP?PIT_TRAITS:HIT_TRAITS); return p; }
+
 function makeHitter(pos, ageRange, meanAdj=0){
   const age = rint(ageRange[0], ageRange[1]);
   let con = rateGauss(57+meanAdj,14), pow = rateGauss(52+meanAdj,15), eye = rateGauss(53+meanAdj,13);
@@ -207,7 +220,7 @@ function makeHitter(pos, ageRange, meanAdj=0){
   };
   computeOvr(p); setPotential(p); p.peakOvr = p.ovr; p.salary = salaryFor(p); p.years = rint(1,5);
   ensureContract(p);
-  return p;
+  return maybeTrait(p);
 }
 function makePitcher(role, ageRange, meanAdj=0){
   const age = rint(ageRange[0], ageRange[1]);
@@ -229,7 +242,7 @@ function makePitcher(role, ageRange, meanAdj=0){
   };
   computeOvr(p); setPotential(p); p.peakOvr = p.ovr; p.salary = salaryFor(p); p.years = rint(1,5);
   ensureContract(p);
-  return p;
+  return maybeTrait(p);
 }
 function computeOvr(p){
   if(p.isP){
@@ -327,7 +340,11 @@ function computeAttendance(t){
   const recentWp = hist.length ? hist.reduce((a,h)=>a+((h.w+h.l)?h.w/(h.w+h.l):0.5),0)/hist.length : wp;
   const made = hist.length && hist[hist.length-1].made;
   const champ = hist.length && hist[hist.length-1].champ;
-  const fill = clamp(0.52 + (wp-0.5)*1.5 + (recentWp-0.5)*0.4 + (made?0.05:0) + (champ?0.05:0), 0.28, 1.0);
+  // ticket pricing trades seats for margin: premium thins the crowd, value packs it;
+  // fan mood (titles, star trades, results) nudges the gate too
+  const planAdj = t.ticketPlan==="premium" ? -0.06 : t.ticketPlan==="value" ? 0.05 : 0;
+  const moodAdj = t.fanMood!=null ? (t.fanMood-60)/500 : 0;
+  const fill = clamp(0.52 + (wp-0.5)*1.5 + (recentWp-0.5)*0.4 + (made?0.05:0) + (champ?0.05:0) + planAdj + moodAdj, 0.28, 1.0);
   return { att: Math.round(cap*fill/100)*100, fill };
 }
 function parkLabel(pf){ const d=Math.round((pf-1)*100); return d>=2?`Hitter-friendly (+${d}%)`:d<=-2?`Pitcher-friendly (${d}%)`:"Neutral park"; }
@@ -354,11 +371,107 @@ function academyGraduate(G){
   autoSetLineups(G.aaaTeams[t.id], G.players);
 }
 
+/* --------------------- commercial income & facilities ------------------- */
+// Sponsorship slots, ballpark naming rights, ticket pricing, facility tiers and
+// the league's luxury tax. All money flows through finBonus() at the season
+// rollover as BOUNDED budget adjustments, so the long-run budget band (~95–290)
+// stays calibrated — no runaway inflation (the lesson from the soccer game's
+// economy rework). AI clubs auto-manage their slots so income stays fair.
+const SPONSOR_SLOTS = ["jersey","broadcast","wall"];
+const SLOT_META = { jersey:{label:"Jersey patch", icon:"👕", base:6}, broadcast:{label:"Broadcast partner", icon:"📺", base:9}, wall:{label:"Outfield wall", icon:"🧱", base:2.5} };
+const BRANDS = ["Summit Air","Copperline Insurance","Bat & Barrel Co.","Ironclad Tools","Blue Harbor Bank","Maple Peak Syrup","Comet Cola","Frontier Telecom","Anchor Steamworks","Redline Motors","Golden Grain Foods","Northstar Outfitters","Cascade Coffee","Stonebridge Realty","Velocity Sportswear","Prairie Wind Energy","Harborview Hotels","Crown Electronics","Bigfoot Burgers","Silver Circuit Tech"];
+const FACILITY_MAX = 5;
+const LUX_LINE = 200, LUX_RATE = 0.30, LUX_RATE_REPEAT = 0.45;
+// $M payout for how far the just-ended season went (shown in the Finances chart)
+const PAYOUTS = { ws:8, wsLoser:5, csLoser:3, dsLoser:2, wcLoser:1, cup:3 };
+
+function ensureCommercial(t){
+  if(!t.sponsors) t.sponsors={jersey:null,broadcast:null,wall:null};
+  if(!t.facilities) t.facilities={training:1, medical:1};
+  if(t.scouting==null) t.scouting=1;
+  if(!t.ticketPlan) t.ticketPlan="standard";
+}
+function facilityCost(level){ return 15 + level*8; }
+function scoutingCost(level){ return 10 + level*6; }
+function expandCost(cap){ return Math.round(16 + cap/2000); }
+function parkName(t){ return (t.ballpark&&t.ballpark.naming) ? t.ballpark.naming.brand+" Park" : (t.ballpark&&t.ballpark.name)||"—"; }
+function marketFactor(t){ // 0.75–1.35: budget size + recent success drive commercial value
+  const hist=(t.history||[]).slice(-3);
+  const rw = hist.length ? hist.reduce((a,h)=>a+((h.w+h.l)?h.w/(h.w+h.l):0.5),0)/hist.length : 0.5;
+  return clamp(0.75 + (t.budget-160)/260 + (rw-0.5)*0.8, 0.75, 1.35);
+}
+function mkSponsorOffer(t, slot){
+  const meta=SLOT_META[slot];
+  const rich=chance(0.5);                                   // guaranteed-heavy vs incentive-heavy
+  const bonus= rich? 0 : +(rint(10,30)/10).toFixed(1);      // bonus pays on a playoff berth (2× for a title)
+  const aav=+(meta.base*marketFactor(t)*(rich?rint(100,130):rint(70,95))/100).toFixed(1);
+  return { brand:pick(BRANDS), slot, aav, years:rint(2,7), bonus };
+}
+function mkNamingOffer(t){ return { brand:pick(BRANDS), aav:+(4*marketFactor(t)*rint(80,120)/100).toFixed(1), years:rint(3,10) }; }
+// fresh offers for the USER's open slots — regenerated each rollover, signable any time
+function genSponsorOffers(G){
+  const t=G.teams[G.userTeamId]; if(!t) return; ensureCommercial(t);
+  const offers={};
+  SPONSOR_SLOTS.forEach(s=>{ if(!t.sponsors[s]) offers[s]=[mkSponsorOffer(t,s), mkSponsorOffer(t,s), mkSponsorOffer(t,s)]; });
+  if(t.ballpark && !t.ballpark.naming) offers.naming=[mkNamingOffer(t), mkNamingOffer(t)];
+  G.sponsorOffers=offers;
+}
+// tick deal years down at the rollover; AI clubs quietly re-fill their empty slots
+function aiTickSponsors(G){
+  G.teams.forEach(t=>{
+    ensureCommercial(t);
+    SPONSOR_SLOTS.forEach(s=>{ const d=t.sponsors[s]; if(d && --d.years<=0){ t.sponsors[s]=null; if(t.id===G.userTeamId) logNews(G,"event",`🤝 Your ${SLOT_META[s].label.toLowerCase()} deal with ${d.brand} has expired — new offers are in (Finances).`, t.id); } });
+    if(t.ballpark && t.ballpark.naming && --t.ballpark.naming.years<=0){ if(t.id===G.userTeamId) logNews(G,"event",`🏟️ The ${t.ballpark.naming.brand} naming-rights deal has expired — ${t.ballpark.name} gets its name back.`, t.id); t.ballpark.naming=null; }
+    if(t.id!==G.userTeamId){
+      SPONSOR_SLOTS.forEach(s=>{ if(!t.sponsors[s]) t.sponsors[s]=mkSponsorOffer(t,s); });
+      if(t.ballpark && !t.ballpark.naming && chance(0.25)) t.ballpark.naming=mkNamingOffer(t);
+    }
+  });
+}
+function sponsorIncome(t){ ensureCommercial(t); let s=0; SPONSOR_SLOTS.forEach(k=>{ if(t.sponsors[k]) s+=t.sponsors[k].aav; }); if(t.ballpark&&t.ballpark.naming) s+=t.ballpark.naming.aav; return +s.toFixed(1); }
+// where the just-ended season's playoff run pays out (bracket still on G at rollover)
+function playoffPayout(G, tid){
+  if(G.champion && G.champion.id===tid && G.champion.season===G.season) return PAYOUTS.ws;
+  const po=G.playoffs; if(!po) return 0;
+  let pay=0;
+  const inS=(s,amt)=>{ if(s && s.done && (s.hi===tid||s.lo===tid) && s.winner!==tid) pay=Math.max(pay,amt); };
+  if(po.ws) inS(po.ws, PAYOUTS.wsLoser);
+  ["Empire","Pioneer"].forEach(lg=>{ const b=po[lg]; if(!b) return;
+    inS(b.cs, PAYOUTS.csLoser); (b.ds||[]).forEach(s=>inS(s,PAYOUTS.dsLoser)); (b.wc||[]).forEach(s=>inS(s,PAYOUTS.wcLoser));
+  });
+  return pay;
+}
+// The bounded commercial adjustment folded into the budget evolution at rollover.
+// Also stamps t.lastFin with the line-by-line breakdown for the Finances tab.
+function finBonus(G, t, madePlayoffs, champ){
+  ensureCommercial(t);
+  const spons = sponsorIncome(t);
+  const median = 4 + 6 + 9 + 2.5;                        // ≈ a league-average commercial haul
+  const sponsAdj = clamp((spons - median)*0.5, -4, 8);
+  let bonuses=0; SPONSOR_SLOTS.forEach(k=>{ const d=t.sponsors[k]; if(d&&d.bonus){ if(champ) bonuses+=d.bonus*2; else if(madePlayoffs) bonuses+=d.bonus; } });
+  bonuses=+bonuses.toFixed(1);
+  const prize = playoffPayout(G, t.id);
+  let cup=0; const cc=G.baCupChampions||[]; const lastCup=cc[cc.length-1];
+  if(lastCup && lastCup.season===G.season && lastCup.id===t.id) cup=PAYOUTS.cup;
+  const gateAdj = clamp(((t.attendance||33000)-33000)/9000, -2.5, 3.5);   // big (expanded) full parks out-earn small ones
+  const plan=t.ticketPlan||"standard";
+  const ticketAdj = plan==="premium" ? +(((t.attFill||0.5)*4)-1).toFixed(1) : plan==="value" ? -1.5 : 0;
+  const pr=payroll(G,t.id);
+  let tax=0;
+  if(pr>LUX_LINE){ const rate=t._luxLast?LUX_RATE_REPEAT:LUX_RATE; tax=+Math.min((pr-LUX_LINE)*rate, 22).toFixed(1); t._luxLast=true; }
+  else t._luxLast=false;
+  const total=+(sponsAdj + bonuses + prize + cup + gateAdj + ticketAdj - tax).toFixed(1);
+  t.lastFin={ spons, sponsAdj:+sponsAdj.toFixed(1), bonuses, prize, cup, gateAdj:+gateAdj.toFixed(1), ticketAdj, tax, total, season:G.season };
+  return total;
+}
+
 function makeTeam(def, idx){
   const [city,nick,abbr,league,division] = def;
   const t = { id: idx, city, nick, abbr, league, division,
     name: city+" "+nick, w:0, l:0, rs:0, ra:0, ballpark: makeBallpark(idx),
-    budget: rint(120,225), lineup:[], rotation:[], userControlled:false, academy:{level:1} };
+    budget: rint(120,225), lineup:[], rotation:[], userControlled:false, academy:{level:1},
+    sponsors:{jersey:null,broadcast:null,wall:null}, facilities:{training:1, medical:1}, scouting:1, ticketPlan:"standard",
+    fanMood:60, form:[], identity: pick(["normal","normal","normal","aggressive","aggressive","conservative"]) };
   const players = [];
   // position players: 1 starter each (9) + 7 bench/reserve = 16 hitters
   HIT_POS.forEach(pos => players.push(makeHitter(pos,[23,33])));
@@ -626,11 +739,12 @@ function teamDefRating(team, players){
   return n ? sum/n : 50;
 }
 
-function paOutcome(bat, pit, defN, park, parkHand){
+function paOutcome(bat, pit, defN, park, parkHand, ctx){
   park = park||1; parkHand = parkHand||0;
+  const late = !!(ctx && ctx.late);   // 8th+ inning, margin ≤2 — "late & close"
   const bc=n01(bat.con), bp=n01(bat.pow), be=n01(bat.eye), bs=n01(bat.spd);
-  // fatigue: a gassed arm loses a bit of stuff & command (mild, capped)
-  const tired = clamp(((pit._tired||0)-0.8)*0.18, 0, 0.12);
+  // fatigue: a gassed arm loses a bit of stuff & command (mild, capped; a Bulldog shrugs half of it off)
+  const tired = clamp(((pit._tired||0)-0.8)*0.18*(pit.trait==="Bulldog"?0.5:1), 0, 0.12);
   const ps=clamp(n01(pit.stu)-tired,0,1), pc=clamp(n01(pit.ctl)-tired,0,1);
   let kP = clamp(0.215 + 0.13*(ps-0.5) - 0.11*(bc-0.5) + 0.05*(pc-0.5), 0.04, 0.45);
   let bbP = clamp(0.085 + 0.08*(be-0.5) - 0.08*(pc-0.5) - 0.02*(ps-0.5), 0.02, 0.22);
@@ -645,6 +759,12 @@ function paOutcome(bat, pit, defN, park, parkHand){
   // ~0.48 league-mean gb so the average pitcher is neutral and total league HR is unchanged.
   const pgb = pit.gb!=null ? pit.gb : 0.48;
   let hrP = clamp((0.019 + 0.074*(bp-0.5) + 0.040*(bc-0.5) - 0.030*(ps-0.5)) * (1+(park-1)*1.6) * (1+hside*0.20) * (1+(0.48-pgb)*0.55), 0.002, 0.14);
+  // traits, form and weary legs (all small, capped nudges — the run environment holds)
+  if(bat.trait==="Contact Machine"){ kP=Math.max(0.03, kP-0.045); }
+  if(late && bat.trait==="Clutch"){ kP=Math.max(0.03, kP-0.03); hrP=Math.min(0.14, hrP+0.012); }
+  if(late && pit.trait==="Big-Game Arm"){ kP=Math.min(0.45, kP+0.03); hrP=Math.max(0.002, hrP-0.006); }
+  const weary = (bat._cg||0)>=16 && bat.trait!=="Iron Man";
+  if(weary) kP=Math.min(0.45, kP+0.008);
   const hbpP = 0.009;  // hit by pitch — small, roughly real-life ~1% of PAs
   const r = Math.random();
   if(r < kP) return {o:"K"};
@@ -653,6 +773,11 @@ function paOutcome(bat, pit, defN, park, parkHand){
   if(r < kP+bbP+hbpP+hrP) return {o:"HR"};
   // ball in play
   let babip = clamp((0.304 + 0.11*(bc-0.5) - 0.05*(pc-0.5) - 0.06*(defN-0.5)) * (1+(park-1)*0.6), 0.19, 0.40);
+  if(bat.trait==="Contact Machine") babip=Math.min(0.40, babip+0.010);
+  if(late && bat.trait==="Clutch") babip=Math.min(0.40, babip+0.015);
+  if((bat._hitStreak||0)>=10) babip=Math.min(0.40, babip+0.015);   // locked in
+  if((bat._cold||0)>=5) babip=Math.max(0.19, babip-0.015);        // pressing
+  if(weary) babip=Math.max(0.19, babip-0.010);
   if(!chance(babip)) return {o:"OUT", ground: chance(0.40+0.30*pgb)};  // ground/air flag (pitcher gb tendency) for GIDP / SF / GO-AO
   // hit type
   const tripP = 0.018 + 0.04*bs;
@@ -716,8 +841,8 @@ const teamRoster = (players, teamId, idx) => idx ? (idx[teamId]||[]) : Object.va
 
 // ordered list of bullpen pitcher ids (everyone not in the rotation), honoring the
 // user's saved priority (team.bullpen) and appending any new arms by OVR. best-first.
-// an injured player can't take the field until his IL stint runs out (decremented in simDay)
-function isInjured(p){ return !!(p && p.injury && p.injury.days>0); }
+// an injured (or suspended) player can't take the field until his stint runs out (decremented in simDay)
+function isInjured(p){ return !!(p && ((p.injury && p.injury.days>0) || (p.susp && p.susp.days>0))); }
 function bullpenOrder(team, players, idx){
   const ros = teamRoster(players, team.id, idx).filter(p=>p.isP && !isInjured(p));
   const inRot = new Set(team.rotation||[]);
@@ -730,7 +855,7 @@ function getPitchers(team, players, idx){
   const ros = teamRoster(players, team.id, idx).filter(p=>p.isP && !isInjured(p));
   const gi = team.w + team.l + (team.poGi||0);
   const rotIds = (team.rotation.length?team.rotation:ros.filter(p=>p.role==="SP").map(p=>p.id))
-    .filter(id=>{ const p=players[id]; return p && !isInjured(p); });   // skip injured starters
+    .filter(id=>{ const p=players[id]; return p && !isInjured(p) && !(p._rest>0); });   // skip injured/suspended/resting starters
   let starter = players[rotIds[gi % Math.max(1,rotIds.length)]] || ros.find(p=>p.role==="SP") || ros[0];
   // pen is best-first by priority; pen[0] is the closer
   const pen = bullpenOrder(team, players, idx).map(id=>players[id]).filter(Boolean);
@@ -771,7 +896,7 @@ function platoonLineup(team, players, idx, oppStarter){
 }
 
 function simGame(home, away, players, idx, recordSplits, tactics){
-  const out = { home, away };
+  const out = { home, away, hbp:0 };   // hbp: combined hit-batters (brawl fuel, read by simDay)
   const park = (home && home.ballpark && home.ballpark.pf) || 1;   // home park nudges this game's run environment
   const parkHand = (home && home.ballpark && home.ballpark.hand) || 0;   // +RF short (favors LHB), −LF short (favors RHB)
   const arms = { [home.id]: getPitchers(home,players,idx), [away.id]: getPitchers(away,players,idx) };
@@ -945,8 +1070,11 @@ function simGame(home, away, players, idx, recordSplits, tactics){
       }
       // stolen-base attempts (before the pitch). Steals of 2nd (runner on 1st) are most common;
       // steals of 3rd (runner on 2nd) are rarer; a double steal moves runners from 1st AND 2nd.
-      // manager baserunning: the user's chosen aggression scales HIS team's steal attempts only
-      const stealMult = (tactics && tactics.teamId===batId) ? (tactics.steal==="aggressive"?1.8:tactics.steal==="conservative"?0.35:1) : 1;
+      // manager baserunning: the user's chosen aggression scales HIS team's steal attempts;
+      // every other club runs its own IDENTITY (aggressive clubs run, conservative ones sit)
+      const batTeam = batId===home.id ? home : away;
+      const idMult = batTeam.identity==="aggressive"?1.5 : batTeam.identity==="conservative"?0.6 : 1;
+      const stealMult = (tactics && tactics.teamId===batId) ? (tactics.steal==="aggressive"?1.8:tactics.steal==="conservative"?0.35:1) : idMult;
       const stealRate = (sp, third) => chance(clamp(((third?0.020:0.05) + (third?0.10:0.28)*(sp-0.5))*stealMult, 0, third?0.12:0.40));
       const stealSafe = (sp, third) => chance(clamp((third?0.70:0.66) + 0.28*(sp-0.5), third?0.5:0.45, 0.94));
       if(bases[0] && bases[1] && !bases[2]){
@@ -973,7 +1101,7 @@ function simGame(home, away, players, idx, recordSplits, tactics){
       }
       const pitcher = cur[pitId].p;
       const bat = hitters[order[batId] % hitters.length]; order[batId]++;
-      const res = paOutcome(bat, pitcher, defN[pitId], park, parkHand);
+      const res = paOutcome(bat, pitcher, defN[pitId], park, parkHand, {late: inning>=8 && Math.abs(score[batId]-score[pitId])<=2});
       const _ss = recordSplits ? splitSnap(bat.stats) : null;   // snapshot for platoon/venue splits
       bat.stats.PA++;
       if(res.o==="BB"){
@@ -982,7 +1110,7 @@ function simGame(home, away, players, idx, recordSplits, tactics){
         bumpScore(batId,pitId,r); logScore("BB",bat,r); bat.stats.RBI+=r;
         chargeRuns(r);
       } else if(res.o==="HBP"){
-        bat.stats.HBP=(bat.stats.HBP||0)+1; pitcher.stats.HBP=(pitcher.stats.HBP||0)+1; reached[pitId]++;
+        bat.stats.HBP=(bat.stats.HBP||0)+1; pitcher.stats.HBP=(pitcher.stats.HBP||0)+1; reached[pitId]++; out.hbp++;
         const r = advance(bases,"BB",bat);   // hit-by-pitch advances like a walk
         bumpScore(batId,pitId,r); logScore("HBP",bat,r); bat.stats.RBI+=r;
         chargeRuns(r);
@@ -1146,7 +1274,9 @@ const teamLabel = t => t.abbr + (t.aaa?" AAA":(t.college?" (C)":""));
 function markGamesPlayed(home, away, players, idx){
   [home,away].forEach(t=>{
     const lbl=teamLabel(t);
-    lineupHitters(t,players,idx).forEach(h=>{ h.stats.G++; tagTeam(h,lbl); });
+    lineupHitters(t,players,idx).forEach(h=>{ h.stats.G++; tagTeam(h,lbl);
+      h._cg = (h._lastD===idx-1) ? (h._cg||0)+1 : 1; h._lastD=idx;   // consecutive-games run (weary legs)
+    });
   });
 }
 
@@ -1521,6 +1651,27 @@ const SAVE_LZ_PREFIX = "LZ16:";
 // --- multi-slot saves: each franchise lives under its own key; an index lists them all ---
 const SLOTS_KEY = "pocketgm_slots";
 const slotKey = id => "pocketgm_slot_" + id;
+// Big save blobs live in IndexedDB (quota is hundreds of MB to GBs, vs the ~5MB
+// localStorage cap that forced trimHistories/emergency pruning). Only the tiny slot
+// INDEX (names, seasons) stays in localStorage so the Main Menu lists saves synchronously.
+const IDB_NAME="pgbaseball_db", IDB_STORE="saves";
+let _idbPromise=null;
+function idb(){
+  if(_idbPromise) return _idbPromise;
+  _idbPromise = new Promise((res,rej)=>{
+    try{
+      if(!window.indexedDB){ rej(new Error("no idb")); return; }
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = ()=>{ const db=req.result; if(!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE); };
+      req.onsuccess = ()=>res(req.result);
+      req.onerror = ()=>rej(req.error);
+    }catch(e){ rej(e); }
+  });
+  return _idbPromise;
+}
+function idbSet(key,val){ return idb().then(db=>new Promise((res,rej)=>{ const tx=db.transaction(IDB_STORE,"readwrite"); tx.objectStore(IDB_STORE).put(val,key); tx.oncomplete=()=>res(true); tx.onerror=()=>rej(tx.error); tx.onabort=()=>rej(tx.error||new Error("abort")); })); }
+function idbGet(key){ return idb().then(db=>new Promise((res,rej)=>{ const tx=db.transaction(IDB_STORE,"readonly"); const rq=tx.objectStore(IDB_STORE).get(key); rq.onsuccess=()=>res(rq.result); rq.onerror=()=>rej(rq.error); })); }
+function idbDel(key){ return idb().then(db=>new Promise((res)=>{ const tx=db.transaction(IDB_STORE,"readwrite"); tx.objectStore(IDB_STORE).delete(key); tx.oncomplete=()=>res(true); tx.onerror=()=>res(false); })).catch(()=>false); }
 function writeKey(key, G){
   try{ localStorage.setItem(key, SAVE_LZ_PREFIX + LZString.compressToUTF16(JSON.stringify(G))); return true; }
   catch(e){
@@ -1530,28 +1681,67 @@ function writeKey(key, G){
     catch(e2){ console.error("Save failed — storage full:", e2); return false; }
   }
 }
+function decodeSaveStr(s){
+  if(s==null) return null;
+  const json = s.startsWith(SAVE_LZ_PREFIX) ? LZString.decompressFromUTF16(s.slice(SAVE_LZ_PREFIX.length)) : s;
+  return json ? JSON.parse(json) : null;
+}
 function readKey(key){
-  try{ const s=localStorage.getItem(key); if(!s) return null;
-    const json = s.startsWith(SAVE_LZ_PREFIX) ? LZString.decompressFromUTF16(s.slice(SAVE_LZ_PREFIX.length)) : s;
-    return json ? migrate(JSON.parse(json)) : null;
-  }catch(e){ return null; }
+  try{ const g = decodeSaveStr(localStorage.getItem(key)); return g ? migrate(g) : null; }
+  catch(e){ return null; }
 }
 function listSlots(){ try{ return JSON.parse(localStorage.getItem(SLOTS_KEY)||"[]"); }catch(e){ return []; } }
 function writeSlotIndex(slots){ try{ localStorage.setItem(SLOTS_KEY, JSON.stringify(slots)); }catch(e){} }
-// Save a game to ITS slot (creating one if needed) and refresh the slot index metadata.
-function saveGame(G){
-  if(!G) return false;
-  if(!G.slotId) G.slotId = "s"+Date.now().toString(36)+Math.floor(Math.random()*1296).toString(36);
-  const ok = writeKey(slotKey(G.slotId), G);
+function updateSlotIndex(G){
   const u = G.teams && G.teams[G.userTeamId];
   const slots = listSlots().filter(s=>s.id!==G.slotId);
   slots.unshift({ id:G.slotId, name:(u?u.name:"Franchise"), abbr:(u?u.abbr:"?"),
     season:G.season, day:(G.day||0), phase:G.phase, ts:Date.now() });
   writeSlotIndex(slots);
-  return ok;
 }
-function loadSlot(id){ return readKey(slotKey(id)); }
-function deleteSlot(id){ try{ localStorage.removeItem(slotKey(id)); }catch(e){} writeSlotIndex(listSlots().filter(s=>s.id!==id)); }
+// Save a game to ITS slot (creating one if needed). The index updates synchronously
+// (menu correctness); the blob write is async. Stores the RAW object — IndexedDB
+// structured-clones it, far cheaper than JSON+LZ on a deep franchise.
+async function saveGame(G){
+  if(!G) return false;
+  if(!G.slotId) G.slotId = "s"+Date.now().toString(36)+Math.floor(Math.random()*1296).toString(36);
+  updateSlotIndex(G);
+  try{
+    await idbSet(slotKey(G.slotId), G);
+    try{ localStorage.removeItem(slotKey(G.slotId)); }catch(e){}   // reclaim any legacy localStorage copy
+    return true;
+  }catch(idbErr){
+    // IndexedDB unavailable — fall back to compressed localStorage (small saves only)
+    return writeKey(slotKey(G.slotId), G);
+  }
+}
+async function loadSlot(id){
+  try{
+    let raw=null;
+    try{ raw = await idbGet(slotKey(id)); }catch(e){}
+    if(raw==null){ try{ raw = localStorage.getItem(slotKey(id)); }catch(e){} }   // legacy fallback
+    if(raw==null) return null;
+    // new saves are stored as raw objects; older ones as (possibly compressed) strings
+    const g = (typeof raw === "object") ? raw : decodeSaveStr(raw);
+    return g ? migrate(g) : null;
+  }catch(e){ return null; }
+}
+function deleteSlot(id){
+  writeSlotIndex(listSlots().filter(s=>s.id!==id));   // sync, so the menu refresh sees it gone
+  idbDel(slotKey(id));
+  try{ localStorage.removeItem(slotKey(id)); }catch(e){}
+}
+// One-time: move any legacy localStorage save blobs into IndexedDB and free the
+// localStorage space, so an almost-full localStorage never blocks anything again.
+async function migrateSavesToIDB(){
+  try{
+    const keys=[]; for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k && k.indexOf("pocketgm_slot_")===0) keys.push(k); }
+    for(const k of keys){
+      const blob=localStorage.getItem(k); if(blob==null) continue;
+      try{ await idbSet(k, blob); localStorage.removeItem(k); }catch(e){ /* keep it in localStorage if IDB write fails */ }
+    }
+  }catch(e){}
+}
 // One-time migration: fold a pre-slots single autosave into a slot so existing franchises survive.
 function migrateLegacySave(){
   if(listSlots().length) return;
@@ -1570,6 +1760,12 @@ function logNews(G, type, msg, teamId){
   if(!Array.isArray(G.news)) G.news=[];
   G.news.unshift({ season:G.season, day:(G.day||0)+1, phase:G.phase, type, msg, teamId: teamId==null?null:teamId });
   if(G.news.length>250) G.news.length=250;
+}
+// permanent trade ledger (separate from the capped news wire) — every executed
+// trade in franchise history, browsable at the bottom of the Trades tab
+function logTrade(G, desc){
+  (G.tradeLog=G.tradeLog||[]).unshift({ season:G.season, day:(G.day||0)+1, desc });
+  if(G.tradeLog.length>300) G.tradeLog.length=300;
 }
 
 // Forward-compatibility: backfill fields added by newer versions so an existing
@@ -1614,7 +1810,18 @@ function migrate(G){
     if(G.tradeDeadline==null) G.tradeDeadline = Math.round((G.schedule?G.schedule.length:224)*0.58);
     if(!Array.isArray(G.hof)) G.hof = [];
     if(!Array.isArray(G.hofBallot)) G.hofBallot = [];
-    (G.teams||[]).forEach((t,i)=>{ if(!t.ballpark) t.ballpark = makeBallpark(i); else { if(t.ballpark.hand==null) t.ballpark.hand = ballparkHand(t.ballpark.name); if(t.ballpark.capacity==null) t.ballpark.capacity = rint(33,47)*1000; } if(!t.academy) t.academy={level:1}; });   // backfill ballparks + academy
+    (G.teams||[]).forEach((t,i)=>{ if(!t.ballpark) t.ballpark = makeBallpark(i); else { if(t.ballpark.hand==null) t.ballpark.hand = ballparkHand(t.ballpark.name); if(t.ballpark.capacity==null) t.ballpark.capacity = rint(33,47)*1000; } if(!t.academy) t.academy={level:1}; ensureCommercial(t); });   // backfill ballparks + academy + commercial slots
+    if(!G.sponsorOffers) genSponsorOffers(G);
+    // AI clubs start with their sponsor slots filled so commercial income is fair from day one
+    G.teams.forEach(t=>{ if(t.id!==G.userTeamId) SPONSOR_SLOTS.forEach(s=>{ if(!t.sponsors[s]) t.sponsors[s]=mkSponsorOffer(t,s); }); });
+    ensureGMs(G);   // named rival GMs for saves that predate them
+    if(!G.h2h) G.h2h={};
+    if(!Array.isArray(G.tradeLog)) G.tradeLog=[];
+    if(!Array.isArray(G.doubles)) G.doubles=[];
+    if(!G.career) G.career={seasons:[]};
+    G.teams.forEach(t=>{ if(!Array.isArray(t.form)) t.form=[]; if(t.fanMood==null) t.fanMood=60; if(!t.identity) t.identity=pick(["normal","normal","normal","aggressive","aggressive","conservative"]); });
+    // one-time trait seeding for rosters that predate traits
+    if(!G._traitsSeeded){ Object.values(G.players).forEach(p=>{ if(!p.trait) maybeTrait(p); }); G._traitsSeeded=true; }
     if(!Array.isArray(G.champions)) G.champions = G.champion ? [{season:G.champion.season, id:G.champion.id}] : [];
     // de-dupe any accidental repeat champions (one entry per season; keep the winner)
     if(Array.isArray(G.champions)){
@@ -1748,6 +1955,10 @@ function newGame(userTeamId, opts={}){
     settings: { injuries: true }, gmStrikes: 0, gmFired: null,
   };
   setOwnerMandate(G);   // owner sets the first-season mandate
+  // commercial world starts live: AI clubs have deals, the user has offers waiting
+  G.teams.forEach(t=>{ if(t.id!==userTeamId) SPONSOR_SLOTS.forEach(s=>{ if(!t.sponsors[s]) t.sponsors[s]=mkSponsorOffer(t,s); }); });
+  genSponsorOffers(G);
+  ensureGMs(G);         // every rival club gets a named GM from day one
   return G;
 }
 
@@ -1782,10 +1993,16 @@ function App(){
   const [showSettings, setShowSettings] = useState(false);
   const migratedRef = useRef(false);
   if(!migratedRef.current){ migrateLegacySave(); migratedRef.current=true; }   // fold a pre-slots autosave into a slot (once, before the menu reads slots)
-  const commit = g => { const ok=saveGame(g); if(!ok) tShow("⚠️ Save failed — storage full! Use Save File to back up now."); setG({...g}); };
+  // Non-blocking autosave: commit updates React state immediately and debounces the
+  // async IndexedDB blob write; flushSave forces the pending write out. Flushed on
+  // tab-hide / page-close / back-to-menu so nothing is ever lost.
+  const saveRef = useRef({ g:null, timer:null });
+  const flushSave = () => { const s=saveRef.current; if(s.timer){ clearTimeout(s.timer); s.timer=null; } if(s.g){ const g=s.g; s.g=null; saveGame(g).then(ok=>{ if(!ok) tShow("⚠️ Save failed — use Save File to back up now."); }); } };
+  const commit = g => { if(!g.slotId) g.slotId = "s"+Date.now().toString(36)+Math.floor(Math.random()*1296).toString(36); setG({...g}); saveRef.current.g=g; if(!saveRef.current.timer){ saveRef.current.timer=setTimeout(()=>{ saveRef.current.timer=null; flushSave(); }, 300); } };
   const tShow = msg => { setToast(msg); setTimeout(()=>setToast(""),2500); };
-  const openSlot = id => { const g=loadSlot(id); if(g){ setG(g); setTab("hub"); setScreen("play"); } else tShow("Couldn't load that save."); };
-  const toMenu = () => { if(G) saveGame(G); setG(null); setScreen("menu"); };   // autosave on the way out
+  const openSlot = id => { loadSlot(id).then(g=>{ if(g){ setG(g); setTab("hub"); setScreen("play"); } else tShow("Couldn't load that save."); }); };
+  const toMenu = () => { flushSave(); if(G) saveGame(G); setG(null); setScreen("menu"); };   // autosave on the way out
+  React.useEffect(()=>{ migrateSavesToIDB(); const h=()=>{ if(document.visibilityState==="hidden") flushSave(); }; const b=()=>flushSave(); document.addEventListener("visibilitychange",h); window.addEventListener("pagehide",b); window.addEventListener("beforeunload",b); return ()=>{ document.removeEventListener("visibilitychange",h); window.removeEventListener("pagehide",b); window.removeEventListener("beforeunload",b); }; }, []);
 
   if(screen==="menu") return <MainMenu onLoad={openSlot} onNew={()=>setScreen("splash")} />;
   if(screen==="splash" || !G) return <Splash onStart={(id,opts)=>{ const g=newGame(id,opts); g.slotId=null; commit(g); setTab("hub"); setScreen("play"); }} onBack={listSlots().length?()=>setScreen("menu"):null} />;
@@ -1793,6 +2010,7 @@ function App(){
 
   const user = G.teams[G.userTeamId];
   const players = G.players;
+  SCOUT_LVL = user.scouting || 1;   // the user's scouting network lifts the rating fog everywhere
 
   const TABS = [
     ["hub","Hub"],["roster","Roster"],["lineup","Lineup"],["players","Players"],
@@ -1807,7 +2025,7 @@ function App(){
     <div className="min-h-screen">
       <header className="sticky top-0 z-20 bg-[#0d1526] border-b border-[#1d2940] px-4 py-3 flex items-center gap-3 flex-wrap">
         <div className="font-black text-lg tracking-tight">⚾ POCKET <span className="text-emerald-400">GM</span></div>
-        <div className="text-sm text-slate-400">{user.name}</div>
+        <div className="text-sm text-slate-400"><Crest t={user} size={18}/>{user.name}</div>
         <div className="ml-auto flex items-center gap-2 text-sm">
           <Badge>{G.season}</Badge>
           <Badge>{G.phase==="regular"?`Day ${G.day+1}/${G.schedule.length}`:G.phase.toUpperCase()}</Badge>
@@ -1870,6 +2088,19 @@ function OvrPill({v}){
   const c = v>=80?"bg-emerald-500 text-slate-900":v>=70?"bg-lime-500 text-slate-900":v>=60?"bg-yellow-500 text-slate-900":v>=50?"bg-orange-500 text-slate-900":"bg-slate-600 text-slate-100";
   return <span className={"inline-block w-8 text-center rounded font-bold text-xs py-0.5 "+c}>{v}</span>;
 }
+// procedural club crest: a shield in two deterministic colors with the club abbr —
+// no assets, no save cost, same crest every load
+function crestColors(id){ const r=mulberry32(((id+7)*2654435761)>>>0); const h=Math.floor(r()*360), h2=(h+140+Math.floor(r()*80))%360; return [`hsl(${h},52%,36%)`,`hsl(${h2},62%,55%)`]; }
+function Crest({t, size=18}){
+  if(!t) return null;
+  const [c1,c2]=crestColors(t.id);
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" style={{display:"inline-block",verticalAlign:"-3px",marginRight:"4px",flexShrink:0}}>
+      <path d="M16 1 L29 6 V15 C29 24 23 29 16 31 C9 29 3 24 3 15 V6 Z" fill={c1} stroke={c2} strokeWidth="1.8"/>
+      <path d="M16 1 L29 6 V15 C29 24 23 29 16 31 Z" fill="rgba(255,255,255,0.10)"/>
+      <text x="16" y="20.5" textAnchor="middle" fontSize="10.5" fontWeight="800" fill="#fff" fontFamily="system-ui,sans-serif">{(t.abbr||"?").slice(0,3)}</text>
+    </svg>);
+}
 // muted "potential" chip shown beside OVR (outlined, amber) so ceiling reads at a glance
 function PotPill({v}){
   return <span className="inline-block w-8 text-center rounded font-semibold text-xs py-0.5 border border-amber-500/50 text-amber-300/90" title="Potential">{v}</span>;
@@ -1881,7 +2112,8 @@ function OvrPot({p}){
 // ---- Scouting fog: unproven players (draft prospects, raw youngsters) show a SCOUTED rating that
 // can be off; it converges to the true value as they accumulate pro games. Deterministic per id.
 function scoutGames(p){ let g=(p&&p.stats&&p.stats.G)||0; ((p&&p.history)||[]).forEach(h=>{ if((h.level==="MLB"||h.level==="AAA")&&h.stats) g+=h.stats.G||0; }); return g; }
-function scoutConf(p){ if(!p||p.isP===undefined) return 1; let c=clamp(scoutGames(p)/170,0,1); if(p.amateur) c=Math.min(c,0.30); c=clamp(c+(p.age-18)*0.02,0,1); return c; }
+let SCOUT_LVL = 1;   // the user's scouting-network level — set in App each render; lifts the fog everywhere in the UI
+function scoutConf(p){ if(!p||p.isP===undefined) return 1; let c=clamp(scoutGames(p)/170,0,1); if(p.amateur) c=Math.min(c,0.30); c=clamp(c+(p.age-18)*0.02,0,1); return clamp(c+(SCOUT_LVL-1)*0.15,0,1); }
 function scoutBias(p){ return (mulberry32((p.id>>>0)||1)()*2-1)*9; }                 // a scout's fixed lean, ±9
 function scoutedOvr(p){ const c=scoutConf(p); return clamp(Math.round(p.ovr + scoutBias(p)*(1-c)),20,99); }
 function scoutedPot(p){ const c=scoutConf(p); return clamp(Math.round(p.pot + scoutBias(p)*(1-c)*1.1),20,99); }
@@ -1919,6 +2151,9 @@ function SettingsModal({G, commit, tShow, onClose}){
         <Toggle on={s.potm!==false} label="Player of the Month"
           desc="Hand out monthly Player/Pitcher of the Month awards and track month-by-month splits."
           set={()=>{ s.potm = !(s.potm!==false); force(x=>x+1); commit(G); tShow(s.potm?"Monthly awards ON":"Monthly awards OFF"); }} />
+        <Toggle on={s.events!==false} label="League events"
+          desc="Rare franchise-shaking shocks: takeovers, scandals, career-ending injuries, generational recruits, mutinies, financial crises."
+          set={()=>{ s.events = !(s.events!==false); force(x=>x+1); commit(G); tShow(s.events!==false?"League events ON":"League events OFF"); }} />
         <Toggle on={!!s.cupCollege} label="College clubs in the BA Cup"
           desc="Add the 24 college clubs to the BA Cup (84 entrants, a Round of 128). Underdog amateurs vs the pros — cup stats span college/AAA/MLB."
           set={()=>{ s.cupCollege = !s.cupCollege;
@@ -2058,6 +2293,13 @@ function injuryDuration(){
 // Once per day: heal returning players, then roll new injuries among active MLB/AAA players.
 // Injured players are auto-excluded from lineups/rotations (isInjured) and auto-return when healed.
 function tickInjuries(G){
+  const userMlb0=G.userTeamId;
+  // suspensions & rest days tick regardless of the injuries setting
+  for(const id in G.players){ const p=G.players[id];
+    if(p.susp){ p.susp.days--; if(p.susp.days<=0){ delete p.susp; if(p.teamId===userMlb0) logNews(G,"roster",`${p.pos} ${p.name} returns from suspension`, userMlb0); } }
+    if(p._rest>0) p._rest--;
+    else if(!p.isP && isMlbId(p.teamId) && (p._cg||0) >= (p.trait==="Iron Man"?26:17) && chance(0.5)){ p._rest=1; p._cg=0; }   // a weary regular gets a day off
+  }
   if(G.settings && G.settings.injuries===false){          // injuries can be turned off in Settings
     for(const id in G.players){ if(G.players[id].injury) delete G.players[id].injury; }
     return;
@@ -2072,8 +2314,11 @@ function tickInjuries(G){
   }}
   Object.values(G.players).forEach(p=>{
     if(p.teamId==null || isCollegeId(p.teamId) || isInjured(p)) return;
-    if(chance(p.isP?0.0017:0.0014)){
-      p.injury = { days:injuryDuration(), desc:pick(p.isP?INJ_PIT:INJ_HIT), season:G.season };
+    // a better medical center means fewer injuries and shorter stints for the whole org
+    const org = isAAAId(p.teamId) ? G.teams[parentIdOf(p.teamId)] : G.teams[p.teamId];
+    const med = (org && org.facilities && org.facilities.medical) || 1;
+    if(chance((p.isP?0.0017:0.0014) * (1 - (med-1)*0.08) * (p.trait==="Iron Man"?0.45:1))){
+      p.injury = { days:Math.max(2, round(injuryDuration()*(1-(med-1)*0.06))), desc:pick(p.isP?INJ_PIT:INJ_HIT), season:G.season };
       if(p.teamId===userMlb) logNews(G,"roster",`🤕 ${p.pos} ${p.name} injured (${p.injury.desc}) — out ~${p.injury.days} days`, userMlb);
     }
   });
@@ -2171,6 +2416,9 @@ function inSeasonDev(G){
     else if(p.age<=33) center = -0.12;
     else               center = -0.22;
     if(isAAAId(p.teamId) && p.age<=25) center += 0.10;
+    // a better training facility compounds development across the whole org
+    const org = isAAAId(p.teamId) ? G.teams[parentIdOf(p.teamId)] : G.teams[p.teamId];
+    if(org && org.facilities && org.facilities.training>1 && center>0) center += (org.facilities.training-1)*0.02;
     // performance MODULATES growth — a young player who's raking realizes his ceiling much faster,
     // one who's scuffling stalls (multiplicative for risers; small additive for declining vets)
     if(p.age<=27 && center>0) center *= clamp(1 + perf*0.9, 0.2, 1.9);
@@ -2220,12 +2468,30 @@ function simDay(G){
         // attach the scoring-play game log only to the USER's games (keeps the save bounded)
         if(g.home===G.userTeamId || g.away===G.userTeamId){ g.box.plays=res.plays; g.box.walkoff=res.walkoff; g.box.finalInning=res.finalInning; }
       }
+      // BENCHES CLEAR: a hit-batter war boils over into a brawl — suspensions follow
+      // (4+ combined HBP is genuinely rare → a few brawls per season league-wide)
+      if(isMLB && (res.hbp||0)>=4 && chance(0.3)){
+        const pool=rosterOf(G,home.id).concat(rosterOf(G,away.id)).filter(p=>!isInjured(p));
+        const names=[]; const n=rint(2,4);
+        for(let i=0;i<n && pool.length;i++){ const p=pool.splice(rint(0,pool.length-1),1)[0]; p.susp={days:rint(2,5), desc:"bench-clearing brawl"}; names.push(p.name); }
+        if(names.length) logNews(G,"event",`🥊 BENCHES CLEAR in ${away.abbr} @ ${home.abbr} after ${res.hbp} hit batters — suspended: ${names.join(", ")}`, (home.id===G.userTeamId||away.id===G.userTeamId)?G.userTeamId:null);
+      }
       const homeWon=res.hs>res.as;
       if(homeWon){ home.w++; away.l++; } else { away.w++; home.l++; }
       home.streak = homeWon ? (home.streak>=0?(home.streak||0)+1:1) : (home.streak<=0?(home.streak||0)-1:-1);
       away.streak = homeWon ? (away.streak<=0?(away.streak||0)-1:-1) : (away.streak>=0?(away.streak||0)+1:1);
       home._wsMax = Math.max(home._wsMax||0, home.streak); away._wsMax = Math.max(away._wsMax||0, away.streak);
       home.rs+=res.hs; home.ra+=res.as; away.rs+=res.as; away.ra+=res.hs;
+      // rolling form (last-10) + rivalry head-to-head book (MLB only, kept forever)
+      if(isMLB){
+        (home.form=home.form||[]).push(homeWon?1:0); if(home.form.length>10) home.form.shift();
+        (away.form=away.form||[]).push(homeWon?0:1); if(away.form.length>10) away.form.shift();
+        if(home.rivalId===away.id || away.rivalId===home.id){
+          const lo=Math.min(home.id,away.id), hi=Math.max(home.id,away.id), k=lo+"-"+hi;
+          const h=(G.h2h=G.h2h||{})[k]=(G.h2h[k]||{a:0,b:0});   // a = the lower id's wins
+          if((home.id===lo)===homeWon) h.a++; else h.b++;
+        }
+      }
     });
   };
   playDay(G.schedule, true);                     // MLB
@@ -2247,8 +2513,10 @@ function simDay(G){
   if(!Array.isArray(G.tradeOffers)) G.tradeOffers=[];
   if(G.day>G.tradeDeadline){ G.tradeOffers=[]; }
   else {
-    G.tradeOffers = G.tradeOffers.filter(o=>(G.day-o.day)<=12);
-    if(G.tradeOffers.length<2 && chance(0.045)){ const off=makeAITradeOffer(G); if(off) G.tradeOffers.push(off); }
+    // bidding-war offers live one day; normal offers go stale after 12
+    G.tradeOffers = G.tradeOffers.filter(o=>o._war ? (G.day-o.day)<1 : (G.day-o.day)<=12);
+    if(G.day===G.tradeDeadline && G._dlSeason!==G.season){ G._dlSeason=G.season; deadlineDayFrenzy(G); }
+    else if(G.tradeOffers.length<2 && chance(0.045)){ const off=makeAITradeOffer(G); if(off) G.tradeOffers.push(off); }
     tickTradeRumors(G);   // flavor rumors building toward the deadline
   }
   // waiver wire: occasional AI cuts + claim processing
@@ -2307,7 +2575,7 @@ function Hub({G, commit, tShow, setTab}){
   return (
     <div className="space-y-4">
       <div className="grid sm:grid-cols-3 gap-3">
-        <Card><div className="text-slate-400 text-xs">RECORD</div><div className="text-2xl font-bold tnum">{user.w}-{user.l}</div><div className="text-xs text-slate-500">{f3(pct(user))} · {user.division} #{rank}</div></Card>
+        <Card><div className="text-slate-400 text-xs">RECORD</div><div className="text-2xl font-bold tnum">{user.w}-{user.l}</div><div className="text-xs text-slate-500">{f3(pct(user))} · {user.division} #{rank}{user.fanMood!=null?<span> · {user.fanMood>=75?"🔥":user.fanMood>=55?"🙂":user.fanMood>=40?"😐":"😡"} fans {user.fanMood}</span>:null}{G.nemesis&&G.teams[G.nemesis.teamId]&&G.teams[G.nemesis.teamId].gm?<span className="text-red-400/80"> · 😠 nemesis: {G.nemesis.name} ({G.teams[G.nemesis.teamId].abbr})</span>:null}</div></Card>
         <Card><div className="text-slate-400 text-xs">RUN DIFF</div><div className={"text-2xl font-bold tnum "+((user.rs-user.ra)>=0?"text-emerald-400":"text-red-400")}>{user.rs-user.ra>=0?"+":""}{user.rs-user.ra}</div><div className="text-xs text-slate-500">{user.rs} RS / {user.ra} RA</div></Card>
         <Card><div className="text-slate-400 text-xs">PAYROLL</div><div className="text-2xl font-bold tnum">{money(payroll(G,user.id))}</div><div className="text-xs text-slate-500">Budget {money(user.budget)}</div></Card>
       </div>
@@ -2405,9 +2673,9 @@ function Hub({G, commit, tShow, setTab}){
             const youGive=o.get.map(id=>G.players[id]).filter(Boolean);
             const desc=arr=>arr.map(p=>`${p.pos} ${p.name} (${p.ovr}→${p.pot})`).join(", ")||"—";
             return (
-              <div key={i} className="bg-[#13203a] rounded p-2">
-                <div className="text-xs text-slate-400 mb-1">{other.name} propose:</div>
-                <div className="text-sm"><span className="text-emerald-400 text-xs">You get </span>{desc(youGet)}</div>
+              <div key={i} className={"bg-[#13203a] rounded p-2 "+(o._war?"border border-amber-500/50":"")}>
+                <div className="text-xs text-slate-400 mb-1">{other.name} propose{other.gm?<span className="text-slate-500"> (GM {other.gm.name})</span>:null}:{o._war && <span className="ml-2 text-amber-300 font-semibold">🔥 DEADLINE — expires tonight</span>}</div>
+                <div className="text-sm"><span className="text-emerald-400 text-xs">You get </span>{desc(youGet)}{o.cash?<span className="text-emerald-300"> + {money(o.cash)} cash</span>:null}</div>
                 <div className="text-sm"><span className="text-red-400 text-xs">You give </span>{desc(youGive)}</div>
                 <div className="flex gap-2 mt-2">
                   <button onClick={()=>acceptOffer(i)} className="px-3 py-1 bg-emerald-500 text-slate-900 rounded text-xs font-semibold hover:bg-emerald-400">Accept</button>
@@ -2514,6 +2782,23 @@ function Hub({G, commit, tShow, setTab}){
       {userLast && <Card>
         <div className="text-xs text-slate-400 mb-1">LAST GAME</div>
         <GameLine G={G} g={userLast} />
+        {userLast.box && userLast.box.plays && userLast.box.plays.length>0 && (()=>{
+          const KIND={ HR:"💣 Home run", "3B":"Triple", "2B":"Double", "1B":"Single", BB:"Bases-loaded walk", HBP:"Hit by pitch", OUT:"Productive out", SF:"Sac fly", WP:"Wild pitch", BK:"Balk", K:"Strikeout" };
+          const hAb=G.teams[userLast.home].abbr, aAb=G.teams[userLast.away].abbr;
+          return (
+          <details className="mt-2">
+            <summary className="text-xs text-emerald-400 cursor-pointer hover:text-emerald-300">📻 Key moments ({userLast.box.plays.length}){userLast.box.walkoff?" — WALK-OFF!":""}</summary>
+            <div className="mt-1 space-y-0.5 max-h-56 overflow-y-auto">
+              {userLast.box.plays.map((pl,i)=>{ const b=pl.b!=null?G.players[pl.b]:null;
+                return (
+                <div key={i} className="flex items-center gap-2 text-xs py-0.5 border-b border-[#15203a]">
+                  <span className="text-slate-500 tnum w-8">{pl.btm?"B":"T"}{pl.i}</span>
+                  <span className="flex-1 text-slate-300">{KIND[pl.k]||pl.k}{b?` — ${b.name}`:""}{pl.r?` (${pl.r} run${pl.r>1?"s":""} score${pl.r>1?"":"s"})`:""}</span>
+                  <span className="text-slate-500 tnum">{aAb} {pl.as}–{pl.hs} {hAb}</span>
+                </div>); })}
+            </div>
+          </details>);
+        })()}
       </Card>}
 
       {next && <Card>
@@ -2941,6 +3226,10 @@ function PlayerModal({p, team, onClose, G}){
             const cls=m>=70?"bg-emerald-500/15 text-emerald-300 border-emerald-500/30":m>=40?"bg-slate-500/15 text-slate-300 border-slate-500/30":"bg-rose-500/15 text-rose-300 border-rose-500/30";
             const lbl=m>=70?"😀 Happy":m>=40?"😐 Content":"😞 Unhappy";
             return <span className={"text-xs border rounded px-2 py-1 "+cls} title="Player morale">{lbl} {m}{p.noTrade?" · 🔒 NTC":""}{p.tradeRequest?" · 😤 wants out":""}</span>; })()}
+          {p.trait && <span className="text-xs bg-amber-500/15 text-amber-300 border border-amber-500/30 rounded px-2 py-1" title={TRAIT_DESC[p.trait]||""}>✦ {p.trait}</span>}
+          {p.susp && p.susp.days>0 && <span className="text-xs bg-rose-500/15 text-rose-300 border border-rose-500/30 rounded px-2 py-1">🥊 Suspended {p.susp.days}d</span>}
+          {(p._hitStreak||0)>=10 && <span className="text-xs bg-orange-500/15 text-orange-300 border border-orange-500/30 rounded px-2 py-1" title="Riding a hot streak — locked in at the plate">🔥 Hot</span>}
+          {(p._cold||0)>=5 && <span className="text-xs bg-sky-500/15 text-sky-300 border border-sky-500/30 rounded px-2 py-1" title="Deep slump — pressing at the plate">🧊 Cold</span>}
         </div>
         {((p.accolades&&p.accolades.length>0) || (p.rings&&p.rings.length>0) || p.potm || p.potmP) && (()=>{
           const ct={}; (p.accolades||[]).forEach(a=>{ct[a.award]=(ct[a.award]||0)+1;});
@@ -3188,6 +3477,7 @@ const FIELD_COORD = { CF:[50,11], LF:[20,26], RF:[80,26], SS:[37,45], "2B":[63,4
 
 function LineupEditor({G, commit, tShow}){
   const team = G.teams[G.userTeamId];
+  const setIdentity = v => { team.identity=v; commit(G); tShow(v==="aggressive"?"⚡ Aggressive — your runners take chances":v==="conservative"?"🛑 Station-to-station — runners hold":"Balanced baserunning"); };
   // which lineup is being edited: vs RHP (the default `lineup`/`pos`) or vs LHP (`lineupVsL`/`posVsL`)
   const [vsHand, setVsHand] = useState("R");
   const lk = vsHand==="L" ? "lineupVsL" : "lineup";
@@ -3254,6 +3544,17 @@ function LineupEditor({G, commit, tShow}){
 
   return (
     <div className="space-y-4">
+      <Card>
+        <div className="flex items-center gap-3 flex-wrap">
+          <h3 className="font-bold text-sm">🧬 Team Identity</h3>
+          <div className="flex rounded-md overflow-hidden border border-[#27375c] text-xs">
+            {[["conservative","🛑 Station-to-station"],["normal","Balanced"],["aggressive","⚡ Aggressive"]].map(([k,lbl])=>(
+              <button key={k} onClick={()=>setIdentity(k)} className={"px-2.5 py-1 "+((team.identity||"normal")===k?"bg-emerald-500 text-slate-900 font-semibold":"bg-[#13203a] text-slate-300")}>{lbl}</button>
+            ))}
+          </div>
+          <span className="text-[11px] text-slate-500">How your club runs the bases in EVERY game (Manager Mode's per-game call overrides it). Aggressive clubs steal more — and get caught more.</span>
+        </div>
+      </Card>
       <Card>
         <div className="flex items-center gap-2 mb-2 flex-wrap">
           <h3 className="font-bold">Set Your Defense</h3>
@@ -3399,11 +3700,24 @@ function TeamRosterModal({G, team, onClose}){
       <div className="bg-[#0d1526] border border-[#1d2940] rounded-xl p-4 w-full max-w-2xl my-8 space-y-3" onClick={e=>e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <div>
-            <div className="font-black text-lg">{team.city} {team.nick}{team.aaa?" (AAA)":team.college?" (College)":""}</div>
-            <div className="text-xs text-slate-400">{team.w}-{team.l} · {team.league} {team.division}{team.college?" · amateur":team.budget!=null?` · Payroll ${money(payroll(G,team.id))}/${money(team.budget)}`:""}</div>
+            <div className="font-black text-lg">{!team.aaa&&!team.college&&<Crest t={team} size={22}/>}{team.city} {team.nick}{team.aaa?" (AAA)":team.college?" (College)":""}</div>
+            <div className="text-xs text-slate-400">{team.w}-{team.l} · {team.league} {team.division}{team.college?" · amateur":team.budget!=null?` · Payroll ${money(payroll(G,team.id))}/${money(team.budget)}`:""}{!team.aaa&&!team.college&&team.gm?` · GM ${team.gm.name} (since ${team.gm.since})`:""}</div>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-white text-2xl leading-none px-2">×</button>
         </div>
+        {/* trophy cabinet: every banner this club has raised in this save */}
+        {(()=>{ if(team.aaa||team.college) return null;
+          const titles=(G.champions||[]).filter(c=>c&&c.id===team.id).map(c=>c.season);
+          const cups=(G.baCupChampions||[]).filter(c=>c&&c.id===team.id).map(c=>c.season);
+          const dbls=(G.doubles||[]).filter(d=>d.id===team.id).map(d=>d.season);
+          if(!titles.length&&!cups.length) return null;
+          return (
+          <div className="flex gap-1.5 flex-wrap text-[11px]">
+            {titles.map(s=><span key={"t"+s} className="bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded px-1.5 py-0.5">🏆 {s} World Series</span>)}
+            {cups.map(s=><span key={"c"+s} className="bg-sky-500/15 text-sky-300 border border-sky-500/40 rounded px-1.5 py-0.5">🏅 {s} BA Cup</span>)}
+            {dbls.map(s=><span key={"d"+s} className="bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/40 rounded px-1.5 py-0.5">✨ {s} Double</span>)}
+          </div>);
+        })()}
         {section("Starting Lineup", <HitterTable players={lineupHits} bo onName={open} posMap={team.pos} />)}
         {section("Bench", benchHits.length?<HitterTable players={benchHits} badge="BN" onName={open}/>:<div className="text-sm text-slate-500">—</div>)}
         {section("Rotation", <PitcherTable players={rotation} slots={rotSlots} onName={open} />)}
@@ -3421,7 +3735,7 @@ function Standings({G}){
   const byDiv = standings(G.teams);
   const order = ["Empire East","Empire Central","Empire West","Pioneer East","Pioneer Central","Pioneer West"];
   const teamCell = t => (
-    <button onClick={()=>setSelTeam(t)} className="text-left hover:text-emerald-300 hover:underline">{t.city} {t.nick}</button>
+    <button onClick={()=>setSelTeam(t)} className="text-left hover:text-emerald-300 hover:underline"><Crest t={t} size={16}/>{t.city} {t.nick}</button>
   );
   // wild-card race for a league: everyone who isn't leading their division, best record first.
   // The top 3 take the wild-card seeds (this league grants 3); a line marks the playoff cut.
@@ -3440,17 +3754,19 @@ function Standings({G}){
           <Card key={k}>
             <h3 className="font-bold mb-2">{k}</h3>
             <table className="w-full text-sm tnum">
-              <thead><tr className="text-slate-400 text-xs"><th className="text-left">Team</th><th>W</th><th>L</th><th>PCT</th><th>GB</th><th>STRK</th><th>DIFF</th></tr></thead>
+              <thead><tr className="text-slate-400 text-xs"><th className="text-left">Team</th><th>W</th><th>L</th><th>PCT</th><th>GB</th><th>L10</th><th>STRK</th><th>DIFF</th></tr></thead>
               <tbody>
                 {byDiv[k].map((t,i)=>{
                   const lead=byDiv[k][0];
                   const gb=i===0?"—":(((lead.w-t.w)+(t.l-lead.l))/2).toFixed(1);
                   const sk=t.streak||0, skTxt=sk===0?"—":(sk>0?"W"+sk:"L"+(-sk));
+                  const f10=(t.form||[]); const fw=f10.filter(x=>x).length;
                   return (
                     <tr key={t.id} className={"border-t border-[#15203a] "+(t.id===G.userTeamId?"bg-emerald-900/30 font-semibold":"")}>
                       <td className="text-left py-1">{i===0&&<span className="text-amber-400 mr-1" title="division leader">★</span>}{teamCell(t)}</td>
                       <td className="text-center">{t.w}</td><td className="text-center">{t.l}</td>
                       <td className="text-center">{f3(pct(t))}</td><td className="text-center">{gb}</td>
+                      <td className={"text-center text-xs "+(fw>=7?"text-emerald-400":fw<=3&&f10.length>=8?"text-red-400":"text-slate-400")}>{f10.length?`${fw}-${f10.length-fw}`:"—"}</td>
                       <td className={"text-center text-xs "+(sk>=3?"text-emerald-400":sk<=-3?"text-red-400":"text-slate-400")}>{skTxt}</td>
                       <td className={"text-center "+((t.rs-t.ra)>=0?"text-emerald-400":"text-red-400")}>{t.rs-t.ra>=0?"+":""}{t.rs-t.ra}</td>
                     </tr>
@@ -3497,6 +3813,52 @@ function Standings({G}){
           );
         })}
       </div>
+
+      {/* rivalry head-to-head: your derby record, all-time */}
+      {(()=>{ const me=G.teams[G.userTeamId]; const riv=me.rivalId!=null?G.teams[me.rivalId]:null;
+        if(!riv) return null;
+        const lo=Math.min(me.id,riv.id), hi=Math.max(me.id,riv.id);
+        const h=(G.h2h||{})[lo+"-"+hi]||{a:0,b:0};
+        const myW=me.id===lo?h.a:h.b, rvW=me.id===lo?h.b:h.a;
+        return (
+        <Card>
+          <h3 className="font-bold mb-1">⚔️ Rivalry — <Crest t={me} size={16}/>{me.nick} vs <Crest t={riv} size={16}/>{riv.nick}</h3>
+          <div className="text-sm text-slate-300">All-time head-to-head: <b className={myW>=rvW?"text-emerald-400":"text-red-400"}>{myW}-{rvW}</b>{myW+rvW===0?" — first blood still up for grabs":myW>rvW?" — bragging rights are yours":myW<rvW?" — they own you (for now)":" — dead even"}</div>
+        </Card>);
+      })()}
+
+      {/* all-time franchise table: every club's full history in this save */}
+      {(()=>{ const rows=G.teams.map(t=>{
+          const h=t.history||[];
+          const w=h.reduce((a,x)=>a+x.w,0)+t.w, l=h.reduce((a,x)=>a+x.l,0)+t.l;
+          const made=h.filter(x=>x.made).length;
+          const titles=(G.champions||[]).filter(c=>c&&c.id===t.id).length;
+          const cups=(G.baCupChampions||[]).filter(c=>c&&c.id===t.id).length;
+          const dbl=(G.doubles||[]).filter(d=>d.id===t.id).length;
+          return { t, sea:h.length+(t.w+t.l>0?1:0), w, l, p:(w+l)?w/(w+l):0, made, titles, cups, dbl };
+        }).sort((a,b)=>b.p-a.p);
+        if(!rows.some(r=>r.sea>1)) return null;   // wait until there's history to show
+        return (
+        <Card>
+          <h3 className="font-bold mb-2">📜 All-Time Table <span className="text-slate-500 text-sm font-normal">— every season in this save</span></h3>
+          <div className="overflow-x-auto">
+          <table className="w-full text-sm tnum">
+            <thead><tr className="text-slate-400 text-xs"><th className="text-left">Team</th><th>Sea</th><th>W</th><th>L</th><th>PCT</th><th>PO</th><th>🏆</th><th>🏅Cup</th><th>✨Dbl</th></tr></thead>
+            <tbody>
+              {rows.map(r=>(
+                <tr key={r.t.id} className={"border-t border-[#15203a] "+(r.t.id===G.userTeamId?"bg-emerald-900/30 font-semibold":"")}>
+                  <td className="text-left py-1">{teamCell(r.t)}</td>
+                  <td className="text-center">{r.sea}</td><td className="text-center">{r.w}</td><td className="text-center">{r.l}</td>
+                  <td className="text-center">{f3(r.p)}</td><td className="text-center">{r.made}</td>
+                  <td className={"text-center "+(r.titles?"text-amber-300 font-bold":"text-slate-600")}>{r.titles||"—"}</td>
+                  <td className={"text-center "+(r.cups?"text-sky-300":"text-slate-600")}>{r.cups||"—"}</td>
+                  <td className={"text-center "+(r.dbl?"text-fuchsia-300":"text-slate-600")}>{r.dbl||"—"}</td>
+                </tr>))}
+            </tbody>
+          </table>
+          </div>
+        </Card>);
+      })()}
 
       {selTeam && <TeamRosterModal G={G} team={selTeam} onClose={()=>setSelTeam(null)} />}
     </div>
@@ -4270,6 +4632,131 @@ function Finances({G, commit, tShow}){
           </Card>
         );
       })()}
+
+      {/* ------- sponsorships & naming rights ------- */}
+      {(()=>{ ensureCommercial(team);
+        const offers=G.sponsorOffers||{};
+        const signSlot=o=>{ team.sponsors[o.slot]={...o}; delete offers[o.slot];
+          logNews(G,"signing",`🤝 ${team.abbr} signed ${o.brand} as ${SLOT_META[o.slot].label.toLowerCase()} sponsor — ${money(o.aav)}/yr × ${o.years}${o.bonus?` (+${money(o.bonus)} playoff bonus)`:""}`, team.id);
+          commit(G); tShow(`✅ ${o.brand} signed`); };
+        const signNaming=o=>{ team.ballpark.naming={...o}; delete offers.naming;
+          logNews(G,"signing",`🏟️ ${team.abbr} sold naming rights — ${team.ballpark.name} becomes ${o.brand} Park (${money(o.aav)}/yr × ${o.years})`, team.id);
+          commit(G); tShow(`✅ Welcome to ${o.brand} Park`); };
+        const OfferRow=({o,onSign,park})=>(
+          <div className="flex items-center gap-2 text-xs bg-[#13203a] rounded px-2 py-1">
+            <span className="flex-1"><b>{o.brand}{park?" Park":""}</b> — {money(o.aav)}/yr × {o.years} yrs{o.bonus?<span className="text-amber-300"> + {money(o.bonus)} playoff bonus (2× for a title)</span>:null}</span>
+            <button onClick={onSign} className="px-2 py-0.5 bg-emerald-600 rounded hover:bg-emerald-500 font-semibold">Sign</button>
+          </div>);
+        return (
+        <Card>
+          <h3 className="font-bold text-sm mb-2">🤝 Sponsorships <span className="text-slate-500 font-normal">— {money(sponsorIncome(team))}/yr commercial income</span></h3>
+          <div className="grid sm:grid-cols-2 gap-2">
+            {SPONSOR_SLOTS.map(s=>{ const d=team.sponsors[s]; const meta=SLOT_META[s];
+              return (
+              <div key={s} className="bg-[#0b1220] rounded-lg p-2">
+                <div className="text-xs text-slate-400 mb-1">{meta.icon} {meta.label}</div>
+                {d ? <div className="text-sm"><b>{d.brand}</b> — {money(d.aav)}/yr · {d.years} yr{d.years>1?"s":""} left{d.bonus?<span className="text-amber-300 text-xs"> · +{money(d.bonus)} playoff bonus</span>:null}</div>
+                   : <div className="space-y-1">
+                       {(offers[s]||[]).map((o,i)=><OfferRow key={i} o={o} onSign={()=>signSlot(o)}/>)}
+                       {!(offers[s]||[]).length && <div className="text-xs text-slate-500">Open slot — new offers arrive each offseason.</div>}
+                     </div>}
+              </div>); })}
+            <div className="bg-[#0b1220] rounded-lg p-2">
+              <div className="text-xs text-slate-400 mb-1">🏟️ Naming rights</div>
+              {team.ballpark.naming
+                ? <div className="text-sm"><b>{parkName(team)}</b> — {money(team.ballpark.naming.aav)}/yr · {team.ballpark.naming.years} yr{team.ballpark.naming.years>1?"s":""} left</div>
+                : <div className="space-y-1">
+                    {(offers.naming||[]).map((o,i)=><OfferRow key={i} o={o} park onSign={()=>signNaming(o)}/>)}
+                    {!(offers.naming||[]).length && <div className="text-xs text-slate-500">{team.ballpark.name} keeps its traditional name — offers may arrive in the offseason.</div>}
+                  </div>}
+            </div>
+          </div>
+          <p className="text-[11px] text-slate-500 mt-2">Sponsor money lands as a budget boost at each season rollover. Incentive-heavy deals pay less guaranteed but bonus on a playoff berth (double for a championship). Rival clubs run their own deals.</p>
+        </Card>);
+      })()}
+
+      {/* ------- ballpark: expansion + ticket pricing ------- */}
+      {(()=>{ const bp=team.ballpark, cap=bp.capacity||40000, cost=expandCost(cap), maxed=cap>=62000;
+        const expand=()=>{ if(maxed){ tShow("The park is at max capacity"); return; }
+          if(space<cost){ tShow(`Not enough budget room — expansion costs ${money(cost)}`); return; }
+          team.budget=+(team.budget-cost).toFixed(1); bp.capacity=cap+4000;
+          logNews(G,"signing",`🏗️ ${team.abbr} expanded ${parkName(team)} to ${(bp.capacity/1000).toFixed(0)}K seats`, team.id);
+          commit(G); tShow(`✅ ${parkName(team)} now seats ${(bp.capacity/1000).toFixed(0)}K`); };
+        const setPlan=pl=>{ team.ticketPlan=pl; commit(G); tShow(pl==="premium"?"Premium pricing — more margin, thinner crowds":pl==="value"?"Value pricing — packed park, less margin":"Standard pricing"); };
+        const PlanBtn=({k,label})=>(
+          <button onClick={()=>setPlan(k)} className={"px-3 py-1 rounded text-xs font-semibold "+((team.ticketPlan||"standard")===k?"bg-emerald-500 text-slate-900":"bg-[#16213a] text-slate-300 hover:bg-[#1c2c4a]")}>{label}</button>);
+        return (
+        <Card>
+          <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+            <h3 className="font-bold text-sm">🏟️ {parkName(team)} <span className="text-slate-500 font-normal">— {(cap/1000).toFixed(0)}K seats</span></h3>
+            {maxed ? <span className="text-xs text-emerald-300 font-semibold">★ Max capacity</span>
+              : <button onClick={expand} disabled={space<cost} className={"px-3 py-1 rounded text-xs font-semibold "+(space>=cost?"bg-emerald-500 text-slate-900 hover:bg-emerald-400":"bg-[#16213a] text-slate-600")}>Add 4K seats ({money(cost)})</button>}
+          </div>
+          <div className="flex items-center gap-2 mt-2">
+            <span className="text-xs text-slate-400">Ticket pricing:</span>
+            <PlanBtn k="value" label="Value"/><PlanBtn k="standard" label="Standard"/><PlanBtn k="premium" label="Premium"/>
+          </div>
+          <p className="text-[11px] text-slate-500 mt-2">A bigger park earns more when you win (gate money scales with attendance). Premium pricing adds margin but thins the crowd ~6%; value pricing packs the park but gives up ~$1.5M a year.</p>
+        </Card>);
+      })()}
+
+      {/* ------- facilities: training / medical / scouting ------- */}
+      {(()=>{ ensureCommercial(team);
+        const rows=[
+          { key:"training", icon:"🏋️", label:"Training Facility", lvl:team.facilities.training, cost:facilityCost(team.facilities.training), max:FACILITY_MAX,
+            desc:"Faster in-season development for your whole org (MLB + AAA).",
+            up:()=>{ team.facilities.training++; } },
+          { key:"medical", icon:"🏥", label:"Medical Center", lvl:team.facilities.medical, cost:facilityCost(team.facilities.medical), max:FACILITY_MAX,
+            desc:"Fewer injuries and shorter IL stints across the org.",
+            up:()=>{ team.facilities.medical++; } },
+          { key:"scouting", icon:"🔭", label:"Scouting Network", lvl:team.scouting, cost:scoutingCost(team.scouting), max:FACILITY_MAX,
+            desc:"Sharper reads on prospects and amateurs — the rating fog lifts everywhere.",
+            up:()=>{ team.scouting++; SCOUT_LVL=team.scouting; } },
+        ];
+        const upgrade=r=>{ if(r.lvl>=r.max){ tShow("Already at max level"); return; }
+          if(space<r.cost){ tShow(`Not enough budget room — the upgrade costs ${money(r.cost)}`); return; }
+          team.budget=+(team.budget-r.cost).toFixed(1); r.up();
+          logNews(G,"signing",`${r.icon} ${team.abbr} upgraded their ${r.label.toLowerCase()} to Level ${r.lvl+1}`, team.id);
+          commit(G); tShow(`✅ ${r.label} → Level ${r.lvl+1}`); };
+        return (
+        <Card>
+          <h3 className="font-bold text-sm mb-2">🏗️ Facilities</h3>
+          <div className="space-y-2">
+            {rows.map(r=>(
+              <div key={r.key} className="flex items-center gap-3">
+                <div className="flex-1">
+                  <div className="text-sm font-medium">{r.icon} {r.label} <span className="text-slate-500 text-xs">— Level {r.lvl}/{r.max}</span></div>
+                  <div className="text-xs text-slate-500">{r.desc}</div>
+                </div>
+                {r.lvl>=r.max ? <span className="text-xs text-emerald-300 font-semibold">★ Max</span>
+                  : <button onClick={()=>upgrade(r)} disabled={space<r.cost} className={"px-3 py-1 rounded text-xs font-semibold whitespace-nowrap "+(space>=r.cost?"bg-emerald-500 text-slate-900 hover:bg-emerald-400":"bg-[#16213a] text-slate-600")}>→ L{r.lvl+1} ({money(r.cost)})</button>}
+              </div>))}
+          </div>
+        </Card>);
+      })()}
+
+      {/* ------- league payouts chart + last season's money ------- */}
+      {(()=>{ const lf=team.lastFin;
+        const CHART=[["World Series champions",PAYOUTS.ws],["World Series runner-up",PAYOUTS.wsLoser],["Lost the LCS",PAYOUTS.csLoser],["Lost the Division Series",PAYOUTS.dsLoser],["Lost the Wild Card game",PAYOUTS.wcLoser],["BA Cup winner",PAYOUTS.cup]];
+        return (
+        <Card>
+          <h3 className="font-bold text-sm mb-2">💰 League Payouts</h3>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <div>
+              <div className="text-xs text-slate-400 mb-1">What a run pays (added to next year's budget)</div>
+              {CHART.map(([l,v])=><div key={l} className="flex justify-between text-xs py-0.5 border-b border-[#15203a]"><span className="text-slate-300">{l}</span><span className="tnum text-emerald-300">{money(v)}</span></div>)}
+              <div className="flex justify-between text-xs py-0.5"><span className="text-slate-300">Luxury tax line</span><span className="tnum text-red-300">{money(LUX_LINE)} · {Math.round(LUX_RATE*100)}% ({Math.round(LUX_RATE_REPEAT*100)}% repeat)</span></div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-400 mb-1">{lf?`Your ${lf.season} money (applied at rollover)`:"Your breakdown appears after your first full season"}</div>
+              {lf && [["Sponsors & naming",lf.sponsAdj],["Sponsor playoff bonuses",lf.bonuses],["Postseason payout",lf.prize],["BA Cup payout",lf.cup],["Gate (attendance)",lf.gateAdj],["Ticket pricing",lf.ticketAdj],["Luxury tax",-lf.tax]].map(([l,v])=>(
+                <div key={l} className="flex justify-between text-xs py-0.5 border-b border-[#15203a]"><span className="text-slate-300">{l}</span><span className={"tnum "+(v>0?"text-emerald-300":v<0?"text-red-300":"text-slate-500")}>{v>0?"+":""}{money(v)}</span></div>))}
+              {lf && <div className="flex justify-between text-xs py-1 font-semibold"><span>Net commercial</span><span className={"tnum "+(lf.total>=0?"text-emerald-300":"text-red-300")}>{lf.total>=0?"+":""}{money(lf.total)}</span></div>}
+            </div>
+          </div>
+        </Card>);
+      })()}
+
       <Card>
         <div className="flex items-baseline justify-between mb-2">
           <h3 className="font-bold">Contracts</h3>
@@ -4375,6 +4862,9 @@ function Trades({G, commit, tShow, tradeFocus, setTradeFocus}){
       const getDesc = get.map(id=>G.players[id].name).concat(getPk.length?[`${getPk.length} pick${getPk.length>1?"s":""}`]:[]).join(", ");
       const giveDesc = give.map(id=>G.players[id].name).concat(givePk.length?[`${givePk.length} pick${givePk.length>1?"s":""}`]:[]).join(", ");
       logNews(G,"trade",`${me.abbr} acquired ${getDesc||"picks"} from ${other.abbr} for ${giveDesc||"picks"}`, me.id);
+      logTrade(G, `${me.abbr} ⇄ ${other.abbr}: got ${getDesc||"picks"} for ${giveDesc||"picks"}`);
+      const starOut = give.map(id=>G.players[id]).find(p=>p&&p.ovr>=80);
+      if(starOut){ me.fanMood=clamp((me.fanMood==null?60:me.fanMood)-8,20,95); logNews(G,"event",`😡 Fans are furious about the ${starOut.name} trade — the mood is turning.`, me.id); }
       reset(); commit(G); tShow("✅ Trade accepted!");
     } else {
       const need = (getVal*0.97 - giveVal);
@@ -4465,6 +4955,18 @@ function Trades({G, commit, tShow, tradeFocus, setTradeFocus}){
         {pickBox(`${other.nick} picks to acquire`, otPicks, getPk, setGetPk)}
       </div>
       <button onClick={propose} disabled={deadlinePassed} className="px-6 py-2 bg-emerald-500 text-slate-900 rounded-lg font-bold disabled:opacity-40 disabled:cursor-not-allowed">{deadlinePassed?"Deadline Passed":"Propose Trade"}</button>
+
+      {/* permanent trade ledger — every deal in franchise history */}
+      {(G.tradeLog&&G.tradeLog.length>0) && <Card>
+        <h3 className="font-bold text-sm mb-2">📒 Trade History <span className="text-slate-500 font-normal">({G.tradeLog.length})</span></h3>
+        <div className="space-y-0.5 max-h-72 overflow-y-auto">
+          {G.tradeLog.map((tr,i)=>(
+            <div key={i} className="flex items-start gap-2 text-xs py-1 border-b border-[#15203a]">
+              <span className="text-slate-500 tnum whitespace-nowrap">{tr.season} D{tr.day}</span>
+              <span className="flex-1 text-slate-300">{tr.desc}</span>
+            </div>))}
+        </div>
+      </Card>}
       {modal && <PlayerModal p={modal} team={teamById(G, modal.teamId)} G={G} onClose={()=>setModal(null)} />}
     </div>
   );
@@ -4484,6 +4986,95 @@ function ensureLineup(team, players){
   if(team.lineup.length<9 || team.rotation.length<5) autoSetLineups(team, players);
 }
 function rosterOf2(players, teamId){ return Object.values(players).filter(p=>p.teamId===teamId); }
+
+/* ----------------------- named rival GMs & nemesis ---------------------- */
+// Every AI club has a named GM with a tenure and a trophy count. Beat you in the
+// playoffs and he starts becoming your NEMESIS — the news wire remembers.
+const GM_FIRST=["Art","Whit","Buck","Sandy","Dutch","Casey","Theo","Billy","Branch","Pat","Terry","Walt","Gabe","Sal","Dee","Marty","Hank","Red","Doc","Lou","Cal","Rube"];
+const GM_LAST=["Fenwick","Mercer","Callahan","Ashford","Grady","Voss","Tillman","Rourke","Delgado","Kessler","Boone","Whitaker","Crane","Maddox","Pruitt","Slater","Vance","Holloway","Quinn","Barlow","Stanton","Ogilvie"];
+function makeGM(season){ return { name: pick(GM_FIRST)+" "+pick(GM_LAST), since:season, titles:0, pennants:0 }; }
+function ensureGMs(G){ G.teams.forEach(t=>{ if(t.id!==G.userTeamId && !t.gm) t.gm=makeGM(G.season); }); }
+function gmName(G,tid){ const t=G.teams[tid]; return tid===G.userTeamId ? "you" : (t&&t.gm&&t.gm.name)||"the front office"; }
+// rollover upkeep: title credit + struggling clubs replace their GM
+function tickGMs(G){
+  ensureGMs(G);
+  const champId=G.champion&&G.champion.season===G.season?G.champion.id:null;
+  G.teams.forEach(t=>{
+    if(t.id===G.userTeamId || !t.gm) return;
+    if(t.id===champId){ t.gm.titles++; logNews(G,"event",`🥂 ${t.gm.name} (${t.abbr}) wins title #${t.gm.titles} as an executive — a legacy grows.`, G.userTeamId); return; }
+    const hist=(t.history||[]).slice(-2);
+    const bad = hist.length===2 && hist.every(h=>(h.w+h.l)?h.w/(h.w+h.l)<0.42:false);
+    if(bad && chance(0.5)){
+      const old=t.gm.name; t.gm=makeGM(G.season+1);
+      logNews(G,"event",`🪑 ${t.name} FIRED GM ${old} after back-to-back losing seasons — ${t.gm.name} takes over.`, G.userTeamId);
+      if(G.nemesis && G.nemesis.teamId===t.id) G.nemesis=null;   // your rival is gone
+    }
+  });
+}
+// he knocked you out — remember him
+function setNemesis(G, winnerTid){
+  ensureGMs(G);
+  const t=G.teams[winnerTid]; if(!t||!t.gm) return;
+  if(G.nemesis && G.nemesis.teamId===winnerTid){ G.nemesis.grudges++;
+    logNews(G,"event",`😡 ${t.gm.name} and ${t.abbr} end your season AGAIN — that's ${G.nemesis.grudges} times. This is a rivalry now.`, G.userTeamId);
+  } else if(!G.nemesis || chance(0.6)){
+    G.nemesis={ teamId:winnerTid, name:t.gm.name, grudges:1, since:G.season };
+    logNews(G,"event",`😠 ${t.gm.name}'s ${t.abbr} send you home. Remember the name.`, G.userTeamId);
+  }
+}
+
+/* --------------------------- deadline day ------------------------------ */
+// The final day of the trade market erupts: AI clubs swing win-now/rebuild swaps
+// with each other, and if you have a coveted player, rival GMs enter a BIDDING WAR
+// — competing offers that expire at midnight.
+function aiAiTrade(G){
+  // deadline buyers/sellers are defined by the STANDINGS — clubs in the race buy, clubs out of it sell
+  const wp=t=>(t.w+t.l)?t.w/(t.w+t.l):0.5;
+  const sellers=G.teams.filter(t=>t.id!==G.userTeamId && wp(t)<=0.47);
+  const buyers=G.teams.filter(t=>t.id!==G.userTeamId && wp(t)>=0.53);
+  if(!sellers.length||!buyers.length) return false;
+  const seller=pick(sellers), buyer=pick(buyers);
+  if(seller.id===buyer.id) return false;
+  const vets=rosterOf(G,seller.id).filter(p=>p.age>=28 && p.ovr>=66 && (p.years||1)<=2).sort((a,b)=>b.ovr-a.ovr);
+  const vet=vets[0]; if(!vet) return false;
+  const tval=playerValue(vet);
+  const org=rosterOf(G,buyer.id).concat(rosterOf(G,aaaIdOf(buyer.id)));
+  const young=org.map(p=>({p,v:playerValue(p)})).filter(c=>c.p.age<=25 && c.v<=tval*1.1).sort((a,b)=>b.v-a.v);
+  let give=[], acc=0;
+  for(const c of young){ if(acc>=tval*0.9||give.length>=2) break; give.push(c.p); acc+=c.v; }
+  const pk=(G.picks||[]).find(x=>x.owner===buyer.id && x.round>=2 && x.round<=3);
+  if(acc<tval*0.6 && !pk) return false;
+  if(pk && acc<tval*0.95) pk.owner=seller.id;
+  give.forEach(p=>movePlayer(G,p,seller.id));
+  movePlayer(G,vet,buyer.id);
+  autoSetLineups(seller,G.players); autoSetLineups(buyer,G.players);
+  autoSetLineups(G.aaaTeams[seller.id],G.players); autoSetLineups(G.aaaTeams[buyer.id],G.players);
+  logNews(G,"trade",`⏰ DEADLINE DAY: ${buyer.abbr} land ${vet.pos} ${vet.name} (${vet.ovr}) from ${seller.abbr} for ${give.map(p=>p.name).join(", ")||"a package"}${pk&&pk.owner===seller.id?" + a pick":""} — ${gmName(G,buyer.id)} goes all-in.`, G.userTeamId);
+  logTrade(G, `${buyer.abbr} ⇄ ${seller.abbr}: ${vet.name} for ${give.map(p=>p.name).join(", ")||"a package"}${pk&&pk.owner===seller.id?" + a pick":""}`);
+  return true;
+}
+function deadlineDayFrenzy(G){
+  ensureGMs(G);
+  logNews(G,"trade",`⏰ It's DEADLINE DAY — front offices are working the phones.`, G.userTeamId);
+  let swaps=0, tries=0;
+  const want=rint(2,4);
+  while(swaps<want && tries++<12){ if(aiAiTrade(G)) swaps++; }
+  // bidding war for your most coveted piece: two competing offers, gone at midnight
+  const mine=rosterOf(G,G.userTeamId).filter(p=>p.ovr>=65 && p.ovr<=86);
+  const target=mine.filter(p=>p.onBlock)[0] || (mine.length?pick(mine):null);
+  if(target && chance(0.8)){
+    const offers=shopPlayer(G, target, true).slice(0,2);   // loose: on deadline day anyone with value can bid
+    offers.forEach((o,i)=>{ o._war=true; o.day=G.day; o._expires="midnight";
+      // the second bidder stretches: a touch extra value or cash on top
+      if(i===1){ o.cash = +clamp((playerValue(target)*0.15), 2, 12).toFixed(1); }
+      G.tradeOffers.push(o);
+    });
+    if(offers.length>=2)
+      logNews(G,"trade",`🔥 BIDDING WAR: ${G.teams[offers[0].fromId].abbr} and ${G.teams[offers[1].fromId].abbr} are both chasing ${target.pos} ${target.name} — offers expire at MIDNIGHT.`, G.userTeamId);
+    else if(offers.length===1)
+      logNews(G,"trade",`📞 ${G.teams[offers[0].fromId].abbr} call about ${target.pos} ${target.name} before the buzzer — one-day offer.`, G.userTeamId);
+  }
+}
 
 // An AI club proposes a trade to the user: it covets one of the user's useful
 // (not untouchable) MLB players and assembles a package of comparable value from
@@ -4511,8 +5102,14 @@ function makeAITradeOffer(G){
     if(acc>=tval*0.97 || give.length>=3) break;
     if(acc+c.v<=tval*1.15){ give.push(c.p.id); acc+=c.v; }
   }
-  if(acc < tval*0.90 || give.length===0) return null;   // couldn't put together a fair package
-  return { fromId:other.id, get:[target.id], give, givePk:[], getPk:[], season:G.season, day:G.day };
+  if(give.length===0) return null;
+  // package a touch short? a motivated club sweetens with CASH instead of walking away
+  let cash=0;
+  if(acc < tval*0.90){
+    if(acc >= tval*0.72){ cash=+clamp((tval-acc)*1.2, 1, 12).toFixed(1); if(other.budget-payroll(G,other.id) < cash) return null; }
+    else return null;   // too far apart even with cash
+  }
+  return { fromId:other.id, get:[target.id], give, givePk:[], getPk:[], cash, season:G.season, day:G.day };
 }
 // Execute an accepted offer: AI's `give` players come to the user; the user's
 // `get` players go to the AI. Levels (MLB/AAA) are preserved; lineups refreshed.
@@ -4522,20 +5119,26 @@ function executeOffer(G, o){
   o.get.forEach(id=>{ const p=G.players[id]; if(p) movePlayer(G,p,o.fromId); });
   (o.givePk||[]).forEach(id=>{ const pk=(G.picks||[]).find(p=>p.id===id); if(pk) pk.owner=meId; });
   (o.getPk||[]).forEach(id=>{ const pk=(G.picks||[]).find(p=>p.id===id); if(pk) pk.owner=o.fromId; });
+  if(o.cash){ const me=G.teams[meId]; me.budget=+(me.budget+o.cash).toFixed(1); other.budget=+(Math.max(85,other.budget-o.cash)).toFixed(1); }   // cash considerations change hands
   ensureLineup(G.teams[meId], G.players); autoSetLineups(G.aaaTeams[meId], G.players);
   autoSetLineups(other, G.players); autoSetLineups(G.aaaTeams[other.id], G.players);
+  const nameOf=id=>{ const p=G.players[id]; return p?p.name:"?"; };
+  logTrade(G, `${G.teams[meId].abbr} ⇄ ${other.abbr}: got ${o.give.map(nameOf).join(", ")||"—"}${o.cash?` + ${money(o.cash)}`:""} for ${o.get.map(nameOf).join(", ")||"—"}`);
+  // fans hate watching a star walk out the door
+  const starGone=o.get.map(id=>G.players[id]).find(p=>p&&p.ovr>=80);
+  if(starGone){ const me=G.teams[meId]; me.fanMood=clamp((me.fanMood==null?60:me.fanMood)-8,20,95); logNews(G,"event",`😡 Fans are furious about the ${starGone.name} trade — the mood is turning.`, meId); }
 }
 
 // Shop a specific user player around the league: returns up to 3 offers from clubs that have a
 // positional need (or a win-now club wanting a quality bat/arm) and can assemble fair value.
-function shopPlayer(G, target){
+function shopPlayer(G, target, loose){
   const meId=G.userTeamId; if(!target) return []; const tval=playerValue(target); if(tval<2) return [];
   const offers=[];
   G.teams.filter(t=>t.id!==meId).forEach(other=>{
     const s=teamSituation(G, other.id), needs=s.needs||[];
     const posNeed = target.isP ? (needs.includes("SP")||needs.includes("RP")) : needs.includes(target.pos);
-    const winNow = s.mode==="Win-now"||s.mode==="Contender";
-    if(!(posNeed || (winNow && target.ovr>=72))) return;
+    const winNow = s.mode==="Win-now"||s.mode==="Contender" || ((other.w+other.l)?other.w/(other.w+other.l):0.5)>=0.53;
+    if(!loose && !(posNeed || (winNow && target.ovr>=72))) return;
     const otherOrg = rosterOf(G, other.id).concat(rosterOf(G, aaaIdOf(other.id)));
     if(otherOrg.length<12) return;
     const spare = otherOrg.map(p=>({p,v:playerValue(p)})).filter(c=>c.v<=tval*1.12 && c.p.ovr>=45).sort((a,b)=>b.v-a.v);
@@ -4833,6 +5436,26 @@ function computeAwards(G){
     gg.forEach(p=>addAccolade(p,G.season,"Gold Glove",lg));
     ss.forEach(p=>addAccolade(p,G.season,"Silver Slugger",lg));
   });
+  // ALL-MLB TEAM: the season's best at every spot across BOTH leagues — 1st and
+  // 2nd teams (9 bats + 3 SP + 1 RP each), picked by MVP/Cy scores on MLB-only lines
+  (()=>{
+    const pool=Object.values(G.players).filter(p=>{const t=teamById(G,p.teamId);return t&&!t.aaa&&!t.college;});
+    const hitters=pool.filter(p=>!p.isP&&S(p).PA>=200), sps=pool.filter(p=>p.isP&&S(p).GS>=15), rps=pool.filter(p=>p.isP&&S(p).GS<5&&S(p).OUT>=90);
+    const used=new Set();
+    const pickTeam=()=>{
+      const team={};
+      ["C","1B","2B","3B","SS","LF","CF","RF","DH"].forEach(pos=>{
+        const cand=pos==="DH"?hitters.filter(p=>!used.has(p.id)):hitters.filter(p=>p.pos===pos&&!used.has(p.id));
+        const b=bestBy(cand,p=>mvpScore(S(p))); if(b){ used.add(b.id); team[pos]=recOf(b); }
+      });
+      team.SP=[...sps].filter(p=>!used.has(p.id)).sort((a,b)=>cyScore(S(b))-cyScore(S(a))).slice(0,3).map(p=>{used.add(p.id);return recOf(p);});
+      const rp=bestBy(rps.filter(p=>!used.has(p.id)),p=>(S(p).SV||0)*1.0+(3.5-era(S(p)))*12); if(rp){ used.add(rp.id); team.RP=recOf(rp); }
+      return team;
+    };
+    out.allMLB={ first:pickTeam(), second:pickTeam() };
+    Object.entries(out.allMLB.first).forEach(([pos,r])=>{ (Array.isArray(r)?r:[r]).forEach(rec=>{ const p=rec&&G.players[rec.id]; if(p){ addAccolade(p,G.season,"All-MLB 1st","MLB"); if(p.teamId===G.userTeamId) logNews(G,"award",`🌟 ${p.name} named to the All-MLB First Team`, p.teamId); } }); });
+    Object.entries(out.allMLB.second).forEach(([pos,r])=>{ (Array.isArray(r)?r:[r]).forEach(rec=>{ const p=rec&&G.players[rec.id]; if(p) addAccolade(p,G.season,"All-MLB 2nd","MLB"); }); });
+  })();
   G.awards=out;
   (G.awardHistory=G.awardHistory||[]).unshift(out);
   if(G.awardHistory.length>40) G.awardHistory.pop();
@@ -5010,14 +5633,14 @@ function updateHitStreaks(G, lines){
     if(l.isP || !(l.ab>0)) return;
     const p=G.players[l.pid]; if(!p) return;
     if(l.h>0){
-      p._hitStreak=(p._hitStreak||0)+1;
+      p._hitStreak=(p._hitStreak||0)+1; p._cold=0;
       if(p._hitStreak>(p._bestHitStreak||0)) p._bestHitStreak=p._hitStreak;
       const s=p._hitStreak;
       if(s===15 || (s>15 && s%5===0))
         logNews(G,"award",`🔥 ${p.name} (${teamAbbrOf(G,p)}) extends his hitting streak to ${s} games`, p.teamId);
       recordHitStreak(G, p, s);
     } else {
-      p._hitStreak=0;
+      p._hitStreak=0; p._cold=(p._cold||0)+1;   // hitless games — a slump drags on the sim
     }
   });
 }
@@ -5244,6 +5867,8 @@ function playoffSeriesGame(G, s, bestOf){
   G.teams[s.lo].poGi=(G.teams[s.lo].poGi||0)+1;
   if(s.hw>=need){ s.done=true; s.winner=s.hi; }
   else if(s.lw>=need){ s.done=true; s.winner=s.lo; }
+  // the GM who ends your season starts becoming your nemesis
+  if(s.done && (s.hi===G.userTeamId||s.lo===G.userTeamId) && s.winner!==G.userTeamId) setNemesis(G, s.winner);
 }
 
 // the series currently being contested in this round
@@ -5279,6 +5904,12 @@ function buildNextRound(G){
       rosterOf(G, po.ws.winner).forEach(pl=>{ (pl.rings=pl.rings||[]).push(G.season); });
     }
     logNews(G,"champ",`🏆 ${G.teams[po.ws.winner].name} won the ${G.season} World Series!`, po.ws.winner);
+    // THE DOUBLE: BA Cup + World Series in the same season — a special honour
+    const cupW=(G.baCupChampions||[]).find(c=>c.season===G.season);
+    if(cupW && cupW.id===po.ws.winner){
+      (G.doubles=G.doubles||[]).push({ season:G.season, id:po.ws.winner });
+      logNews(G,"champ",`✨ ${G.teams[po.ws.winner].name} complete THE DOUBLE — BA Cup and World Series in one season!`, po.ws.winner);
+    }
     startOffseason(G);
   }
 }
@@ -5728,6 +6359,13 @@ function OffseasonHub({G, commit, tShow, setTab}){
     const expiredLog=[];
     Object.values(G.players).forEach(p=>{
       if(isCollegeId(p.teamId)) return;             // amateurs don't expire to FA
+      // implicit OPT-OUT: a star on a now-below-market multi-year deal can void the rest
+      // and re-test free agency (big deals are treated as carrying an opt-out clause)
+      if(p.years>=1 && p.teamId!=null && !isAAAId(p.teamId) && p.ovr>=78 && p.age<=32 && (p.salary||0)>=8 && salaryFor(p)>p.salary*1.25 && chance(0.35)){
+        const t=teamById(G,p.teamId);
+        p.contract=[]; p.years=0;
+        logNews(G,"signing",`⚡ ${p.pos} ${p.name} (${p.ovr}) OPTED OUT of the rest of his deal with ${t?t.abbr:"his club"} — betting on a bigger payday`, t?t.id:null);
+      }
       if(p.years<=0 && p.teamId!=null){
         // AAA prospects stay under org control until 28 (they're cheap, haven't hit arb yet)
         if(isAAAId(p.teamId) && p.age<28){ setContract(p, p.salary||0.7, rint(2,4), []); return; }
@@ -6579,7 +7217,128 @@ function trimHistories(G, notableCap=25, fillerCap=3){
   });
 }
 
+/* --------------------------- black-swan events -------------------------- */
+// Rare, high-impact, unpredictable shocks that make a long franchise feel alive:
+// mega-takeovers, scandals (sign-stealing / PEDs / gambling), career-ending
+// injuries, generational recruits, clubhouse mutinies, financial fire sales and
+// league-wide revenue collapses. Each is individually uncommon; a season usually
+// sees a couple across the league. All gated behind the `events` setting.
+// Rolled once per rollover: rollSeasonEvents at the TOP of startNewSeason (so a
+// takeover's war chest gets spent in that same offseason's AI free agency), and
+// rollEconomicShocks AFTER the attendance→budget evolution (so a collapse isn't
+// immediately overwritten by it).
+function eventsOn(G){ return !G.settings || G.settings.events!==false; }
+function rollSeasonEvents(G){
+  // takeover backing always ticks down a year, even with events off
+  G.teams.forEach(t=>{ if((t.backedSeasons||0)>0) t.backedSeasons--; });
+  if(!eventsOn(G)) return;
+  const uid2 = G.userTeamId;
+
+  // 1) MEGA-TAKEOVER — new ownership buys a club and hands it a payroll war chest,
+  //    spent hard in this same offseason's free agency (backing decays over 3–5 yrs).
+  if(chance(0.5)){
+    const pool = G.teams.filter(t=>t.id!==uid2 && !(t.backedSeasons>0));
+    const t = pool.length ? pick(pool) : null;
+    if(t){
+      const war = rint(40,90);
+      t.budget = round(t.budget + war); t.backedSeasons = rint(3,5);
+      logNews(G,"event",`🤑 ${t.name} have been SOLD — new ownership arrives with a ${money(war)} payroll war chest. They mean business.`, uid2);
+    }
+  }
+  // 2) SCANDAL — sign-stealing / PEDs / gambling / signing violations: the league
+  //    strips early draft picks and levies a fine; the clubhouse takes a morale hit.
+  if(chance(0.25)){
+    const t = pick(G.teams);
+    if(t){
+      const kind = pick(["an illegal sign-stealing operation","a clubhouse-wide PED program","players betting on league games","international signing violations"]);
+      const y = G.season+1;
+      const lostIds = new Set((G.picks||[]).filter(pk=>pk.owner===t.id && pk.season===y && pk.round<=2).map(pk=>pk.id));
+      if(lostIds.size) G.picks = G.picks.filter(pk=>!lostIds.has(pk.id));
+      const fine = rint(10,20);
+      t.budget = Math.max(85, round(t.budget - fine));
+      rosterOf(G,t.id).forEach(p=>{ if(p.morale!=null) p.morale = clamp(p.morale-15,0,100); });
+      logNews(G,"event",`🕵️ ${t.name} punished for ${kind} — ${lostIds.size?`forfeit ${lostIds.size} early ${y} draft pick${lostIds.size>1?"s":""} and `:""}fined ${money(fine)}.`, uid2);
+    }
+  }
+  // 3) CAREER-ENDING INJURY — a genuine tragedy: a player who featured this season
+  //    is forced to retire on the spot, whatever his age. Weighted toward good young
+  //    players — the more shocking, the better the story.
+  if(chance(0.35)){
+    const played = p => { const h=p.history&&p.history[p.history.length-1];
+      return h && h.season===G.season && h.stats && ((h.stats.G||0)>20 || (h.stats.OUT||0)>60); };
+    const cands = Object.values(G.players).filter(p=>p.teamId!=null && !isCollegeId(p.teamId) && played(p));
+    if(cands.length){
+      cands.sort((a,b)=>((b.ovr)-(b.age*0.6))-((a.ovr)-(a.age*0.6)));
+      const p = cands[rint(0, Math.min(60, cands.length-1))];
+      const t = teamById(G, p.teamId);
+      nominateForHOF(G, p);
+      if(t){ t.lineup=(t.lineup||[]).filter(x=>x!==p.id); t.rotation=(t.rotation||[]).filter(x=>x!==p.id); if(t.bullpen) t.bullpen=t.bullpen.filter(x=>x!==p.id); if(t.pos) delete t.pos[p.id]; }
+      G.freeAgents = (G.freeAgents||[]).filter(x=>x!==p.id);
+      logNews(G,"event",`💔 ${p.name} (${p.pos}, ${p.ovr} OVR, age ${p.age}) has been forced to RETIRE after a devastating injury. A cruel end to his career${t?` with ${t.name}`:""}.`, t?(isAAAId(t.id)?parentIdOf(t.id):t.id):null);
+      delete G.players[p.id];
+    }
+  }
+  // 4) GENERATIONAL RECRUIT — a college program lands a once-a-decade talent who
+  //    will headline a future draft class.
+  if(chance(0.5)){
+    const ct = (G.collegeTeams||[]).length ? pick(G.collegeTeams) : null;
+    if(ct){
+      const p = chance(0.35) ? makePitcher("SP",[17,18],-12) : makeHitter(pick(FIELD_POS),[17,18],-12);
+      p.teamId=ct.id; p.amateur=true; p.salary=0; p.contract=[]; p.years=0; p.classYr=21-p.age;
+      p.pot = clamp(rint(88,95), p.ovr+12, 99);
+      G.players[p.id]=p;
+      logNews(G,"event",`🌟 ${ct.name} landed ${p.name}, a generational ${p.pos} recruit (${p.ovr} now — ${p.pot} ceiling). Scouts are already drooling over the ${G.season+Math.max(1,p.classYr)} draft.`, uid2);
+    }
+  }
+  // 5) CLUBHOUSE MUTINY — a team's room fractures; gutted morale drags their form
+  //    (and re-signing mood) into the new season.
+  if(chance(0.4)){
+    const t = pick(G.teams);
+    const ros = rosterOf(G, t.id);
+    if(ros.length){
+      const hit = rint(18,34);
+      ros.forEach(p=>{ p.morale = clamp((p.morale==null?65:p.morale)-hit, 0, 100); });
+      logNews(G,"event",`😤 The clubhouse in ${t.name} has FRACTURED — a player revolt guts morale heading into the new season.`, uid2);
+    }
+  }
+  // 6) FINANCIAL CRISIS / FIRE SALE — ownership goes broke: payroll slashed, and the
+  //    most expensive players are released until the books balance.
+  if(chance(0.2)){
+    const pool = G.teams.filter(t=>t.id!==uid2 && !(t.backedSeasons>0));
+    const t = pool.length ? pick(pool) : null;
+    if(t){
+      t.budget = Math.max(85, round(t.budget * rint(55,70)/100));
+      const shed=[];
+      let ros = rosterOf(G,t.id).sort((a,b)=>(b.salary||0)-(a.salary||0));
+      while(payroll(G,t.id) > t.budget && ros.length > 18){
+        const p = ros.shift();
+        if((p.salary||0) < 3) break;   // only real money moves the needle
+        p.teamId=null; if(!G.freeAgents.includes(p.id)) G.freeAgents.push(p.id);
+        shed.push(p.name);
+      }
+      logNews(G,"event",`💸 ${t.name}'s ownership is in FINANCIAL CRISIS — payroll slashed to ${money(t.budget)}${shed.length?`; ${shed.slice(0,3).join(", ")}${shed.length>3?` +${shed.length-3} more`:""} released in the fire sale`:""}.`, uid2);
+    }
+  }
+}
+// League-wide revenue shocks, applied AFTER the attendance→budget evolution so the
+// hit sticks. At most one fires per offseason; both squeeze every club's books.
+function rollEconomicShocks(G){
+  if(!eventsOn(G)) return;
+  if(chance(0.05)){
+    const cut = rint(8,15);
+    G.teams.forEach(t=>{ t.budget = Math.max(85, round(t.budget*(100-cut)/100)); });
+    logNews(G,"event",`📺 The league's national TV deal has COLLAPSED — central revenue is cut ${cut}% this season. Every club feels it.`, G.userTeamId);
+  } else if(chance(0.03)){
+    G.teams.forEach(t=>{ t.budget = Math.max(85, round(t.budget*0.85));
+      if(t.attendance) t.attendance = round(t.attendance*rint(15,30)/100);
+      if(t.attFill) t.attFill = +(t.attFill*0.25).toFixed(2); });
+    logNews(G,"event",`🦠 A public-health crisis forces games BEHIND CLOSED DOORS — attendance and gate money collapse league-wide this season.`, G.userTeamId);
+  }
+}
+
 function startNewSeason(G){
+  tickGMs(G);            // rival GM legacies: title credit, firings, fresh faces
+  rollSeasonEvents(G);   // black-swan shocks land first, so a takeover's war chest gets spent below
   // Competitive AI free agency: several market waves where clubs land their best-FIT targets
   // (anyone the user didn't sign). Then a fallback fill guarantees playable AI rosters.
   for(let w=0; w<6; w++) processFAWave(G, 0.55);
@@ -6618,6 +7377,7 @@ function startNewSeason(G){
   const champId = G.champion ? G.champion.id : null;
   const empSeeds = playoffSeeds(G.teams,"Empire").map(t=>t.id);
   const pioSeeds = playoffSeeds(G.teams,"Pioneer").map(t=>t.id);
+  aiTickSponsors(G);   // deal years tick down; AI clubs re-fill their empty slots
   G.teams.forEach(t=>{
     t.history = t.history||[];
     const made = (t.league==="Empire"?empSeeds:pioSeeds).includes(t.id);
@@ -6625,16 +7385,35 @@ function startNewSeason(G){
     t.history.push({ season:G.season, w:t.w, l:t.l, made, champ });
     // revenue/budget evolves with ATTENDANCE — winning (and a recent winner's momentum) fills seats —
     // but regresses gently toward a market mean so a dynasty can't run the payroll away forever.
+    // Commercial money (sponsors/naming/prize/tickets, minus luxury tax) folds in as a bounded bonus.
     const a=computeAttendance(t); t.attendance=a.att; t.attFill=a.fill;
     let delta=(a.fill-0.52)*0.55; if(champ) delta+=0.04;
+    const comm=finBonus(G, t, made, champ);
     const old=t.budget;
-    t.budget=clamp(round(t.budget*(1+delta) - (t.budget-160)*0.06), 95, 290);
+    // a takeover-backed club's war chest survives the normal budget band while the backing lasts
+    t.budget=clamp(round(t.budget*(1+delta) - (t.budget-160)*0.06 + comm), 95, t.backedSeasons>0?330:290);
     t.budgetDelta=t.budget-old;
-    if(t.id===G.userTeamId && t.budgetDelta!==0)
-      logNews(G,"signing",`${t.abbr} drew ${(t.attendance/1000).toFixed(1)}K/game (${Math.round(a.fill*100)}% full) — payroll budget ${t.budgetDelta>0?"+":""}${t.budgetDelta} to ${money(t.budget)}`, t.id);
+    if(t.id===G.userTeamId){
+      if(t.budgetDelta!==0)
+        logNews(G,"signing",`${t.abbr} drew ${(t.attendance/1000).toFixed(1)}K/game (${Math.round(a.fill*100)}% full) — payroll budget ${t.budgetDelta>0?"+":""}${t.budgetDelta} to ${money(t.budget)} (commercial ${comm>=0?"+":""}${comm})`, t.id);
+      const lf=t.lastFin||{};
+      if(lf.prize||lf.cup) logNews(G,"signing",`💰 League payouts: ${lf.prize?`postseason ${money(lf.prize)}`:""}${lf.prize&&lf.cup?" + ":""}${lf.cup?`BA Cup ${money(lf.cup)}`:""} added to the budget`, t.id);
+      if(lf.tax>0) logNews(G,"signing",`⚖️ Luxury tax: payroll over the ${money(LUX_LINE)} line — ${money(lf.tax)} tax paid${t._luxLast?" (repeat-offender rate next year)":""}`, t.id);
+      // FAN MOOD: results move it, titles spike it, premium pricing grates, and it decays toward 60
+      const wp=(t.w+t.l)?t.w/(t.w+t.l):0.5;
+      let fm=(t.fanMood==null?60:t.fanMood);
+      fm += (wp-0.5)*40 + (champ?15:made?6:0) + (t.ticketPlan==="premium"?-4:t.ticketPlan==="value"?2:0);
+      t.fanMood=clamp(round(fm - (fm-60)*0.25), 20, 95);
+      // GM LEGACY: your multi-decade career line, one row per season
+      const cc=G.baCupChampions||[]; const wonCup=cc.some(c=>c.season===G.season && c.id===t.id);
+      const car=(G.career=G.career||{seasons:[]});
+      car.seasons.push({ season:G.season, team:t.abbr, w:t.w, l:t.l, made, champ, cup:wonCup });
+    }
   });
+  rollEconomicShocks(G);   // league-wide TV/gate collapses land after the budget evolution so they stick
+  genSponsorOffers(G);     // fresh offers for the user's open sponsor slots
   // reset records & stats (MLB + AAA + college)
-  G.teams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0;t.streak=0;t._wsMax=0; });
+  G.teams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0;t.streak=0;t._wsMax=0;t.form=[]; });
   G.aaaTeams.forEach(t=>{ t.w=0;t.l=0;t.rs=0;t.ra=0;t.poGi=0; });
   Object.values(G.players).forEach(p=>{ if(p.injury) delete p.injury; if(p._tired) delete p._tired; if(p._hitStreak) delete p._hitStreak; if(p._splits) delete p._splits; if(p._monthly) delete p._monthly; if(p._monthSnap) delete p._monthSnap; if(p._seasonDev) delete p._seasonDev; });   // offseason heals everyone; streaks/splits/monthly/in-season-dev reset (career best kept)
   G._curMonth=null;
@@ -6758,6 +7537,29 @@ function HallOfFame({G}){
   const mostTitles = Object.entries(titlesByTeam).sort((a,b)=>b[1]-a[1]).slice(0,5);
   return (
     <div className="space-y-4">
+      {/* GM LEGACY: your whole career, one row per season managed */}
+      {(()=>{ const car=G.career; if(!car||!car.seasons||!car.seasons.length) return null;
+        const ss=car.seasons;
+        const W=ss.reduce((a,s)=>a+s.w,0), L=ss.reduce((a,s)=>a+s.l,0);
+        const titles=ss.filter(s=>s.champ).length, cups=ss.filter(s=>s.cup).length, pos=ss.filter(s=>s.made).length;
+        return (
+        <Card className="border-emerald-800/50">
+          <h3 className="font-bold mb-1">👔 Your GM Legacy <span className="text-slate-500 text-sm font-normal">— {ss.length} season{ss.length>1?"s":""} at the helm</span></h3>
+          <div className="flex gap-4 flex-wrap text-sm mb-2">
+            <span><b className="tnum">{W}-{L}</b> <span className="text-slate-500 text-xs">({f3(W/(W+L||1))})</span></span>
+            <span>🏆 <b>{titles}</b> title{titles!==1?"s":""}</span>
+            <span>🏅 <b>{cups}</b> BA Cup{cups!==1?"s":""}</span>
+            <span>📊 <b>{pos}</b> playoff berth{pos!==1?"s":""}</span>
+          </div>
+          <div className="flex gap-1 flex-wrap">
+            {ss.slice(-30).map(s=>(
+              <span key={s.season} title={`${s.season} ${s.team}: ${s.w}-${s.l}${s.champ?" · WS champs":s.made?" · playoffs":""}${s.cup?" · BA Cup":""}`}
+                className={"text-[10px] tnum rounded px-1 py-0.5 "+(s.champ?"bg-amber-500/30 text-amber-200":s.made?"bg-emerald-800/50 text-emerald-200":"bg-[#16213a] text-slate-400")}>
+                {String(s.season).slice(2)}{s.champ?"🏆":s.cup?"🏅":""}
+              </span>))}
+          </div>
+        </Card>);
+      })()}
       <Card>
         <h3 className="font-bold mb-2">🏆 Champions</h3>
         {champs.length ? (
@@ -6952,6 +7754,7 @@ const NEWS_META = {
   draft:   {label:"Draft",    dot:"bg-amber-400"},
   award:   {label:"Awards",   dot:"bg-fuchsia-400"},
   champ:   {label:"Titles",   dot:"bg-yellow-400"},
+  event:   {label:"Events",   dot:"bg-red-400"},
 };
 function NewsFeed({G}){
   const [filt,setFilt]=useState("ALL");
@@ -7052,6 +7855,20 @@ function Awards({G}){
   return (
     <div className="space-y-4">
       <Card><h3 className="font-bold">🏅 {a.season} Awards</h3></Card>
+      {a.allMLB && <Card>
+        <h3 className="font-bold text-sm mb-2">🌟 All-MLB Team <span className="text-slate-500 font-normal">— the best in baseball, both leagues</span></h3>
+        <div className="grid sm:grid-cols-2 gap-3">
+          {["first","second"].map(tier=>{ const T=a.allMLB[tier]; if(!T) return null;
+            return (
+            <div key={tier}>
+              <div className={"text-xs font-semibold mb-1 "+(tier==="first"?"text-amber-300":"text-slate-400")}>{tier==="first"?"First Team":"Second Team"}</div>
+              {["C","1B","2B","3B","SS","LF","CF","RF","DH"].map(pos=>{ const r=T[pos]; if(!r) return null;
+                return <div key={pos} className="flex gap-2 text-xs py-0.5 border-b border-[#15203a]"><span className="w-6 text-slate-500">{pos}</span><span className="flex-1 truncate"><PlayerLink p={G.players[r.id]} text={r.name}/> <span className="text-slate-600">{r.team}</span></span></div>; })}
+              {(T.SP||[]).map((r,i)=><div key={"sp"+i} className="flex gap-2 text-xs py-0.5 border-b border-[#15203a]"><span className="w-6 text-slate-500">SP</span><span className="flex-1 truncate"><PlayerLink p={G.players[r.id]} text={r.name}/> <span className="text-slate-600">{r.team}</span></span></div>)}
+              {T.RP && <div className="flex gap-2 text-xs py-0.5"><span className="w-6 text-slate-500">RP</span><span className="flex-1 truncate"><PlayerLink p={G.players[T.RP.id]} text={T.RP.name}/> <span className="text-slate-600">{T.RP.team}</span></span></div>}
+            </div>); })}
+        </div>
+      </Card>}
       <div className="grid md:grid-cols-2 gap-4">
         {["Empire","Pioneer"].map(lg=>{
           const L=a.leagues[lg]; if(!L) return null;
@@ -7288,6 +8105,28 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App />);
       console.error(e);
     }
   })();
+</script>
+<script>
+  // PWA service worker: network-first for the app so a new push always wins,
+  // and auto-reload once when a fresh version takes over.
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function(){
+      navigator.serviceWorker.register('sw.js').then(function(reg){
+        // Check for an update on every launch.
+        reg.update();
+        reg.addEventListener('updatefound', function(){
+          var nw = reg.installing;
+          if (!nw) return;
+          nw.addEventListener('statechange', function(){
+            if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+              // A new version is ready — reload to use it.
+              window.location.reload();
+            }
+          });
+        });
+      }).catch(function(e){ console.warn('SW registration failed', e); });
+    });
+  }
 </script>
 </body>
 </html>
