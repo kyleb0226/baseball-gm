@@ -605,6 +605,11 @@ sim, trades, free agency, amateur draft, contracts/budget, playoffs, and a multi
   IndexedDB's structured clone tolerated the cycle but `JSON.stringify` did not — **Save File and
   the localStorage fallback both threw** on any played franchise. Signature is now
   `markGamesPlayed(home, away, players, idx, day)`; `migrate` sweeps the poisoned values (`_lastDFixed`).
+- **Dev gotcha — the service worker caches the bundle.** `sw.js` is network-first but a plain
+  reload can still hand you a STALE `index.html` (you'll edit the file, reload, and see nothing
+  change — the served bytes are right, the page's are not). When verifying a change in a browser,
+  load `index.html?v=N` with a fresh N, or unregister the SW and clear caches first. The headless
+  harness is unaffected — it reads the file directly, which is another reason to check logic there.
 - **`tools/simtest.js`:** headless harness — extracts the `app-src` block, transpiles with the
   vendored Babel, runs it in a Node `vm` with minimal shims, and publishes the functions listed in
   `EXPORTS` (top-level `const` doesn't become a vm global, hence the explicit epilogue). Checks run
