@@ -2359,6 +2359,7 @@ function App(){
   const [globalPlayer, setGlobalPlayer] = useState(null); // player whose full stats modal is open (clickable names anywhere)
   const [showSettings, setShowSettings] = useState(false);
   const [showRules, setShowRules] = useState(false);
+  const [palette, setPalette] = useState(false);
   const migratedRef = useRef(false);
   if(!migratedRef.current){ migrateLegacySave(); migratedRef.current=true; }   // fold a pre-slots autosave into a slot (once, before the menu reads slots)
   // Non-blocking autosave: commit updates React state immediately and debounces the
@@ -2371,6 +2372,19 @@ function App(){
   const openSlot = id => { loadSlot(id).then(g=>{ if(g){ setG(g); setTab("hub"); setScreen("play"); } else tShow("Couldn't load that save."); }); };
   const toMenu = () => { flushSave(); if(G) saveGame(G); setG(null); setScreen("menu"); };   // autosave on the way out
   React.useEffect(()=>{ migrateSavesToIDB(); const h=()=>{ if(document.visibilityState==="hidden") flushSave(); }; const b=()=>flushSave(); document.addEventListener("visibilitychange",h); window.addEventListener("pagehide",b); window.addEventListener("beforeunload",b); return ()=>{ document.removeEventListener("visibilitychange",h); window.removeEventListener("pagehide",b); window.removeEventListener("beforeunload",b); }; }, []);
+  // Keyboard: ⌘K / Ctrl-K opens the jump-to palette. Ignored while typing in a field
+  // so it never steals a keystroke from the seed box or a contract negotiation.
+  React.useEffect(()=>{
+    const onKey = e => {
+      const el = e.target;
+      const typing = el && (el.tagName==="INPUT" || el.tagName==="TEXTAREA" || el.tagName==="SELECT" || el.isContentEditable);
+      if((e.metaKey||e.ctrlKey) && (e.key==="k"||e.key==="K")){ e.preventDefault(); setPalette(p=>!p); return; }
+      if(typing) return;
+      if(e.key==="?"){ e.preventDefault(); setPalette(true); }
+    };
+    window.addEventListener("keydown", onKey);
+    return ()=>window.removeEventListener("keydown", onKey);
+  }, []);
 
   if(screen==="menu") return <MainMenu onLoad={openSlot} onNew={()=>setScreen("splash")} />;
   if(screen==="splash" || !G) return <Splash onStart={(id,opts)=>{
@@ -2391,18 +2405,24 @@ function App(){
   const players = G.players;
   SCOUT_LVL = user.scouting || 1;   // the user's scouting network lifts the rating fog everywhere
 
-  const TABS = [
-    ["hub","Hub"],["roster","Roster"],["lineup","Lineup"],["players","Players"],
-    ["standings","Standings"],["aaa","AAA"],["college","College"],["stats","Leaders"],["awards","Awards"],
-    ["hof","Hall of Fame"],["bacup","BA Cup"],["news","News"],["schedule","Schedule"],["trades","Trades"],["fa","Free Agency"],["finances","Finances"],
-  ];
-  if(G.phase==="offseason") TABS.push(["draft","Draft"]);
-  if(G.phase==="playoffs"||G.playoffs) TABS.push(["playoffs","Playoffs"]);
+  // Two-level navigation. A flat strip of 18 tabs was unreadable (and brutal on a
+  // phone), so tabs live in five sections; the section row is always visible and the
+  // tab row shows only the active section. `groupOf` keeps the section in sync when
+  // something else navigates for you (Hub shortcuts, the command palette, ⌘K).
+  const GROUPS = navGroups(G);
+  const groupOf = k => (GROUPS.find(g=>g.tabs.some(t=>t[0]===k)) || GROUPS[0]).key;
+  const activeGroup = groupOf(tab);
+  const curGroup = GROUPS.find(g=>g.key===activeGroup) || GROUPS[0];
 
   return (
     <PlayerCtx.Provider value={p=>setGlobalPlayer(p)}>
     <div className="min-h-screen">
-      <header className="sticky top-0 z-20 bg-[#0d1526] border-b border-[#1d2940] px-4 py-3 flex items-center gap-3 flex-wrap">
+      {/* Your club's crest colour bleeds into the chrome — a thin identity stripe under
+          the header and a tinted header wash, so the app reads as YOUR franchise. */}
+      <header className="sticky top-0 z-20 bg-[#0d1526] border-b border-[#1d2940] px-4 py-3 flex items-center gap-3 flex-wrap relative"
+        style={{ backgroundImage:`linear-gradient(90deg, ${crestColors(user.id)[0]}22, transparent 55%)` }}>
+        <div className="absolute left-0 right-0 bottom-0 h-[2px]"
+          style={{ background:`linear-gradient(90deg, ${crestColors(user.id)[0]}, ${crestColors(user.id)[1]}, transparent)` }} />
         <div className="font-black text-lg tracking-tight">⚾ POCKET <span className="text-emerald-400">GM</span></div>
         <div className="text-sm text-slate-400"><Crest t={user} size={18}/>{user.name}</div>
         <div className="ml-auto flex items-center gap-2 text-sm">
@@ -2425,13 +2445,26 @@ function App(){
         </div>
       </header>
 
-      <nav className="flex gap-1 px-3 py-2 overflow-x-auto bg-[#0b1220] border-b border-[#15203a] sticky top-[57px] z-10">
-        {TABS.map(([k,label])=>(
-          <button key={k} onClick={()=>setTab(k)}
-            className={"px-3 py-1.5 rounded-md text-sm whitespace-nowrap "+(tab===k?"bg-emerald-500 text-slate-900 font-semibold":"text-slate-300 hover:bg-[#16213a]")}>
-            {label}
-          </button>
-        ))}
+      <nav className="bg-[#0b1220] border-b border-[#15203a] sticky top-[57px] z-10">
+        <div className="flex gap-1 px-3 pt-2 overflow-x-auto">
+          {GROUPS.map(g=>(
+            <button key={g.key} onClick={()=>setTab(g.tabs[0][0])}
+              className={"px-3 py-1.5 rounded-t-md text-sm whitespace-nowrap font-semibold border-b-2 "+
+                (activeGroup===g.key ? "text-emerald-300 border-emerald-400" : "text-slate-400 border-transparent hover:text-slate-200")}>
+              {g.label}
+            </button>
+          ))}
+          <button onClick={()=>setPalette(true)} title="Jump to… (⌘K)"
+            className="ml-auto px-2 py-1 rounded text-xs text-slate-500 hover:text-slate-200 whitespace-nowrap self-center">⌘K</button>
+        </div>
+        <div className="flex gap-1 px-3 py-2 overflow-x-auto">
+          {curGroup.tabs.map(([k,label])=>(
+            <button key={k} onClick={()=>setTab(k)}
+              className={"px-3 py-1.5 rounded-md text-sm whitespace-nowrap "+(tab===k?"bg-emerald-500 text-slate-900 font-semibold":"text-slate-300 hover:bg-[#16213a]")}>
+              {label}
+            </button>
+          ))}
+        </div>
       </nav>
 
       <main className="p-4 max-w-6xl mx-auto">
@@ -2459,6 +2492,7 @@ function App(){
       {globalPlayer && <PlayerModal p={globalPlayer} team={teamById(G, globalPlayer.teamId)} G={G} onClose={()=>setGlobalPlayer(null)} />}
       {showSettings && <SettingsModal G={G} commit={commit} tShow={tShow} onClose={()=>setShowSettings(false)} />}
       {showRules && <LeagueRulesModal G={G} commit={commit} tShow={tShow} onClose={()=>setShowRules(false)} />}
+      {palette && <CommandPalette G={G} onGo={setTab} onClose={()=>setPalette(false)} />}
     </div>
     </PlayerCtx.Provider>
   );
@@ -2753,6 +2787,62 @@ function LeagueRulesModal({G, commit, tShow, onClose}){
             {anyStaged ? "⏳ Staged changes apply at the next season rollover." : "Rules are saved per franchise."}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------ navigation ------------------------------ */
+// Tabs grouped into sections. Phase-only tabs (Draft, Playoffs) are folded into the
+// section they belong to rather than appended to the end of one long strip.
+function navGroups(G){
+  const league = [["standings","Standings"],["schedule","Schedule"],["stats","Leaders"],["news","News"]];
+  if(G.phase==="playoffs"||G.playoffs) league.splice(1,0,["playoffs","Playoffs"]);
+  const org = [["aaa","AAA"],["college","College"]];
+  if(G.phase==="offseason") org.push(["draft","Draft"]);
+  return [
+    { key:"club",    label:"🏟 Club",    tabs:[["hub","Hub"],["roster","Roster"],["lineup","Lineup"],["finances","Finances"]] },
+    { key:"league",  label:"🏆 League",  tabs:league },
+    { key:"market",  label:"💱 Market",  tabs:[["trades","Trades"],["fa","Free Agency"],["players","Players"]] },
+    { key:"org",     label:"🌱 Org",     tabs:org },
+    { key:"history", label:"📜 History", tabs:[["awards","Awards"],["hof","Hall of Fame"],["bacup","BA Cup"]] },
+  ];
+}
+// Flat list of every reachable tab, for the palette.
+function allTabs(G){ return navGroups(G).flatMap(g=>g.tabs.map(([k,l])=>({k, label:l, group:g.label}))); }
+
+// ⌘K / Ctrl-K jump-to. Type a few letters, Enter takes the top hit — faster than
+// hunting a section for a tab you already know the name of.
+function CommandPalette({G, onGo, onClose}){
+  const [q, setQ] = useState("");
+  const [i, setI] = useState(0);
+  const inputRef = useRef(null);
+  React.useEffect(()=>{ if(inputRef.current) inputRef.current.focus(); }, []);
+  const items = allTabs(G).filter(t=>!q || t.label.toLowerCase().includes(q.toLowerCase()) || t.k.includes(q.toLowerCase()));
+  const pick = n => { const t=items[n]; if(t){ onGo(t.k); onClose(); } };
+  const onKey = e => {
+    if(e.key==="ArrowDown"){ e.preventDefault(); setI(x=>Math.min(x+1, items.length-1)); }
+    else if(e.key==="ArrowUp"){ e.preventDefault(); setI(x=>Math.max(x-1, 0)); }
+    else if(e.key==="Enter"){ e.preventDefault(); pick(i); }
+    else if(e.key==="Escape"){ onClose(); }
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center p-4 pt-24" onClick={onClose}>
+      <div className="bg-[#101a30] border border-[#1d2940] rounded-xl w-full max-w-md overflow-hidden" onClick={e=>e.stopPropagation()}>
+        <input ref={inputRef} value={q} onKeyDown={onKey}
+          onChange={e=>{ setQ(e.target.value); setI(0); }} placeholder="Jump to…"
+          className="w-full bg-transparent px-4 py-3 text-sm outline-none border-b border-[#1d2940]" />
+        <div className="max-h-72 overflow-y-auto">
+          {items.map((t,n)=>(
+            <button key={t.k} onClick={()=>pick(n)} onMouseEnter={()=>setI(n)}
+              className={"w-full text-left px-4 py-2 text-sm flex items-center gap-2 "+(n===i?"bg-emerald-500/15 text-emerald-200":"text-slate-300 hover:bg-[#16213a]")}>
+              <span className="flex-1">{t.label}</span>
+              <span className="text-[11px] text-slate-500">{t.group}</span>
+            </button>
+          ))}
+          {!items.length && <div className="px-4 py-6 text-center text-sm text-slate-500">Nothing matches “{q}”.</div>}
+        </div>
+        <div className="px-4 py-2 text-[11px] text-slate-500 border-t border-[#1d2940]">↑↓ to move · Enter to open · Esc to close</div>
       </div>
     </div>
   );
@@ -8836,6 +8926,9 @@ function PlayersBrowser({G, commit, tShow, setTab, setTradeFocus}){
   };
   // trade: we store the target in localStorage and open the Trades tab pre-loaded
   const [tradeTarget,setTradeTarget]=useState(null);   // player we want to acquire
+  // side-by-side compare: tick up to four rows and read them off one card
+  const [cmp,setCmp]=useState([]);
+  const toggleCmp = id => setCmp(c=>c.includes(id) ? c.filter(x=>x!==id) : (c.length>=4 ? c : c.concat(id)));
 
   const isMine=p=>p.teamId===me.id || p.teamId===aaaIdOf(me.id);
   const isFA=p=>p.teamId==null;
@@ -8891,11 +8984,72 @@ function PlayersBrowser({G, commit, tShow, setTab, setTradeFocus}){
         <div className="text-xs text-slate-500 mt-1">{total} players{total>400?" · showing first 400":""}</div>
       </Card>
 
+      {/* Side-by-side compare. The best value in each row is highlighted so the winner
+          of each category reads instantly instead of having to eyeball the numbers. */}
+      {cmp.length>0 && (()=>{
+        const ps = cmp.map(id=>G.players[id]).filter(Boolean);
+        if(!ps.length) return null;
+        const allPitch = ps.every(p=>p.isP), allHit = ps.every(p=>!p.isP);
+        const base = [
+          ["Age", p=>p.age, "low"], ["OVR", p=>p.ovr, "high"], ["POT", p=>p.pot, "high"],
+          ["Salary", p=>p.salary, "low", p=>money(p.salary)],
+          ["Years left", p=>p.years||0, "high"],
+          ["Trade value", p=>playerValue(p), "high", p=>playerValue(p).toFixed(0)],
+        ];
+        const hit = [["CON",p=>p.con,"high"],["POW",p=>p.pow,"high"],["EYE",p=>p.eye,"high"],["SPD",p=>p.spd,"high"],["DEF",p=>p.def,"high"],
+          ["AVG",p=>avg(p.stats),"high",p=>p.stats.AB?f3(avg(p.stats)):"\u2014"],["HR",p=>p.stats.HR||0,"high"],["RBI",p=>p.stats.RBI||0,"high"],
+          ["OPS",p=>ops(p.stats),"high",p=>p.stats.AB?f3(ops(p.stats)):"\u2014"]];
+        const pit = [["STU",p=>p.stu,"high"],["CTL",p=>p.ctl,"high"],["STM",p=>p.stm,"high"],
+          ["IP",p=>p.stats.OUT||0,"high",p=>p.stats.OUT?f1(ip(p.stats)):"\u2014"],
+          ["ERA",p=>p.stats.OUT?era(p.stats):999,"low",p=>p.stats.OUT?f2(era(p.stats)):"\u2014"],
+          ["WHIP",p=>p.stats.OUT?whip(p.stats):999,"low",p=>p.stats.OUT?f2(whip(p.stats)):"\u2014"],
+          ["K",p=>p.stats.SO||0,"high"]];
+        const metrics = base.concat(allPitch?pit:allHit?hit:[]);
+        return (
+          <Card>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="font-bold text-sm">⚖️ Compare ({ps.length}{ps.length>=4?" — max":""})</h3>
+              <button onClick={()=>setCmp([])} className="text-xs text-slate-400 hover:text-slate-200">Clear</button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm tnum">
+                <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940]">
+                  <th className="text-left font-medium"></th>
+                  {ps.map(p=><th key={p.id} className="px-2 text-center">
+                    <PlayerLink p={p}/>
+                    <div className="text-[10px] text-slate-500 font-normal">{p.isP?p.role:p.pos} · {plbl(p)}</div>
+                  </th>)}
+                </tr></thead>
+                <tbody>
+                  {metrics.map(([label, get, dir, fmt])=>{
+                    const vals = ps.map(get);
+                    const best = dir==="low" ? Math.min(...vals) : Math.max(...vals);
+                    const allSame = vals.every(v=>v===vals[0]);
+                    return (
+                      <tr key={label} className="border-b border-[#15203a]">
+                        <td className="text-left text-slate-400 text-xs py-1">{label}</td>
+                        {ps.map((p,i)=>(
+                          <td key={p.id} className={"px-2 text-center "+(!allSame && vals[i]===best ? "text-emerald-300 font-semibold" : "text-slate-300")}>
+                            {fmt?fmt(p):vals[i]}
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {!allPitch && !allHit && <div className="text-[11px] text-slate-500 mt-2">Mixed hitters and pitchers — only the shared rows are shown. Tick all hitters or all pitchers for the full stat comparison.</div>}
+          </Card>
+        );
+      })()}
+
       {/* main table */}
       <Card>
         <div className="overflow-x-auto max-h-[72vh] overflow-y-auto">
           <table className="w-full text-sm tnum">
             <thead><tr className="text-slate-400 text-xs border-b border-[#1d2940] sticky top-0 bg-[#101a30]">
+              <th className="w-6" title="Compare"></th>
               <th className="text-left py-1 pr-1">Pos</th>
               <th className="text-left">Name</th>
               <th className="text-left">Team</th>
@@ -8912,6 +9066,7 @@ function PlayersBrowser({G, commit, tShow, setTab, setTradeFocus}){
                 const etTerms=mine&&p.years<=2?extensionTerms(G,p):null;
                 return (
                   <tr key={p.id} className={"border-b border-[#15203a] hover:bg-[#13203a]"+(mine?" bg-emerald-900/10":"")}>
+                    <td className="py-1"><input type="checkbox" checked={cmp.includes(p.id)} onChange={()=>toggleCmp(p.id)} title="Add to compare" /></td>
                     <td className="text-slate-400 py-1 pr-1">{p.pos}</td>
                     <td className="text-left"><button onClick={()=>setModal(p)} className="font-medium hover:text-emerald-300 text-left">{p.name}</button></td>
                     <td className="text-left text-slate-400 text-xs">{plbl(p)}</td>
