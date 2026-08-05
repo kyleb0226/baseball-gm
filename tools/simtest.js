@@ -72,6 +72,10 @@ function loadGame() {
       useCallback: f => f, useContext: () => noop,
       createContext: () => ({ Provider: noop, Consumer: noop }),
       Fragment: "fragment",
+      // The error boundary is a real class component, so `extends
+      // React.Component` has to resolve to something constructible even
+      // though no component is ever rendered here.
+      Component: class { constructor(props){ this.props = props; this.state = null; } setState(){} },
     },
     ReactDOM: { createRoot: () => ({ render: noop }) },
   };
@@ -167,6 +171,7 @@ const CHECKS = {
   // Mercy + ghost runner: both should shorten games without breaking W/L balance.
   paceRules(A) {
     section("Pace rules (mercy + ghost runner)");
+
     const base = A.newGame(0, { seed: 3, rules: { seasonLen: 54 } });
     simRegularSeason(A, base);
     const mercy = A.newGame(0, { seed: 3, rules: { seasonLen: 54, mercy: 10 } });
@@ -175,9 +180,28 @@ const CHECKS = {
     const mw = mercy.teams.reduce((s, t) => s + t.w, 0), ml = mercy.teams.reduce((s, t) => s + t.l, 0);
     ok(bw === bl, `no-mercy league balanced (${bw}/${bl})`);
     ok(mw === ml, `mercy-rule league balanced (${mw}/${ml})`);
-    const baseRuns = base.teams.reduce((s, t) => s + t.rs, 0);
-    const mercyRuns = mercy.teams.reduce((s, t) => s + t.rs, 0);
-    ok(mercyRuns < baseRuns, `mercy rule cuts total runs (${mercyRuns} < ${baseRuns})`);
+
+    // This used to assert `mercyRuns < baseRuns` over the two seasons' total
+    // runs. That was a coin flip: `seed` only seeds LEAGUE GENERATION (newGame
+    // restores Math.random so the sim stays genuinely random), so the two
+    // seasons are independent draws and the mercy rule's real effect (~1-2%)
+    // sits inside season-to-season variance. It failed about half the time on
+    // an untouched tree.
+    //
+    // Assert the mechanism instead, which is deterministic: a mercy game
+    // breaks out of the inning loop at 7 or 8, so the away club — which bats
+    // in every inning played — has a short line score. Without the rule no
+    // regulation game can end before 9.
+    const shortGames = G => {
+      let n = 0;
+      (G.schedule || []).forEach(day => (day || []).forEach(g => {
+        if (g && g.box && g.box.ls && Array.isArray(g.box.ls.a) && g.box.ls.a.length < 9) n++;
+      }));
+      return n;
+    };
+    const baseShort = shortGames(base), mercyShort = shortGames(mercy);
+    ok(baseShort === 0, `no game ends early without the mercy rule (${baseShort} short)`);
+    ok(mercyShort > 0, `mercy rule ends blowouts early (${mercyShort} short games)`);
 
     const ghost = A.newGame(0, { seed: 3, rules: { seasonLen: 54, extras: "ghost" } });
     simRegularSeason(A, ghost);

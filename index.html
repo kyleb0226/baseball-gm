@@ -2170,7 +2170,7 @@ function migrate(G){
     if(!G.settings) G.settings = { injuries: true };
     if(G.gmStrikes==null) G.gmStrikes = 0;
     if(G.gmFired===undefined) G.gmFired = null;
-    if(!G.ownerMandate && G.phase==="regular"){ try{ setOwnerMandate(G); }catch(e){} }   // backfill a mandate for in-season saves
+    if(!G.ownerMandate && G.phase==="regular"){ try{ setOwnerMandate(G); }catch(e){ console.warn("[pocketgm] could not backfill owner mandate", e); } }   // backfill a mandate for in-season saves
     if(G.tradeDeadline==null) G.tradeDeadline = Math.round((G.schedule?G.schedule.length:224)*0.58);
     if(!Array.isArray(G.hof)) G.hof = [];
     if(!Array.isArray(G.hofBallot)) G.hofBallot = [];
@@ -2295,7 +2295,14 @@ function migrate(G){
       norm(po.ws,4);
     }
     G.version = SAVE_VERSION;
-  }catch(e){ /* best-effort: a partial migration still beats a crash */ }
+  }catch(e){
+    // Best-effort: a partial migration still beats a crash, so we keep the
+    // save and carry on. But swallowing this silently is how a corrupt
+    // franchise looks like a gameplay bug three sessions later — leave a
+    // trail, and stamp the save so the damage is visible after the fact.
+    console.error("[pocketgm] save migration failed; loading partially migrated save", e);
+    try{ G.migrationError = { message: String(e && e.message || e), at: Date.now(), from: G.version, to: SAVE_VERSION }; }catch(_){}
+  }
   return G;
 }
 
@@ -5223,21 +5230,70 @@ function CollegeLeague({G}){
 
 /* ----------------------------- Leaders --------------------------------- */
 function Leaders({G}){
-  // MLB leaderboards use each player's MLB-ONLY line (a mid-season call-up's AAA stats
-  // don't count here), so anyone with MLB time qualifies regardless of where he is now.
-  const pool = Object.values(G.players).filter(p=>!isCollegeId(p.teamId));
-  const ml = new Map(); pool.forEach(p=> ml.set(p.id, levelStats(p,"MLB")));
-  const S = p => ml.get(p.id) || p.stats;
-  // scale qualifier thresholds with games played so boards read right all season
-  const gpMax = Math.max(1, ...G.teams.map(t=>t.w+t.l));
-  const paQual = Math.max(20, round(gpMax*2.5));
-  const outQual = Math.max(30, round(gpMax*1.5));
-  const hitters = pool.filter(p=>!p.isP && S(p).PA>=paQual);
-  const pitchers = pool.filter(p=>p.isP && S(p).OUT>=outQual);
-  const all = pool;
-  const tn = id => G.teams[id]?G.teams[id].abbr:(isAAAId(id)?(G.teams[parentIdOf(id)]?G.teams[parentIdOf(id)].abbr+" (AAA)":"AAA"):"FA");
+  // There are 33 boards below and each one re-sorts a full qualified-player
+  // list, on top of rebuilding the MLB-only stat map for every player in the
+  // league. Doing all of that on every render made this tab janky in a deep
+  // franchise — and it re-ran on renders that changed nothing here at all
+  // (opening a modal, a toast firing). `G` is replaced wholesale by commit(),
+  // so its identity is both a correct and a cheap cache key.
+  const { boards, tn } = React.useMemo(()=>{
+    // MLB leaderboards use each player's MLB-ONLY line (a mid-season call-up's AAA stats
+    // don't count here), so anyone with MLB time qualifies regardless of where he is now.
+    const pool = Object.values(G.players).filter(p=>!isCollegeId(p.teamId));
+    const ml = new Map(); pool.forEach(p=> ml.set(p.id, levelStats(p,"MLB")));
+    const S = p => ml.get(p.id) || p.stats;
+    // scale qualifier thresholds with games played so boards read right all season
+    const gpMax = Math.max(1, ...G.teams.map(t=>t.w+t.l));
+    const paQual = Math.max(20, round(gpMax*2.5));
+    const outQual = Math.max(30, round(gpMax*1.5));
+    const hitters = pool.filter(p=>!p.isP && S(p).PA>=paQual);
+    const pitchers = pool.filter(p=>p.isP && S(p).OUT>=outQual);
+    const all = pool;
+    const top = (list, key, n=10) => [...list].sort((a,b)=>key(b)-key(a)).slice(0,n);
+    const bot = (list, key, n=10) => [...list].sort((a,b)=>key(a)-key(b)).slice(0,n);
+    const warCtx = leagueWarCtx(G,"MLB");
+    const pfOf = p => { const t=G.teams[isAAAId(p.teamId)?parentIdOf(p.teamId):p.teamId]; return t&&t.ballpark?t.ballpark.pf:1; };
+    return {
+      tn: id => G.teams[id]?G.teams[id].abbr:(isAAAId(id)?(G.teams[parentIdOf(id)]?G.teams[parentIdOf(id)].abbr+" (AAA)":"AAA"):"FA"),
+      boards: [
+        ["WAR — Position", top(hitters,p=>warOf(p,warCtx,S(p))), p=>f1w(warOf(p,warCtx,S(p)))],
+        ["WAR — Pitcher", top(pitchers,p=>warOf(p,warCtx,S(p))), p=>f1w(warOf(p,warCtx,S(p)))],
+        ["AVG", top(hitters,p=>avg(S(p))), p=>f3(avg(S(p)))],
+        ["Home Runs", top(hitters,p=>S(p).HR), p=>S(p).HR],
+        ["RBI", top(hitters,p=>S(p).RBI), p=>S(p).RBI],
+        ["OBP", top(hitters,p=>obp(S(p))), p=>f3(obp(S(p)))],
+        ["SLG", top(hitters,p=>slg(S(p))), p=>f3(slg(S(p)))],
+        ["OPS", top(hitters,p=>ops(S(p))), p=>f3(ops(S(p)))],
+        ["OPS+", top(hitters,p=>opsPlus(S(p),warCtx,pfOf(p))), p=>opsPlus(S(p),warCtx,pfOf(p))],
+        ["wRC+", top(hitters,p=>wrcPlus(S(p),warCtx,pfOf(p))), p=>wrcPlus(S(p),warCtx,pfOf(p))],
+        ["Hits", top(hitters,p=>S(p).H), p=>S(p).H],
+        ["Runs", top(hitters,p=>S(p).R), p=>S(p).R],
+        ["Walks", top(hitters,p=>S(p).BB), p=>S(p).BB],
+        ["Stolen Bases", top(hitters.filter(p=>S(p).SB>0),p=>S(p).SB), p=>S(p).SB],
+        ["ERA", bot(pitchers,p=>era(S(p))), p=>f2(era(S(p)))],
+        ["ERA+", top(pitchers,p=>eraPlus(S(p),warCtx,pfOf(p))), p=>eraPlus(S(p),warCtx,pfOf(p))],
+        ["Innings", top(pitchers,p=>S(p).OUT), p=>f1(ip(S(p)))],
+        ["Strikeouts", top(pitchers,p=>S(p).SO), p=>S(p).SO],
+        ["K − BB", top(pitchers,p=>S(p).SO-S(p).BB), p=>S(p).SO-S(p).BB],
+        ["Wins", top(pitchers,p=>S(p).W), p=>S(p).W],
+        ["Quality Starts", top(pitchers.filter(p=>S(p).QS>0),p=>S(p).QS), p=>S(p).QS],
+        ["Saves", top(pitchers.filter(p=>S(p).SV>0),p=>S(p).SV), p=>S(p).SV],
+        ["Holds", top(all.filter(p=>p.isP&&S(p).HLD>0),p=>S(p).HLD), p=>S(p).HLD],
+        ["WHIP", bot(pitchers,p=>whip(S(p))), p=>f2(whip(S(p)))],
+        ["Doubles", top(hitters,p=>S(p)._2B||0), p=>S(p)._2B||0],
+        ["Triples", top(hitters.filter(p=>(S(p)._3B||0)>0),p=>S(p)._3B||0), p=>S(p)._3B||0],
+        ["ISO", top(hitters,p=>iso(S(p))), p=>f3(iso(S(p)))],
+        ["wOBA", top(hitters,p=>woba(S(p))), p=>f3(woba(S(p)))],
+        ["BABIP", top(hitters,p=>babip(S(p))), p=>f3(babip(S(p)))],
+        ["FIP", bot(pitchers,p=>fip(S(p))), p=>f2(fip(S(p)))],
+        ["K/9", top(pitchers,p=>kp9(S(p))), p=>f2(kp9(S(p)))],
+        ["BB/9", bot(pitchers,p=>bb9(S(p))), p=>f2(bb9(S(p)))],
+        ["K/BB", top(pitchers,p=>kbb(S(p))), p=>f2(kbb(S(p)))],
+      ],
+    };
+  }, [G]);
   const board = (title, list, fmt) => (
-    <Card><h3 className="font-bold mb-2">{title}</h3>
+    <Card key={title}><h3 className="font-bold mb-2">{title}</h3>
       <table className="w-full text-sm tnum"><tbody>
         {list.map((p,i)=>(
           <tr key={p.id} className="border-b border-[#15203a]">
@@ -5249,45 +5305,9 @@ function Leaders({G}){
       </tbody></table>
     </Card>
   );
-  const top = (list, key, n=10) => [...list].sort((a,b)=>key(b)-key(a)).slice(0,n);
-  const bot = (list, key, n=10) => [...list].sort((a,b)=>key(a)-key(b)).slice(0,n);
-  const warCtx = leagueWarCtx(G,"MLB");
-  const pfOf = p => { const t=G.teams[isAAAId(p.teamId)?parentIdOf(p.teamId):p.teamId]; return t&&t.ballpark?t.ballpark.pf:1; };
   return (
     <div className="grid md:grid-cols-3 gap-4">
-      {board("WAR — Position", top(hitters,p=>warOf(p,warCtx,S(p))), p=>f1w(warOf(p,warCtx,S(p))))}
-      {board("WAR — Pitcher", top(pitchers,p=>warOf(p,warCtx,S(p))), p=>f1w(warOf(p,warCtx,S(p))))}
-      {board("AVG", top(hitters,p=>avg(S(p))), p=>f3(avg(S(p))))}
-      {board("Home Runs", top(hitters,p=>S(p).HR), p=>S(p).HR)}
-      {board("RBI", top(hitters,p=>S(p).RBI), p=>S(p).RBI)}
-      {board("OBP", top(hitters,p=>obp(S(p))), p=>f3(obp(S(p))))}
-      {board("SLG", top(hitters,p=>slg(S(p))), p=>f3(slg(S(p))))}
-      {board("OPS", top(hitters,p=>ops(S(p))), p=>f3(ops(S(p))))}
-      {board("OPS+", top(hitters,p=>opsPlus(S(p),warCtx,pfOf(p))), p=>opsPlus(S(p),warCtx,pfOf(p)))}
-      {board("wRC+", top(hitters,p=>wrcPlus(S(p),warCtx,pfOf(p))), p=>wrcPlus(S(p),warCtx,pfOf(p)))}
-      {board("Hits", top(hitters,p=>S(p).H), p=>S(p).H)}
-      {board("Runs", top(hitters,p=>S(p).R), p=>S(p).R)}
-      {board("Walks", top(hitters,p=>S(p).BB), p=>S(p).BB)}
-      {board("Stolen Bases", top(hitters.filter(p=>S(p).SB>0),p=>S(p).SB), p=>S(p).SB)}
-      {board("ERA", bot(pitchers,p=>era(S(p))), p=>f2(era(S(p))))}
-      {board("ERA+", top(pitchers,p=>eraPlus(S(p),warCtx,pfOf(p))), p=>eraPlus(S(p),warCtx,pfOf(p)))}
-      {board("Innings", top(pitchers,p=>S(p).OUT), p=>f1(ip(S(p))))}
-      {board("Strikeouts", top(pitchers,p=>S(p).SO), p=>S(p).SO)}
-      {board("K − BB", top(pitchers,p=>S(p).SO-S(p).BB), p=>S(p).SO-S(p).BB)}
-      {board("Wins", top(pitchers,p=>S(p).W), p=>S(p).W)}
-      {board("Quality Starts", top(pitchers.filter(p=>S(p).QS>0),p=>S(p).QS), p=>S(p).QS)}
-      {board("Saves", top(pitchers.filter(p=>S(p).SV>0),p=>S(p).SV), p=>S(p).SV)}
-      {board("Holds", top(all.filter(p=>p.isP&&S(p).HLD>0),p=>S(p).HLD), p=>S(p).HLD)}
-      {board("WHIP", bot(pitchers,p=>whip(S(p))), p=>f2(whip(S(p))))}
-      {board("Doubles", top(hitters,p=>S(p)._2B||0), p=>S(p)._2B||0)}
-      {board("Triples", top(hitters.filter(p=>(S(p)._3B||0)>0),p=>S(p)._3B||0), p=>S(p)._3B||0)}
-      {board("ISO", top(hitters,p=>iso(S(p))), p=>f3(iso(S(p))))}
-      {board("wOBA", top(hitters,p=>woba(S(p))), p=>f3(woba(S(p))))}
-      {board("BABIP", top(hitters,p=>babip(S(p))), p=>f3(babip(S(p))))}
-      {board("FIP", bot(pitchers,p=>fip(S(p))), p=>f2(fip(S(p))))}
-      {board("K/9", top(pitchers,p=>kp9(S(p))), p=>f2(kp9(S(p))))}
-      {board("BB/9", bot(pitchers,p=>bb9(S(p))), p=>f2(bb9(S(p))))}
-      {board("K/BB", top(pitchers,p=>kbb(S(p))), p=>f2(kbb(S(p))))}
+      {boards.map(([title, list, fmt]) => board(title, list, fmt))}
     </div>
   );
 }
@@ -9040,20 +9060,13 @@ function PlayersBrowser({G, commit, tShow, setTab, setTradeFocus}){
   const space=capSpaceFor(G, me.id);
   const lvlOf=p=>levelOf(p.teamId);
   const orgOf=p=>p.teamId==null?null:(isCollegeId(p.teamId)?p.teamId:(isAAAId(p.teamId)?parentIdOf(p.teamId):p.teamId));
-  const all=Object.values(G.players);
-  let rows=all.filter(p=>{
-    if(q && !p.name.toLowerCase().includes(q.toLowerCase())) return false;
-    const lvl=lvlOf(p);
-    if(levelF!=="ALL" && lvl!==levelF) return false;
-    if(teamF==="FA"){ if(lvl!=="FA") return false; }
-    else if(teamF!=="ALL"){ if(orgOf(p)!==Number(teamF)) return false; }
-    if(posF==="P"){ if(!p.isP) return false; }
-    else if(posF==="H"){ if(p.isP) return false; }
-    else if(posF!=="ALL"){ if(p.pos!==posF) return false; }
-    const amin=ageMin?Number(ageMin):0, amax=ageMax?Number(ageMax):99;
-    if(p.age<amin||p.age>amax) return false;
-    return true;
-  });
+  // The search box drives a filter+sort across every player in the league
+  // (majors, AAA, college and free agents). Typing fired that on each
+  // keystroke, so debounce what the filter actually reads: `q` stays instant
+  // for the input's own value, `qDebounced` is what the expensive pass uses.
+  const [qDebounced,setQDebounced]=useState("");
+  useEffect(()=>{ const t=setTimeout(()=>setQDebounced(q),150); return ()=>clearTimeout(t); },[q]);
+
   const sorters={ ovr:(a,b)=>b.ovr-a.ovr, pot:(a,b)=>b.pot-a.pot, age:(a,b)=>a.age-b.age,
     name:(a,b)=>a.name.localeCompare(b.name), salary:(a,b)=>b.salary-a.salary, value:(a,b)=>playerValue(b)-playerValue(a),
     hr:(a,b)=>(b.stats.HR||0)-(a.stats.HR||0), avg:(a,b)=>avg(b.stats)-avg(a.stats),
@@ -9061,7 +9074,23 @@ function PlayersBrowser({G, commit, tShow, setTab, setTradeFocus}){
     ops:(a,b)=>ops(b.stats)-ops(a.stats), rbi:(a,b)=>(b.stats.RBI||0)-(a.stats.RBI||0),
     sb:(a,b)=>(b.stats.SB||0)-(a.stats.SB||0), so:(a,b)=>(b.stats.SO||0)-(a.stats.SO||0),
     sv:(a,b)=>(b.stats.SV||0)-(a.stats.SV||0), ip:(a,b)=>(b.stats.OUT||0)-(a.stats.OUT||0) };
-  const total=rows.length; rows=[...rows].sort(sorters[sortK]||sorters.ovr).slice(0,400);
+
+  const { rows, total } = useMemo(()=>{
+    const matched=Object.values(G.players).filter(p=>{
+      if(qDebounced && !p.name.toLowerCase().includes(qDebounced.toLowerCase())) return false;
+      const lvl=lvlOf(p);
+      if(levelF!=="ALL" && lvl!==levelF) return false;
+      if(teamF==="FA"){ if(lvl!=="FA") return false; }
+      else if(teamF!=="ALL"){ if(orgOf(p)!==Number(teamF)) return false; }
+      if(posF==="P"){ if(!p.isP) return false; }
+      else if(posF==="H"){ if(p.isP) return false; }
+      else if(posF!=="ALL"){ if(p.pos!==posF) return false; }
+      const amin=ageMin?Number(ageMin):0, amax=ageMax?Number(ageMax):99;
+      if(p.age<amin||p.age>amax) return false;
+      return true;
+    });
+    return { total: matched.length, rows: [...matched].sort(sorters[sortK]||sorters.ovr).slice(0,400) };
+  }, [G, qDebounced, levelF, teamF, posF, ageMin, ageMax, sortK]);
   const plbl=p=>{ const t=teamById(G,p.teamId); return t?(t.abbr+(t.aaa?" AAA":"")):"FA"; };
   const sel="bg-[#0b1220] border border-[#1d2940] rounded px-2 py-1 text-sm";
 
@@ -9276,8 +9305,39 @@ function PlayersBrowser({G, commit, tShow, setTab, setTradeFocus}){
   );
 }
 
+/* --------------------------- error boundary ---------------------------- */
+// Without this, any render-time throw unmounts the whole tree and leaves a
+// blank page — with the franchise still safe in IndexedDB but no way to reach
+// it, and no clue what broke. Catch it, say so, and offer the two things that
+// actually recover: reload, or export the save before touching anything.
+class ErrorBoundary extends React.Component {
+  constructor(props){ super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err){ return { err }; }
+  componentDidCatch(err, info){ console.error("[pocketgm] render crash", err, info); }
+  render(){
+    if(!this.state.err) return this.props.children;
+    const msg = String(this.state.err && this.state.err.stack || this.state.err);
+    return (
+      <div className="max-w-2xl mx-auto p-6 text-slate-200">
+        <h1 className="text-xl font-bold mb-2">Something broke while drawing this screen.</h1>
+        <p className="text-sm text-slate-400 mb-4">
+          Your save is untouched — it lives in IndexedDB, not in this page. Reload to get
+          back in. If it keeps happening, export the save first and note what you were doing.
+        </p>
+        <div className="flex gap-2 mb-4">
+          <button className="px-3 py-2 rounded bg-sky-700 hover:bg-sky-600 text-sm font-semibold"
+                  onClick={()=>window.location.reload()}>Reload</button>
+          <button className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm font-semibold"
+                  onClick={()=>{ try{ navigator.clipboard.writeText(msg); }catch(e){} }}>Copy error</button>
+        </div>
+        <pre className="text-xs whitespace-pre-wrap bg-[#0f1729] p-3 rounded overflow-auto max-h-64">{msg}</pre>
+      </div>
+    );
+  }
+}
+
 /* ----------------------------- mount ----------------------------------- */
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+ReactDOM.createRoot(document.getElementById("root")).render(<ErrorBoundary><App /></ErrorBoundary>);
 </script>
 <script>
   (function(){
